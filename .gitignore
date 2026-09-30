@@ -1,0 +1,34 @@
+# Virtual Environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Game binaries and original assets (copyrighted materials)
+game/
+*.zip
+
+# Ghidra project files and caches
+ghidra_project/
+*.rep/
+*.gpr
+*.log
+
+# Build outputs
+build/
+bin/
+out/
+obj/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+*.exp
+
+# IDE and Editor files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
