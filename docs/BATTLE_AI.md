@@ -418,7 +418,24 @@ dune runtest
 * The two `w[0x24]` / `w[0x28]` buckets are never written by any Lua binding in
   the recovered catalogue, so nothing in the original data pipeline appears to
   populate them either.
-* `FUN_00443DA90` scales incoming damage by difficulty, dividing by 3 at
-  difficulty 0 and by 3/2 at difficulty 1. The full damage formula there is worth
-  its own pass; it is combat balance rather than move selection, so it was left
-  alone here.
+* `FUN_0043DA90` scales the *score* by difficulty, dividing by 3 at difficulty 0
+  and by 3/2 at difficulty 1 — the same field that makes the AI weaker. That
+  function turned out to be the end-of-battle score rather than a damage
+  formula; it is written up separately in [`BATTLE_SCORE.md`](BATTLE_SCORE.md).
+
+---
+
+## 9. The AI is stateless with respect to the fight
+
+`EvaluateBoard` reads exactly two things beyond the board: `m_difficulty`, and
+the hero's level and level cap for the jitter band. It never reads the enemy
+character's inventory, spell list, or stats — those live in the Lua layer and
+are not reachable from the C++ side at all. The AI is therefore choosing moves
+from board state and a difficulty scalar, with no notion of what it owns or
+what it is playing against.
+
+That is not a limitation of this port; it is the design of the original, and it
+is why the AI plays naively against a player who is hoarding a spell it cannot
+see. A difficulty that factors in items and spells has to be a new layer that
+either wraps or replaces `EvaluateBoard`, not a retuning of its weight table.
+The weight table has no inputs for that kind of decision.
