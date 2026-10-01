@@ -97,9 +97,16 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 * Rebuild and verify:
   1. `BoardSimulator` and deterministic test suite. — **done**, `lib/board.ml`
   2. `CombatEngine` with turn order, extra turns, and status effects. — **done**, `lib/combat.ml`
-  3. `WorldMapEngine` with city graphs and quest state.
-  4. Spell effect table — the 130 scripts, rewritten in OCaml.
-  5. A ranked AI spell chooser, replacing the original's first-affordable-wins.
+  3. A headless battle loop tying board, AI, combat, and spells together. — **done**, `lib/battle.ml`
+  4. `WorldMapEngine` with city graphs and quest state.
+  5. Spell effect table — the 130 scripts, rewritten in OCaml.
+  6. A ranked AI spell chooser, replacing the original's first-affordable-wins.
+
+**One known modelling gap.** The original's extra turn roll reads a character's
+*skill* in an element, which is a separate field from its current mana balance.
+`Combat.combatant` does not model skills, so `Battle.skill_of` reads the mana pool
+instead and clamps to the 999 ceiling. It is isolated in one function precisely so
+there is a single place to change when skills are added.
 
 ---
 

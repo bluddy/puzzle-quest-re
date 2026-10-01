@@ -46,6 +46,11 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - **The stat-based extra turn**: chance is `gained / 100`, rolled per element per match, which is why extra turns become common late game. Found by playtesting observation and confirmed at `0x0047D4F0`.
   - The AI's spell choice is a difficulty-gated skip plus an affordability filter, first affordable wins, with no ranking at all.
   - Ported to OCaml in [lib/spell.ml](lib/spell.ml) with tests in [test/test_spell.ml](test/test_spell.ml).
+- [x] **Option G: Headless Battle Loop** ([lib/battle.ml](lib/battle.ml)):
+  - A complete, seeded, animation-free battle: both sides take turns, the AI picks moves, matches cascade, damage lands, deaths end the fight, and a turn cap forces a stalemate.
+  - Bridges the row-index mismatch: `Board` uses rows `0..7`, the engine uses row 0 as a spawn buffer with rows `1..8` playable. `ai_view` presents the engine's 9-row grid and `play_move` undoes the same shift, otherwise every swap lands one row low.
+  - Casting a spell no longer banks an extra turn; in the original that comes from a status effect hook, not from casting.
+  - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, spell cost and affordability, death, and the stalemate cap.
 
 ---
 
@@ -57,11 +62,12 @@ spells, because that state lives in a VM the C++ side cannot see. See
   * `combat.ml`: Turn order, banked extra turns, status effect lifetimes, and the 37-hook record.
   * `spell.ml`: Spell costs, mana yield, the stat-based extra turn roll, and the AI's spell pick.
   * `score.ml`: End-of-battle score, both solo and co-op paths.
+  * `battle.ml`: Headless battle loop wiring board, AI, combat, and spells together.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).
   * `save_file.ml`: `.pqhero` binary deserializer, PNG thumbnail slicer, and hero state parser.
 * `bin/`: CLI utilities:
   * `pq_save_tool.ml`: Save file inspector, PNG extractor, and interactive board simulator.
-* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
