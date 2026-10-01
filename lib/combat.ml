@@ -37,6 +37,28 @@ let add_mana e amount m =
 
 let total_mana m = m.earth + m.fire + m.air + m.water
 
+(** Skill per element, a separate thing from the mana balance.
+
+    The save file stores all four: [save_file.ml] reads them as
+    {earth, fire, water, air} from the hero's attribute block. They drive the
+    mana yield and therefore the extra turn roll, so a character with a full pool
+    but no training banks mana at the untrained rate. *)
+type skills = { earth : int; fire : int; air : int; water : int }
+
+let zero_skills = { earth = 0; fire = 0; air = 0; water = 0 }
+
+let skill_in (e : element) (s : skills) : int =
+  match e with Earth -> s.earth | Fire -> s.fire | Air -> s.air | Water -> s.water
+
+let add_skill (e : element) (amount : int) (s : skills) : skills =
+  match e with
+  | Earth -> { s with earth = s.earth + amount }
+  | Fire -> { s with fire = s.fire + amount }
+  | Air -> { s with air = s.air + amount }
+  | Water -> { s with water = s.water + amount }
+
+let total_skills s = s.earth + s.fire + s.air + s.water
+
 (** A combatant. Only the fields the turn manager and status effects read are
     modelled. [cunning] is the initiative stat at skill slot 5; [is_dead] is
     the flag the defeat sweep at [FUN_00464870] clears. *)
@@ -47,16 +69,23 @@ type combatant = {
   max_life : int;
   mutable life : int;
   mutable mana : mana;
+  (* Trained skill per element. Drives mana yield and the extra turn roll, and
+     is independent of the balance above: spending mana never lowers it. *)
+  mutable skills : skills;
   mutable is_dead : bool;
   (* Per-character extra turns banked. This is the original's m_turnsLeft,
      which is only ever incremented by EXTRA_TURN. *)
   mutable extra_turns : int;
   (* Active status effects, as (effect id, remaining duration). *)
   mutable effects : (string * int) list;
+  (* Spell cooldowns in turns left, keyed by spell id. Per combatant rather
+     than on the [Spell.spell] record because a spell object is shared between
+     the two sides in our model, and one side's cast must not gate the other's. *)
+  mutable cooldowns : (string * int) list;
 }
 
 let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_mana)
-    ?(extra_turns = 0) ?(effects = []) id name =
+    ?(skills = zero_skills) ?(extra_turns = 0) ?(effects = []) ?(cooldowns = []) id name =
   {
     id;
     name;
@@ -64,9 +93,11 @@ let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_
     max_life;
     life;
     mana;
+    skills;
     is_dead = false;
     extra_turns;
     effects;
+    cooldowns;
   }
 
 (** Status effect definitions, parsed from the [Assets/StatusEffects/*.xml]

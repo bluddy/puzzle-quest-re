@@ -50,7 +50,11 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - A complete, seeded, animation-free battle: both sides take turns, the AI picks moves, matches cascade, damage lands, deaths end the fight, and a turn cap forces a stalemate.
   - Bridges the row-index mismatch: `Board` uses rows `0..7`, the engine uses row 0 as a spawn buffer with rows `1..8` playable. `ai_view` presents the engine's 9-row grid and `play_move` undoes the same shift, otherwise every swap lands one row low.
   - Casting a spell no longer banks an extra turn; in the original that comes from a status effect hook, not from casting.
-  - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, spell cost and affordability, death, and the stalemate cap.
+  - Cooldowns from the `Data cooldown` attribute are enforced, per combatant rather than per spell record.
+  - Both damage-hook chains run: the attacker's `GIVE_DAMAGE`, then the defender's `RECEIVE_DAMAGE`.
+  - Matching, Red Skull explosions, 5-run wildcards, gold, and XP all come from `Board.resolve_matches`; the board reports its own run groupings so there is one matcher rather than two.
+  - Skills are modelled per element and drive mana yield, rather than being read off the mana balance.
+  - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, cooldowns, damage hooks, gold/XP/Heroic Effort, death, and the stalemate cap.
 
 ---
 
@@ -67,6 +71,7 @@ spells, because that state lives in a VM the C++ side cannot see. See
   * `save_file.ml`: `.pqhero` binary deserializer, PNG thumbnail slicer, and hero state parser.
 * `bin/`: CLI utilities:
   * `pq_save_tool.ml`: Save file inspector, PNG extractor, and interactive board simulator.
+  * `pq_battle.ml`: Plays a seeded headless battle and prints the trace or a summary.
 * `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
@@ -109,3 +114,10 @@ dune exec bin/pq_save_tool.exe -- info "<path_to_save>.pqhero"
 ```powershell
 dune exec bin/pq_save_tool.exe -- board-sim
 ```
+
+### Play a Headless Battle
+```powershell
+dune exec bin/pq_battle.exe -- --seed 7 --hero-skill 200
+dune exec bin/pq_battle.exe -- --seed 7 --trace --board
+```
+The same seed always produces the same fight, so a trace is reproducible.

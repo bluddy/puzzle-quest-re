@@ -72,6 +72,41 @@ let pay_cost (c : combatant) (s : spell) : unit =
       water = c.mana.water - s.cost_water;
     }
 
+(** Cooldowns, from the [Data cooldown] attribute the spell XMLs carry.
+
+    58 of the 129 spells have one; the rest are castable every turn. A cooldown
+    counts the caster's own turns, so it ticks in [tick_cooldowns] at the end of
+    a turn rather than on a global counter.
+
+    The counter lives on the combatant, not on the spell, because a spell record
+    is shared between both sides here and one side's cast must not gate the
+    other's. [is_castable] is deliberately *not* extended with a cooldown check:
+    it models the original's mana test, which is what the spell picker consults.
+    The cooldown is a separate gate, applied by [can_cast] below. *)
+let cooldown_left (c : combatant) (s : spell) : int =
+  match List.assoc_opt s.id c.cooldowns with Some n -> n | None -> 0
+
+let is_ready (c : combatant) (s : spell) : bool = cooldown_left c s <= 0
+
+(** Affordability and cooldown together: what the AI actually needs. *)
+let can_cast ?(spells_disallowed = false) (c : combatant) (s : spell) : bool =
+  is_castable ~spells_disallowed c s && is_ready c s
+
+(** Starts [s]'s cooldown after a cast. A spell with no [Data cooldown] is
+    never put on cooldown, so its absence from the list is the signal. *)
+let start_cooldown (c : combatant) (s : spell) : unit =
+  if s.cooldown > 0 then c.cooldowns <- (s.id, s.cooldown) :: c.cooldowns
+
+(** Ticks every cooldown down by one and drops those that reach zero, so the map
+    does not grow across a long battle. *)
+let tick_cooldowns (c : combatant) : unit =
+  c.cooldowns <-
+    List.filter_map
+      (fun (id, n) ->
+        let n' = n - 1 in
+        if n' <= 0 then None else Some (id, n'))
+      c.cooldowns
+
 (** [FUN_004466E0]. Resistance codes 0 (none) through 4, mapping to the
     snd_resistspell variants. A resisted cast still pays its cost: resistance
     reduces the effect, it does not refund. *)
@@ -156,4 +191,7 @@ let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) (c : combatant)
   let skip_chance = if difficulty = 0 then 50 else if difficulty = 1 then 25 else 0 in
   let skipped = skip_chance > 0 && roll 100 < skip_chance in
   if skipped then None
-  else List.find_opt (is_castable ~spells_disallowed:false c) spells
+  (* [can_cast] rather than [is_castable]: a spell on cooldown is as
+     unavailable as one the caster cannot pay for, and the original's
+     first-affordable-wins then skips straight past it to the next spell. *)
+  else List.find_opt (can_cast ~spells_disallowed:false c) spells

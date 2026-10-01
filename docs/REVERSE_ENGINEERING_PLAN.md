@@ -104,9 +104,15 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 
 **One known modelling gap.** The original's extra turn roll reads a character's
 *skill* in an element, which is a separate field from its current mana balance.
-`Combat.combatant` does not model skills, so `Battle.skill_of` reads the mana pool
-instead and clamps to the 999 ceiling. It is isolated in one function precisely so
-there is a single place to change when skills are added.
+`Combat.skills` now models it properly, and the save file's four skill values feed
+it.
+
+**Mana Burn regenerates, it does not permute.** `FUN_0047ADB0` clears the whole
+9x8 grid before the refill (`docs/decompiled/mana_burn/Sub_47adb0.c`). An earlier
+version called `refill_board`, which only fills `Empty` cells; a regenerated board
+has none, so a burn on a full board changed nothing and the AI burned on every
+turn for the whole cap. `Board.reshuffle` clears and refills, retrying until
+`Board.has_valid_move` says the board is playable.
 
 ---
 

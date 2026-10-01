@@ -122,6 +122,10 @@ let () =
 (* ------------------------------------------------------------------ *)
 
 let () =
+  (* Compared as a rendered trace rather than a turn count: with two evenly
+     matched combatants on 60 life neither side reliably dies, so every seed
+     runs to the 200-turn cap and the counts are all identical. The trace is
+     what determinism actually has to hold for. *)
   let play seed =
     let b =
       create ~rng:(lcg seed)
@@ -129,7 +133,7 @@ let () =
         (fighter ~life:60 0 "hero")
         (fighter ~life:60 1 "foe")
     in
-    (run b).turns_elapsed
+    List.map format_event (log_of (run b))
   in
   check "the same seed replays identically" (play 1 = play 1);
   check "a different seed plays differently" (play 1 <> play 99);
@@ -231,7 +235,28 @@ let () =
     (List.exists (fun e -> e = Refilled) (log_of done_b));
   (* A burn always produces a playable board, otherwise the loop would spin. *)
   check "burning kept the battle progressing" (done_b.turns_elapsed > 0);
-  check "and did not exceed the cap" (done_b.turns_elapsed <= rules.max_turns)
+  check "and did not exceed the cap" (done_b.turns_elapsed <= rules.max_turns);
+  (* Regression: a burn used to call [refill_board], which only fills Empty cells.
+     A regenerated board has none, so the burn was a no-op and the AI burned on
+     every single turn for the whole cap. *)
+  check "and did not burn on every turn" (done_b.mana_burns < done_b.turns_elapsed);
+  check "the board is playable afterwards" (Board.has_valid_move done_b.board)
+
+let () =
+  (* The board a burn hands back must be playable, not merely different. *)
+  let rng = lcg 61 in
+  let unplayable = locked_board () in
+  check "the fixture really is unplayable" (not (Board.has_valid_move unplayable));
+  let after = Board.reshuffle ~rng unplayable in
+  check "a burn makes it playable" (Board.has_valid_move after);
+  check "with no empty cells left"
+    (let empty = ref 0 in
+     for y = 0 to after.height - 1 do
+       for x = 0 to after.width - 1 do
+         if get_gem after { x; y } = Empty then incr empty
+       done
+     done;
+     !empty = 0)
 
 (* ------------------------------------------------------------------ *)
 (* Spells in the loop                                                   *)
@@ -271,6 +296,240 @@ let () =
     (not (List.exists (function SpellCast (_, "SPRICEY") -> true | _ -> false) (log_of done_b)));
   check "holding is logged"
     (List.exists (fun e -> match e with SpellHeld _ -> true | _ -> false) (log_of done_b))
+
+(* ------------------------------------------------------------------ *)
+(* Cooldowns                                                            *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* A spell on cooldown must not be picked even though it is affordable, and it
+     must be picked again once the counter runs out. Difficulty 2 removes the
+     AI's random skip, so any gap in the casts is the cooldown and nothing else. *)
+  let s = make_spell ~cost_fire:1 ~cooldown:3 "SCD" "cooldown" in
+  let b =
+    create ~rng:(lcg 31)
+      ~rules:{ default_rules with difficulty = 2; max_turns = 40 }
+      ~enemy_spells:[ s ] (playable_board ())
+      (fighter 0 "hero")
+      (fighter ~mana:{ zero_mana with fire = 500 } 1 "foe")
+  in
+  let done_b = run b in
+  let casts = List.filter_map (function SpellCast (_, id) -> Some id | _ -> None) (log_of done_b) in
+  check "a cooldown spell is still cast" (casts <> []);
+  (* 40 turns at a 3-turn cooldown, counting the caster's own turns only, is at
+     most 14 casts. Without the cooldown it would be every one of the foe's 20. *)
+  check "and far fewer times than the fight has turns" (List.length casts <= 15);
+  check "but not zero" (List.length casts > 0);
+  check "the counter reaches zero again"
+    (cooldown_left done_b.enemy s = 0)
+
+let () =
+  (* A spell with no Data cooldown is never gated. *)
+  let s = make_spell ~cost_fire:1 ~cooldown:0 "SNC" "no cooldown" in
+  let b =
+    create ~rng:(lcg 37)
+      ~rules:{ default_rules with difficulty = 2; max_turns = 20 }
+      ~enemy_spells:[ s ] (playable_board ())
+      (fighter 0 "hero")
+      (fighter ~mana:{ zero_mana with fire = 500 } 1 "foe")
+  in
+  let done_b = run b in
+  let casts =
+    List.length
+      (List.filter (function SpellCast (_, "SNC") -> true | _ -> false) (log_of done_b))
+  in
+  check "a spell without a cooldown casts every turn" (casts >= 8);
+  check "and never enters the cooldown map" (cooldown_left done_b.enemy s = 0)
+
+let () =
+  (* Cooldowns are per combatant, not per spell record. The two sides share one
+     spell object here, so the hero casting must not gate the foe. *)
+  let s = make_spell ~cost_fire:1 ~cooldown:5 "SSH" "shared" in
+  let hero = fighter ~mana:{ zero_mana with fire = 500 } 0 "hero" in
+  let foe = fighter ~mana:{ zero_mana with fire = 500 } 1 "foe" in
+  start_cooldown hero s;
+  check "the caster is gated" (not (is_ready hero s));
+  check "the other side is not" (is_ready foe s);
+  check "and the other side can cast it" (can_cast foe s);
+  check "while the gated side cannot" (not (can_cast hero s))
+
+let () =
+  (* Ticking walks the counter down and drops it at zero, so the map does not
+     grow over a long battle. *)
+  let s = make_spell ~cooldown:2 "S2" "two" in
+  let c = make_combatant 0 "hero" in
+  start_cooldown c s;
+  check_eq "a 2-turn cooldown starts at 2" (cooldown_left c s) 2;
+  tick_cooldowns c;
+  check_eq "then 1" (cooldown_left c s) 1;
+  tick_cooldowns c;
+  check_eq "then gone" (cooldown_left c s) 0;
+  check "and removed from the map" (c.cooldowns = [])
+
+(* ------------------------------------------------------------------ *)
+(* Damage hooks                                                         *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* A receive-damage hook halves what the defender takes. Without this wired
+     into the loop the hook exists in Combat and is never called.
+
+     The duration is long enough to outlast the fight: a short one would tick
+     away mid-battle and the test would be measuring the expiry instead. *)
+  let def =
+    { def_id = "ARMOUR"; def_duration = 999; def_max_stack = 1; def_icon = 0;
+      def_hooks = set_receive_damage no_hooks (fun _ amt -> amt / 2) }
+  in
+  let foe_life_after with_armour =
+    let foe = Combat.make_combatant ~cunning:5 ~max_life:9000 ~life:9000 1 "foe" in
+    if with_armour then apply_effect def foe;
+    let b =
+      create ~rng:(lcg 41) ~effects:(if with_armour then [ def ] else [])
+        ~rules:{ default_rules with max_turns = 12 }
+        (playable_board ()) (fighter ~life:9000 0 "hero") foe
+    in
+    (run b).enemy.life
+  in
+  (* Compared as two otherwise identical fights rather than raw against taken
+     damage: the foe's own attacks land on an unarmoured hero, so summing every
+     Damage event mixes the two directions and the ratio means nothing. *)
+  let bare = foe_life_after false and armoured = foe_life_after true in
+  let bare_damage = 9000 - bare and armoured_damage = 9000 - armoured in
+  check "the bare fight costs the foe life" (bare_damage > 0);
+  check "and the armoured one costs it less" (armoured_damage < bare_damage);
+  (* Halving applies per hit and truncates each time, so the total comes out
+     under half rather than exactly half: 4+3 damage halves to 2+1. Asserting
+     "no more than half" is the precise claim. *)
+  check "by at least half" (armoured_damage * 2 <= bare_damage)
+
+let () =
+  (* A give-damage hook doubles what the attacker deals, and the two chains
+     compose: the amplifier runs on the way out, the armour on the way in. *)
+  let amp =
+    { def_id = "RAGE"; def_duration = 999; def_max_stack = 1; def_icon = 0;
+      def_hooks = set_give_damage no_hooks (fun _ amt -> amt * 2) }
+  in
+  let hero = Combat.make_combatant ~max_life:4000 ~life:4000 0 "hero" in
+  apply_effect amp hero;
+  let b =
+    create ~rng:(lcg 43) ~effects:[ amp ] ~rules:{ default_rules with max_turns = 3 }
+      (playable_board ()) hero
+      (Combat.make_combatant ~max_life:4000 ~life:4000 1 "foe")
+  in
+  let done_b = run b in
+  let raw =
+    List.fold_left
+      (fun acc -> function MatchResolved (_, r) -> acc + r.damage | _ -> acc) 0
+      (log_of done_b)
+  in
+  let taken =
+    List.fold_left
+      (fun acc -> function Damage (_, n) -> acc + n | _ -> acc) 0
+      (log_of done_b)
+  in
+  check "damage was dealt" (raw > 0);
+  check "the amplifier doubled it" (taken > raw);
+  check "and the foe survived" (done_b.enemy.life > 0)
+
+(* ------------------------------------------------------------------ *)
+(* Gold, XP, and Heroic Effort                                          *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* Gold and XP come from the board's matcher, so the loop has to carry them
+     through rather than zeroing the fields as it used to.
+
+     The board is built so the AI's best move drops a gold gem into a column
+     that already holds two, completing a 3-run of gold. Gold costs no life, so
+     the battle continues and the harvest is observable in isolation. *)
+  let b = locked_board () in
+  let b = set_gem { x = 2; y = 2 } Gold b in
+  let b = set_gem { x = 2; y = 3 } Gold b in
+  let b = set_gem { x = 2; y = 4 } Gold b in
+  let bt =
+    create ~rng:(lcg 47) ~rules:{ default_rules with max_turns = 1 } b
+      (fighter ~life:300 0 "hero") (fighter ~life:300 1 "foe")
+  in
+  let done_b = run bt in
+  let steps =
+    List.filter_map (function MatchResolved (_, r) -> Some r | _ -> None) (log_of done_b)
+  in
+  check "the gold run resolved" (steps <> []);
+  check "three gold were harvested" (List.exists (fun (r : match_result) -> r.gold = 3) steps);
+  check "and it cost no life" (List.for_all (fun (r : match_result) -> r.damage = 0) steps);
+  check "gold is banked on the battle" (done_b.gold >= 3);
+  check "and the gold event is logged"
+    (List.exists (fun e -> match e with GoldGained (_, n) -> n = 3 | _ -> false)
+       (log_of done_b))
+
+let () =
+  (* Heroic Effort: the original's [FUN_0047AE80] fires when a swap's cascade
+     counter reaches 5, awarding +100 XP and an extra turn.
+
+     The threshold is lowered to 2 rather than hand-building a five-deep chain,
+     which is impractical and would test the fixture instead of the rule. The
+     accounting is what matters here: the award is once per swap, not once per
+     step past the threshold. *)
+  let rules = { default_rules with heroic_effort_depth = 2; max_turns = 6 } in
+  let bt =
+    create ~rng:(lcg 53) ~rules (playable_board ()) (fighter ~life:9000 0 "hero")
+      (fighter ~life:9000 1 "foe")
+  in
+  let done_b = run bt in
+  let deepest =
+    List.fold_left
+      (fun acc -> function MatchResolved (n, _) -> max acc n | _ -> acc) 0
+      (log_of done_b)
+  in
+  check "the battle cascaded at least two deep" (deepest >= 2);
+  check "the heroic award fired" (done_b.xp >= 100);
+  check "and is logged"
+    (List.exists (fun e -> match e with HeroicEffort _ -> true | _ -> false) (log_of done_b));
+  (* Once per qualifying swap, so with at most 6 turns there can be no more than
+     6 awards, and each is worth exactly 100. *)
+  check "the award is 100 xp each"
+    (done_b.xp = 100 * List.length
+       (List.filter (fun e -> match e with HeroicEffort _ -> true | _ -> false)
+          (log_of done_b)));
+  check "never more than one per swap" (done_b.xp <= 600);
+  check "with the board still 8x8" (done_b.board.height = 8)
+
+let () =
+  (* A chain shorter than the threshold must not award anything. *)
+  let rules = { default_rules with heroic_effort_depth = 99; max_turns = 6 } in
+  let bt =
+    create ~rng:(lcg 59) ~rules (playable_board ()) (fighter ~life:9000 0 "hero")
+      (fighter ~life:9000 1 "foe")
+  in
+  let done_b = run bt in
+  check "no heroic award below the threshold" (done_b.xp = 0);
+  check "and nothing logged"
+    (not (List.exists (fun e -> match e with HeroicEffort _ -> true | _ -> false)
+            (log_of done_b)))
+
+(* ------------------------------------------------------------------ *)
+(* Skills                                                                *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* Skill, not mana balance, drives the yield. A character with a big pool and
+     no training must bank less than one with the same pool and high skill, and
+     the extra turn roll follows the skill. *)
+  let unskilled = Combat.make_combatant ~mana:{ zero_mana with fire = 500 } 0 "a" in
+  let trained =
+    Combat.make_combatant ~mana:{ zero_mana with fire = 500 }
+      ~skills:{ zero_skills with fire = 500 } 1 "b"
+  in
+  let b = create ~rng:(lcg 59) (locked_board ()) unskilled (fighter 1 "foe") in
+  let untrained_yield = mana_yield ~skill:(skill_of unskilled b Fire) ~run_length:3 in
+  let trained_yield = mana_yield ~skill:(skill_of trained b Fire) ~run_length:3 in
+  check "an untrained character banks the floor" (untrained_yield = 1.0);
+  (* (500 + 100) * 1.0 * 0.01 = 6.0 for a 3-run. *)
+  check "a trained one banks far more" (trained_yield = 6.0);
+  check "and the pool alone does not help"
+    (skill_of unskilled b Fire = 0);
+  check "skill is read from the skill field" (skill_of trained b Fire = 500);
+  check "the cap clamps it at 999" (skill_of trained { b with rules = { b.rules with hero_skill_cap = 20 } } Fire = 20)
 
 (* ------------------------------------------------------------------ *)
 (* Damage and death                                                     *)

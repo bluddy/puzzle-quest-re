@@ -31,7 +31,10 @@ type event =
   | Swap of int * int * direction
   | MatchResolved of int * match_result
   | BankedTurn of string
-  | SizeTurn of string  (** from a 4- or 5-of-a-kind *)
+  | SizeTurn of string
+  | HeroicEffort of string
+  | GoldGained of string * int
+  | XpGained of string * int
   | ManaBurn
   | Refilled
   | ManaGained of string * int * int  (** name, element id, amount *)
@@ -54,6 +57,11 @@ type rules = {
   extra_turns_enabled : bool;  (** board flag at +0x391 *)
   size_patterns : bool;  (** 4- and 5-of-a-kind grant a turn *)
   hero_skill_cap : int;  (** skill ceiling, drives the extra turn roll *)
+  (* Cascade depth at which Heroic Effort fires. The recovered value is 5, from
+     the counter test in [FUN_0047AE80]. Exposed as a rule because a five-deep
+     chain is impractical to hand-build for a test, and the accounting around it
+     is what needs proving. *)
+  heroic_effort_depth : int;
   ai_weights : Ai.weights;
 }
 
@@ -66,6 +74,7 @@ let default_rules =
     extra_turns_enabled = true;
     size_patterns = true;
     hero_skill_cap = 999;
+    heroic_effort_depth = 5;
     ai_weights = Ai.default_weights;
   }
 
@@ -77,6 +86,8 @@ type battle = {
   tm : turn_manager;
   mutable turns_elapsed : int;
   mutable mana_burns : int;
+  mutable gold : int;  (** won across the battle, as [Engine_ADD_GOLD] would *)
+  mutable xp : int;
   mutable winner : outcome option;
   mutable log : event list;  (** reversed *)
   rng : int -> int;
@@ -108,6 +119,10 @@ let refill (b : battle) : unit =
   b.board <- refill_board ~rng:b.rng (apply_gravity b.board);
   emit b Refilled
 
+(** The side dealing damage, which is whoever is not [defender]. *)
+let attacker_of (b : battle) (defender : combatant) : combatant =
+  if defender.id = b.enemy.id then b.hero else b.enemy
+
 (** Element a gem belongs to, for crediting mana after a match. Skull, gold and
     xp are not elements and credit nothing. *)
 let element_of_gem (g : gem) : element option =
@@ -123,104 +138,96 @@ let element_index (e : element) : int =
 
 (** The skill that drives mana yield for an element.
 
-    In the original this is a skill field on the character, separate from the
-    mana pool: a character can sit on a big pool it has not earned, and the
-    extra turn roll uses the skill rather than the balance. [Combat.combatant]
-    does not model skills yet, so this reads the current pool, which for a
-    character playing normally tracks the skill closely enough to order the
-    rolls. Clamped to [rules.hero_skill_cap] because the original clamps at 999
-    before the yield is computed. One place to change when skills are modelled
-    properly. *)
+    A character's skill is a separate field from its mana balance in the
+    original: the extra turn roll reads the skill, so a character sitting on a
+    large unearned pool rolls no better than its training justifies. Clamped to
+    [rules.hero_skill_cap] because the original clamps at 999 before computing
+    the yield. *)
 let skill_of (c : combatant) (b : battle) (e : element) : int =
-  min b.rules.hero_skill_cap (mana_of e c.mana)
+  min b.rules.hero_skill_cap (skill_in e c.skills)
 
-(** Counts the matches on the current board, grouping by run the way
-    [resolve_matches] does. Kept separate so the battle loop can both credit
-    mana per element and award size-based turns from the same pass. *)
-let find_runs (b : battle) : (position list * gem) list = find_matches b.board
+(** Credits mana and rolls for the extra turn, once per matched run.
 
-let run_length (coords : position list) = List.length coords
-
-(** Applies one cascade step's effects and returns the damage dealt. *)
-let apply_run (b : battle) (defender : combatant) (coords : position list)
-    (g : gem) (step : int) : int =
-  let attacker = if defender.id = b.enemy.id then b.hero else b.enemy in
-  let n = run_length coords in
-  (* Damage: a plain skull is 1, a red skull 5. Matches the accumulation in
-     [Board.resolve_matches]. *)
-  let damage = match g with Skull -> n | RedSkull -> 5 * n | _ -> 0 in
-  (* Mana credit is per element matched, one independent roll each. The
-     skill that drives the yield is the character's skill in that element,
-     modelled on the combatant; see [skill_of]. *)
-  (match element_of_gem g with
-  | None -> ()
-  | Some e ->
-      let skill = skill_of attacker b e in
-      let gained = mana_yield ~skill ~run_length:n in
-      attacker.mana <- add_mana e (int_of_float gained) attacker.mana;
-      emit b (ManaGained (attacker.name, element_index e, int_of_float gained));
-      if
-        extra_turn_roll ~gained ~pending:b.tm.extra_turn_pending
-          ~enabled:b.rules.extra_turns_enabled ~roll:b.rng
-      then begin
-        b.tm.extra_turn_pending <- false;
-        grant_extra_turn b.tm attacker.id;
-        emit b (BankedTurn attacker.name)
-      end);
-  (* A 4- or 5-of-a-kind grants a deterministic extra turn, independent of the
-     stat roll. *)
-  if b.rules.size_patterns && n >= 4 then begin
+    The roll is per run rather than per gem, which is the whole of the
+    playtesting observation: a 4-run in one element is one roll at the doubled
+    yield, not two rolls at the single rate. *)
+let credit_run (b : battle) (attacker : combatant) (e : element) (n : int) : unit =
+  let gained = mana_yield ~skill:(skill_of attacker b e) ~run_length:n in
+  (* The original accumulates in float and the pools are integers, so the credit
+     truncates. *)
+  let banked = int_of_float gained in
+  attacker.mana <- add_mana e banked attacker.mana;
+  emit b (ManaGained (attacker.name, element_index e, banked));
+  if
+    extra_turn_roll ~gained ~pending:b.tm.extra_turn_pending
+      ~enabled:b.rules.extra_turns_enabled ~roll:b.rng
+  then begin
+    b.tm.extra_turn_pending <- false;
     grant_extra_turn b.tm attacker.id;
-    emit b (SizeTurn attacker.name)
-  end;
-  (* Clear the matched cells and collect them for the result. *)
-  b.board <-
-    List.fold_left (fun acc p -> set_gem p Empty acc) b.board coords;
-  ignore g;
-  ignore step;
-  damage
+    emit b (BankedTurn attacker.name)
+  end
 
 (** Resolves every match, cascading until quiet. Returns the total damage.
 
-    Each step builds its own [match_result] from the runs it found rather than
-    going through [Board.resolve_matches], because the loop needs the run
-    groupings to award size-based turns and mana per element before the cells
-    are cleared. *)
+    Matching, Red Skull explosions, 5-run wildcards, gold and XP all come from
+    [Board.resolve_matches] rather than a second implementation here: an earlier
+    version of this loop hand-rolled the matcher to get at the run groupings, and
+    silently dropped explosions, wildcards, gold and XP along the way. The board
+    now reports its own [MatchResult.runs], so there is one matcher. *)
 let resolve_cascades (b : battle) (defender : combatant) : int =
+  let attacker = attacker_of b defender in
   let step = ref 0 in
   let total = ref 0 in
+  let gold = ref 0 and xp = ref 0 in
   let going = ref true in
   while !going do
-    let runs = find_runs b in
-    if runs = [] then going := false
-    else begin
-      incr step;
-      let damage =
-        List.fold_left (fun acc (coords, g) -> acc + apply_run b defender coords g !step) 0 runs
-      in
-      total := !total + damage;
-      let cleared =
-        List.concat_map (fun (coords, g) -> List.map (fun p -> (p, g)) coords) runs
-      in
-      let res =
-        {
-          gems_cleared = cleared;
-          air_mana = 0;
-          earth_mana = 0;
-          fire_mana = 0;
-          water_mana = 0;
-          gold = 0;
-          xp = 0;
-          damage;
-          extra_turn = List.exists (fun (coords, _) -> List.length coords >= 4) runs;
-          wildcards_created = [];
-          heroic_effort = false;
-        }
-      in
-      emit b (MatchResolved (!step, res));
-      refill b
-    end
+    match resolve_matches b.board with
+    | None -> going := false
+    | Some (cleared, res) ->
+        incr step;
+        (* Damage is the board's, since only it knows which gems the explosion
+           sweep pulled in. *)
+        total := !total + res.damage;
+        gold := !gold + res.gold;
+        xp := !xp + res.xp;
+        (* Mana and the extra turn roll are per run, from the board's grouping. *)
+        List.iter
+          (fun (coords, g) ->
+            let n = List.length coords in
+            (match element_of_gem g with
+            | Some e -> credit_run b attacker e n
+            | None -> ());
+            (* A 4- or 5-of-a-kind grants a deterministic extra turn, independent
+               of the stat roll. *)
+            if b.rules.size_patterns && n >= 4 then begin
+              grant_extra_turn b.tm attacker.id;
+              emit b (SizeTurn attacker.name)
+            end)
+          res.runs;
+        emit b (MatchResolved (!step, res));
+        if res.gold > 0 then emit b (GoldGained (attacker.name, res.gold));
+        if res.xp > 0 then emit b (XpGained (attacker.name, res.xp));
+        b.board <- cleared;
+        refill b
   done;
+  (* Heroic Effort: the original's [FUN_0047AE80] fires when a swap's cascade
+     counter reaches 5, awarding +100 XP and an extra turn. The counter is the
+     per-swap step number and starts at 1 for the first step, so the award is for
+     a chain of five or more. [Sub_47ae80.c] in docs/decompiled/mana_burn is the
+     decompilation; it also shows steps 0 and 1 only picking a cascade sound,
+     which is why the test is silent for the first two. *)
+  if !step >= b.rules.heroic_effort_depth then begin
+    (* Additive: [Sub_47ae80.c] calls [Engine_ADD_XP](100) as a separate call
+       from the per-match xp harvest, so a chain that also collected xp gems
+       banks both. *)
+    xp := !xp + 100;
+    grant_extra_turn b.tm attacker.id;
+    emit b (HeroicEffort attacker.name)
+  end;
+  (* Added to the battle's running totals rather than assigned: this is called
+     once per swap, and the original's ADD_GOLD and ADD_XP both accumulate. *)
+  b.gold <- b.gold + !gold;
+  b.xp <- b.xp + !xp;
   !total
 
 (** Plays a swap for whichever side is acting, then resolves the cascade. *)
@@ -246,7 +253,13 @@ let play_move (b : battle) (defender : combatant) : unit =
       emit b (Swap (sx, sy, c.cand_direction));
       let dealt = resolve_cascades b defender in
       if dealt > 0 then begin
-        let taken = receive_damage defender [] dealt in
+        (* Both hook chains run: the attacker's GIVE_DAMAGE first, then the
+           defender's RECEIVE_DAMAGE. Order matters, since a pair of effects
+           that amplify and reduce cancel out differently depending on which
+           sees the other's number first. The original's receive hook is the
+           outer one, since it is the defender's armour. *)
+        let outgoing = give_damage (attacker_of b defender) b.effects dealt in
+        let taken = receive_damage defender b.effects outgoing in
         defender.life <- max 0 (defender.life - taken);
         (* The defeat sweep keys off the flag, not the life total, so it has to
            be raised here or nobody is ever reported dead. *)
@@ -254,10 +267,12 @@ let play_move (b : battle) (defender : combatant) : unit =
         emit b (Damage (defender.name, taken))
       end
   | _ ->
-      (* No legal move. The original reshuffles and calls it Mana Burn. *)
+      (* No legal move. The original regenerates the board and calls it Mana Burn;
+         see [Board.reshuffle], which also explains why filling empty cells is
+         not enough. *)
       b.mana_burns <- b.mana_burns + 1;
       emit b ManaBurn;
-      b.board <- refill_board ~rng:b.rng b.board;
+      b.board <- reshuffle ~rng:b.rng b.board;
       emit b Refilled
 
 (** The acting side casts if it wants to, else plays a move. Both sides use the
@@ -269,6 +284,7 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
   | None -> emit b (SpellHeld actor.name)
   | Some s ->
       pay_cost actor s;
+      start_cooldown actor s;
       s.use_count <- s.use_count + 1;
       emit b (SpellCast (actor.name, s.id)));
   (* Casting does not by itself bank a turn. In the original, an EXTRA_TURN
@@ -299,6 +315,11 @@ let take_turn (b : battle) : unit =
     | 0, _ -> b.winner <- Some EnemyVictory
     | _, 0 -> b.winner <- Some HeroVictory
     | _ -> ());
+    (* Cooldowns count the caster's own turns, so this is the natural tick: by
+       the time the next turn starts the spell that was just cast has one fewer
+       turn left. Ticking after the cast rather than before means a cooldown of
+       3 blocks the next two casts, not three. *)
+    tick_cooldowns actor;
     b.turns_elapsed <- b.turns_elapsed + 1;
     emit b (TurnEnd b.turns_elapsed);
     ignore (advance_turn b.tm)
@@ -334,6 +355,8 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
     tm = initialise [ hero; enemy ];
     turns_elapsed = 0;
     mana_burns = 0;
+    gold = 0;
+    xp = 0;
     winner = None;
     log = [];
     rng;
@@ -363,6 +386,10 @@ let format_event = function
       Printf.sprintf "             step %d: %d damage" n r.damage
   | BankedTurn who -> Printf.sprintf "             %s banks a free turn" who
   | SizeTurn who -> Printf.sprintf "             %s earns an extra turn" who
+  | HeroicEffort who ->
+      Printf.sprintf "             %s: heroic effort (+100 xp, extra turn)" who
+  | GoldGained (who, n) -> Printf.sprintf "             %s picks up %d gold" who n
+  | XpGained (who, n) -> Printf.sprintf "             %s gains %d xp" who n
   | ManaBurn -> "             no moves: mana burn"
   | Refilled -> "             board refilled"
   | ManaGained (who, e, amount) ->
