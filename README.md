@@ -40,6 +40,12 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - Status effect expiry is a decrement-and-test, and the per-effect stack limit.
   - Ported to OCaml in [lib/combat.ml](lib/combat.ml) with tests in [test/test_combat.ml](test/test_combat.ml).
   - Recovered the 37-hook scripting table, which is the basis for dropping Lua.
+- [x] **Option F: Spells and Mana** ([docs/SPELLS.md](docs/SPELLS.md)):
+  - Parsed all 130 spell XML files: costs, cooldowns, learn requirements, input types.
+  - Recovered mana yield — `(skill + 100) * run_multiplier * 0.01`, skill capped at 999.
+  - **The stat-based extra turn**: chance is `gained / 100`, rolled per element per match, which is why extra turns become common late game. Found by playtesting observation and confirmed at `0x0047D4F0`.
+  - The AI's spell choice is a difficulty-gated skip plus an affordability filter, first affordable wins, with no ranking at all.
+  - Ported to OCaml in [lib/spell.ml](lib/spell.ml) with tests in [test/test_spell.ml](test/test_spell.ml).
 
 ---
 
@@ -49,18 +55,20 @@ spells, because that state lives in a VM the C++ side cannot see. See
   * `board.ml`: Pure functional 8x8 match-3 simulation engine, swap validation, cascades, and gravity.
   * `ai.ml`: Enemy move selection — probe windows, match scoring, difficulty and hero-level jitter.
   * `combat.ml`: Turn order, banked extra turns, status effect lifetimes, and the 37-hook record.
+  * `spell.ml`: Spell costs, mana yield, the stat-based extra turn roll, and the AI's spell pick.
   * `score.ml`: End-of-battle score, both solo and co-op paths.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).
   * `save_file.ml`: `.pqhero` binary deserializer, PNG thumbnail slicer, and hero state parser.
 * `bin/`: CLI utilities:
   * `pq_save_tool.ml`: Save file inspector, PNG extractor, and interactive board simulator.
-* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
   * [`BATTLE_AI.md`](docs/BATTLE_AI.md): Enemy AI move selection, scoring weights, and probe windows.
   * [`BATTLE_SCORE.md`](docs/BATTLE_SCORE.md): End-of-battle score formula, solo and co-op.
   * [`COMBAT_FLOW.md`](docs/COMBAT_FLOW.md): Turn order, extra turns, status effects, and the hook table.
+  * [`SPELLS.md`](docs/SPELLS.md): Spell costs, mana yield, and the stat-based extra turn.
   * [`SAVE_FILE_FORMAT.md`](docs/SAVE_FILE_FORMAT.md): Detailed `.pqhero` format and crypto specification.
   * [`LUA_API.md`](docs/LUA_API.md): Catalog of 191 native C functions registered to Lua.
   * [`DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md): Engine memory layouts and structures.

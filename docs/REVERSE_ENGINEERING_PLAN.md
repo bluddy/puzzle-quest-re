@@ -70,7 +70,11 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 * [x] **Turn Sequence**: Turn order is a rotation of the roster seeded by the highest Cunning, so the scan only picks who leads. Banked extra turns replay the matcher. Ported in `lib/combat.ml`; see [`COMBAT_FLOW.md`](COMBAT_FLOW.md).
 * [x] **Status Effects**: Data read from `Assets/StatusEffects/*.xml`; expiry is a decrement-and-test with no separate removal path. Effect behaviour is a Lua table of named callbacks in the original.
 * [x] **The scripting surface**: 37 named hooks at `0x005239E8`. See below.
-* [ ] **Spell resolution**: `HANDLE_SPELL_COST`, `IS_SPELL_CASTABLE`, and the per-spell effect bodies. Blocked on the scripting decision below.
+* [x] **Spell resolution**: `HANDLE_SPELL_COST` and `IS_SPELL_CASTABLE` recovered. Castability is a per-pool comparison; the air check is gated on the "spells disallowed this turn" flag. See [`SPELLS.md`](SPELLS.md).
+* [x] **Mana yield**: `(skill + 100) * run_multiplier * 0.01`, skill capped at 999, multipliers 1/2/3 for 3/4/5-of-a-kind.
+* [x] **Stat-based extra turn**: chance is `gained / 100`, rolled per element per match at `0x0047D4F0`. Identified from a playtesting observation and confirmed in the binary.
+* [ ] **Spell effect bodies**: the 130 `.lua` effect scripts. Must be rewritten in OCaml; the XML gives ids, costs and cooldowns but not effects.
+* [ ] **The AI's spell ranking**: `BattleAI_PickSpell` takes the first affordable spell with no scoring. This is the intended replacement, not a port.
 * **Mini-game Variations**:
   * Spell Research (clear board using exact sequence).
   * Mount Training (clear specific targets within turn/time limit).
@@ -94,7 +98,8 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
   1. `BoardSimulator` and deterministic test suite. — **done**, `lib/board.ml`
   2. `CombatEngine` with turn order, extra turns, and status effects. — **done**, `lib/combat.ml`
   3. `WorldMapEngine` with city graphs and quest state.
-  4. Spell resolution and the spell effect table.
+  4. Spell effect table — the 130 scripts, rewritten in OCaml.
+  5. A ranked AI spell chooser, replacing the original's first-affordable-wins.
 
 ---
 
