@@ -1,0 +1,766 @@
+[
+  {
+    "name": "ACTIVATE_COMPANION",
+    "va": "0x48bc20"
+  },
+  {
+    "name": "ADD_ANIMEFFECT_TO_GRID",
+    "va": "0x48bfe0"
+  },
+  {
+    "name": "ADD_ANIMEFFECT_TO_CHARACTER",
+    "va": "0x48c140"
+  },
+  {
+    "name": "ADD_EFFECT_TO_CHARACTER",
+    "va": "0x48bd30"
+  },
+  {
+    "name": "ADD_EFFECT_TO_GRID",
+    "va": "0x48be40"
+  },
+  {
+    "name": "ADD_GOLD",
+    "va": "0x4975f0"
+  },
+  {
+    "name": "ADD_LIFE",
+    "va": "0x4965a0"
+  },
+  {
+    "name": "ADD_LIGHTNING",
+    "va": "0x48c270"
+  },
+  {
+    "name": "ADD_MANA_AIR",
+    "va": "0x496690"
+  },
+  {
+    "name": "ADD_MANA_EARTH",
+    "va": "0x496780"
+  },
+  {
+    "name": "ADD_MANA_FIRE",
+    "va": "0x496870"
+  },
+  {
+    "name": "ADD_MANA_WATER",
+    "va": "0x496960"
+  },
+  {
+    "name": "ADD_MAX_LIFE",
+    "va": "0x496a50"
+  },
+  {
+    "name": "ADD_TEMP_RESISTANCE",
+    "va": "0x48c3b0"
+  },
+  {
+    "name": "ADD_TEMP_SKILL",
+    "va": "0x48c470"
+  },
+  {
+    "name": "ADD_STATUS_EFFECT",
+    "va": "0x48c620"
+  },
+  {
+    "name": "ADD_STATUS_EFFECT_AND_DURATION",
+    "va": "0x48c780"
+  },
+  {
+    "name": "ADD_TEXT_MESSAGE",
+    "va": "0x48c910"
+  },
+  {
+    "name": "ADD_TEXT_MESSAGE2",
+    "va": "0x48ca80"
+  },
+  {
+    "name": "ADD_TEXT_MESSAGE_TO_CHARACTER",
+    "va": "0x48cbf0"
+  },
+  {
+    "name": "ADD_TEXT_MESSAGE_TO_CHARACTER2",
+    "va": "0x48cd70"
+  },
+  {
+    "name": "ADD_XP",
+    "va": "0x48cf00"
+  },
+  {
+    "name": "CHECK_TYPE",
+    "va": "0x48cf90"
+  },
+  {
+    "name": "CLEAR_STATUS_EFFECTS",
+    "va": "0x48d0c0"
+  },
+  {
+    "name": "DELETE_GEM",
+    "va": "0x48d110"
+  },
+  {
+    "name": "DESTROY_GEM",
+    "va": "0x48d1a0"
+  },
+  {
+    "name": "DISALLOW_SPELLS_THIS_TURN",
+    "va": "0x48d230"
+  },
+  {
+    "name": "EVALUATE_BOARD",
+    "va": "0x48d240"
+  },
+  {
+    "name": "EXTRA_TURN",
+    "va": "0x48d270"
+  },
+  {
+    "name": "GET_CHARACTER_ID",
+    "va": "0x48d300"
+  },
+  {
+    "name": "GET_CHARACTER_X",
+    "va": "0x48d490"
+  },
+  {
+    "name": "GET_CHARACTER_Y",
+    "va": "0x48d500"
+  },
+  {
+    "name": "GET_CURRENT_PLAYER",
+    "va": "0x48d570"
+  },
+  {
+    "name": "GET_CURRENT_RUNE_CODE",
+    "va": "0x495d70"
+  },
+  {
+    "name": "GET_CURRENT_RUNE_BASEDATA",
+    "va": "0x495ca0"
+  },
+  {
+    "name": "GET_CURRENT_RUNE_POWERDATA",
+    "va": "0x495ec0"
+  },
+  {
+    "name": "GET_ENEMY",
+    "va": "0x48d5a0"
+  },
+  {
+    "name": "GET_GAME_ID",
+    "va": "0x48d650"
+  },
+  {
+    "name": "GET_GEM",
+    "va": "0x48d680"
+  },
+  {
+    "name": "GET_GOLD",
+    "va": "0x48d8f0"
+  },
+  {
+    "name": "GET_GRID_X",
+    "va": "0x48d720"
+  },
+  {
+    "name": "GET_GRID_Y",
+    "va": "0x48d7e0"
+  },
+  {
+    "name": "GET_INPUT_DATA",
+    "va": "0x48d8a0"
+  },
+  {
+    "name": "GET_ITEM",
+    "va": "0x495f90"
+  },
+  {
+    "name": "GET_LEVEL",
+    "va": "0x48d9d0"
+  },
+  {
+    "name": "GET_LIFE",
+    "va": "0x48d960"
+  },
+  {
+    "name": "GET_MANA_AIR",
+    "va": "0x48da40"
+  },
+  {
+    "name": "GET_MANA_EARTH",
+    "va": "0x48dab0"
+  },
+  {
+    "name": "GET_MANA_FIRE",
+    "va": "0x48db20"
+  },
+  {
+    "name": "GET_MANA_WATER",
+    "va": "0x48db90"
+  },
+  {
+    "name": "GET_MAX_LIFE",
+    "va": "0x48dc00"
+  },
+  {
+    "name": "GET_MAX_MANA_AIR",
+    "va": "0x48dc70"
+  },
+  {
+    "name": "GET_MAX_MANA_EARTH",
+    "va": "0x48dce0"
+  },
+  {
+    "name": "GET_MAX_MANA_FIRE",
+    "va": "0x48dd50"
+  },
+  {
+    "name": "GET_MAX_MANA_WATER",
+    "va": "0x48ddc0"
+  },
+  {
+    "name": "GET_MOUNT",
+    "va": "0x494b80"
+  },
+  {
+    "name": "GET_NUM_ENEMIES",
+    "va": "0x48de30"
+  },
+  {
+    "name": "GET_NUM_SPELLS",
+    "va": "0x494a80"
+  },
+  {
+    "name": "GET_NUM_STATUS_EFFECTS",
+    "va": "0x494b00"
+  },
+  {
+    "name": "GET_RANDOM",
+    "va": "0x48dea0"
+  },
+  {
+    "name": "GET_RANDOM_SYNC",
+    "va": "0x48df40"
+  },
+  {
+    "name": "GET_RESISTANCE",
+    "va": "0x48dff0"
+  },
+  {
+    "name": "GET_SKILL",
+    "va": "0x48e0c0"
+  },
+  {
+    "name": "GET_STATUS_EFFECT_DURATION",
+    "va": "0x494d20"
+  },
+  {
+    "name": "GET_STATUS_EFFECT_INDEX",
+    "va": "0x48e170"
+  },
+  {
+    "name": "GET_STATUS_EFFECT_ON_PLAYER",
+    "va": "0x496110"
+  },
+  {
+    "name": "GET_TEXT",
+    "va": "0x48e2f0"
+  },
+  {
+    "name": "GET_TEXT_FORMAT_INT",
+    "va": "0x48e410"
+  },
+  {
+    "name": "GET_TURN",
+    "va": "0x48e5c0"
+  },
+  {
+    "name": "HANDLE_SPELL_COST",
+    "va": "0x48e5f0"
+  },
+  {
+    "name": "HAS_STATUS_EFFECT",
+    "va": "0x48e690"
+  },
+  {
+    "name": "IS_MONSTER",
+    "va": "0x48e890"
+  },
+  {
+    "name": "IS_GAME_OVER",
+    "va": "0x48e800"
+  },
+  {
+    "name": "IS_HERO",
+    "va": "0x48e820"
+  },
+  {
+    "name": "IS_SPELL_CASTABLE",
+    "va": "0x496280"
+  },
+  {
+    "name": "MISS_TURNS",
+    "va": "0x48e900"
+  },
+  {
+    "name": "NOTIFY_OF_ACTIVATED_ITEM",
+    "va": "0x48e990"
+  },
+  {
+    "name": "NOTIFY_OF_FREE_SPELL",
+    "va": "0x48e9a0"
+  },
+  {
+    "name": "PERCENTILE_CHANCE",
+    "va": "0x48e9b0"
+  },
+  {
+    "name": "PERCENTILE_CHANCE_SYNC",
+    "va": "0x48e9e0"
+  },
+  {
+    "name": "PLAY_SOUND",
+    "va": "0x48ea20"
+  },
+  {
+    "name": "SET_45_PATTERN_ENABLED",
+    "va": "0x48ead0"
+  },
+  {
+    "name": "SET_ILLEGAL_MOVE_DAMAGE_ENABLED",
+    "va": "0x48eb20"
+  },
+  {
+    "name": "SET_DAMAGE_MULTIPLIER_ENABLED",
+    "va": "0x48eb70"
+  },
+  {
+    "name": "SET_EXTRATURN_CHANCE_ENABLED",
+    "va": "0x48ebc0"
+  },
+  {
+    "name": "SET_GEM",
+    "va": "0x48ec10"
+  },
+  {
+    "name": "SET_INPUT_DATA",
+    "va": "0x48ecd0"
+  },
+  {
+    "name": "SET_ITEM",
+    "va": "0x4963e0"
+  },
+  {
+    "name": "SET_MANA_AIR",
+    "va": "0x496b60"
+  },
+  {
+    "name": "SET_MANA_EARTH",
+    "va": "0x496c50"
+  },
+  {
+    "name": "SET_MANA_FIRE",
+    "va": "0x496d40"
+  },
+  {
+    "name": "SET_MANA_WATER",
+    "va": "0x496e30"
+  },
+  {
+    "name": "SET_MAX_MANA_AIR",
+    "va": "0x48ed50"
+  },
+  {
+    "name": "SET_MAX_MANA_EARTH",
+    "va": "0x48ede0"
+  },
+  {
+    "name": "SET_MAX_MANA_FIRE",
+    "va": "0x48ee70"
+  },
+  {
+    "name": "SET_MAX_MANA_WATER",
+    "va": "0x48ef00"
+  },
+  {
+    "name": "SET_STATUS_EFFECT_DURATION",
+    "va": "0x48ef90"
+  },
+  {
+    "name": "SET_WILDCARD_CHANCE_ENABLED",
+    "va": "0x48f050"
+  },
+  {
+    "name": "SUBTRACT_GOLD",
+    "va": "0x496f20"
+  },
+  {
+    "name": "SUBTRACT_LIFE",
+    "va": "0x497010"
+  },
+  {
+    "name": "SUBTRACT_MANA_AIR",
+    "va": "0x497140"
+  },
+  {
+    "name": "SUBTRACT_MANA_EARTH",
+    "va": "0x497230"
+  },
+  {
+    "name": "SUBTRACT_MANA_FIRE",
+    "va": "0x497320"
+  },
+  {
+    "name": "SUBTRACT_MANA_WATER",
+    "va": "0x497410"
+  },
+  {
+    "name": "SUBTRACT_XP",
+    "va": "0x497500"
+  },
+  {
+    "name": "IS_DEMO",
+    "va": "0x48f0a0"
+  },
+  {
+    "name": "IS_GAMEPAD_MODE",
+    "va": "0x48f0d0"
+  },
+  {
+    "name": "SET_GAMEPAD_OBJECT",
+    "va": "0x48f100"
+  },
+  {
+    "name": "IS_MENU_OPEN",
+    "va": "0x4949a0"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_ADD",
+    "va": "0x490dd0"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_BATTLE",
+    "va": "0x490ef0"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_CONTINUE",
+    "va": "0x491140"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_GET_AT",
+    "va": "0x491160"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_REMOVE",
+    "va": "0x4913e0"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_REMOVE_AT",
+    "va": "0x491500"
+  },
+  {
+    "name": "QUEST_ENCOUNTER_TURNBACK",
+    "va": "0x4916e0"
+  },
+  {
+    "name": "QUEST_ABANDON",
+    "va": "0x490cb0"
+  },
+  {
+    "name": "QUEST_ADD_AWARD",
+    "va": "0x491700"
+  },
+  {
+    "name": "QUEST_ADD_COMPANION",
+    "va": "0x491820"
+  },
+  {
+    "name": "QUEST_ADD_ITEM",
+    "va": "0x491940"
+  },
+  {
+    "name": "QUEST_ADD_RUIN",
+    "va": "0x491a80"
+  },
+  {
+    "name": "QUEST_ADD_RUNE",
+    "va": "0x491ba0"
+  },
+  {
+    "name": "QUEST_ADD_SKILL",
+    "va": "0x491cd0"
+  },
+  {
+    "name": "QUEST_BATTLE",
+    "va": "0x491d90"
+  },
+  {
+    "name": "QUEST_BATTLE_CUSTOM",
+    "va": "0x491f00"
+  },
+  {
+    "name": "QUEST_BATTLE_NOCAPTURE",
+    "va": "0x4924d0"
+  },
+  {
+    "name": "QUEST_CONVERSATION",
+    "va": "0x492640"
+  },
+  {
+    "name": "QUEST_COUNT_DONE",
+    "va": "0x4951f0"
+  },
+  {
+    "name": "QUEST_COUNT_TRIES",
+    "va": "0x495370"
+  },
+  {
+    "name": "QUEST_COMPANION_MESSAGE",
+    "va": "0x494dc0"
+  },
+  {
+    "name": "QUEST_COMPANION_MESSAGE_CALLBACK",
+    "va": "0x494f40"
+  },
+  {
+    "name": "QUEST_COMPLETE",
+    "va": "0x4927f0"
+  },
+  {
+    "name": "QUEST_COMPLETE_PART",
+    "va": "0x492920"
+  },
+  {
+    "name": "QUEST_CUTSCENE",
+    "va": "0x492bb0"
+  },
+  {
+    "name": "QUEST_CUTSCENE_CALLBACK",
+    "va": "0x492c90"
+  },
+  {
+    "name": "QUEST_GET_CITY_STATUS",
+    "va": "0x4954f0"
+  },
+  {
+    "name": "QUEST_GET_CURRENT_LOCATION",
+    "va": "0x492e30"
+  },
+  {
+    "name": "QUEST_GET_DATE",
+    "va": "0x492f30"
+  },
+  {
+    "name": "QUEST_GET_GOLD",
+    "va": "0x492f70"
+  },
+  {
+    "name": "QUEST_GET_REALDATE",
+    "va": "0x492fb0"
+  },
+  {
+    "name": "QUEST_GET_REALTIME",
+    "va": "0x493010"
+  },
+  {
+    "name": "QUEST_GET_PROFESSION",
+    "va": "0x493070"
+  },
+  {
+    "name": "QUEST_HERO_HAS_AWARD",
+    "va": "0x4955f0"
+  },
+  {
+    "name": "QUEST_HERO_HAS_COMPANION",
+    "va": "0x495740"
+  },
+  {
+    "name": "QUEST_HERO_HAS_COMPANION_SELECTED",
+    "va": "0x495890"
+  },
+  {
+    "name": "QUEST_HERO_HAS_ITEM",
+    "va": "0x493160"
+  },
+  {
+    "name": "QUEST_HERO_HAS_RUNE",
+    "va": "0x4959f0"
+  },
+  {
+    "name": "QUEST_HERO_LEVEL",
+    "va": "0x4932b0"
+  },
+  {
+    "name": "QUEST_IS_ACTIVE",
+    "va": "0x4932f0"
+  },
+  {
+    "name": "QUEST_IS_VISIBLE",
+    "va": "0x493450"
+  },
+  {
+    "name": "QUEST_LOAD_INT",
+    "va": "0x493580"
+  },
+  {
+    "name": "QUEST_MESSAGE",
+    "va": "0x4935b0"
+  },
+  {
+    "name": "QUEST_MESSAGE_CALLBACK",
+    "va": "0x4937a0"
+  },
+  {
+    "name": "QUEST_MOVE",
+    "va": "0x493a50"
+  },
+  {
+    "name": "QUEST_REMOVE_AWARD",
+    "va": "0x493b60"
+  },
+  {
+    "name": "QUEST_REMOVE_COMPANION",
+    "va": "0x493c80"
+  },
+  {
+    "name": "QUEST_REMOVE_ITEM",
+    "va": "0x493da0"
+  },
+  {
+    "name": "QUEST_REWARD_GOLD",
+    "va": "0x493ed0"
+  },
+  {
+    "name": "QUEST_REWARD_ITEM",
+    "va": "0x493f20"
+  },
+  {
+    "name": "QUEST_REWARD_ITEM_WITH_TEXT",
+    "va": "0x494030"
+  },
+  {
+    "name": "QUEST_REWARD_MENU",
+    "va": "0x4941b0"
+  },
+  {
+    "name": "QUEST_REWARD_MENU_CALLBACK",
+    "va": "0x4942e0"
+  },
+  {
+    "name": "QUEST_REWARD_SPELL",
+    "va": "0x4944d0"
+  },
+  {
+    "name": "QUEST_REWARD_XP",
+    "va": "0x4945e0"
+  },
+  {
+    "name": "QUEST_ROLL_CREDITS",
+    "va": "0x494630"
+  },
+  {
+    "name": "QUEST_SAVE_INT",
+    "va": "0x494640"
+  },
+  {
+    "name": "QUEST_SET_CITY_STATUS",
+    "va": "0x495b40"
+  },
+  {
+    "name": "QUEST_SET_RUIN_DONE",
+    "va": "0x494690"
+  },
+  {
+    "name": "QUEST_SET_VISIBILITY",
+    "va": "0x4947a0"
+  },
+  {
+    "name": "QUEST_STOP_MOVEMENT",
+    "va": "0x494940"
+  },
+  {
+    "name": "QUEST_SPEND_GOLD",
+    "va": "0x4948e0"
+  },
+  {
+    "name": "QUEST_UPDATE_MAP",
+    "va": "0x494950"
+  },
+  {
+    "name": "TUTORIAL_GAME_RUN",
+    "va": "0x48f760"
+  },
+  {
+    "name": "TUTORIAL_GAME_PLAY",
+    "va": "0x48f880"
+  },
+  {
+    "name": "TUTORIAL_GAME_SET_GEMS",
+    "va": "0x48f930"
+  },
+  {
+    "name": "TUTORIAL_GAME_OPEN",
+    "va": "0x48f750"
+  },
+  {
+    "name": "TUTORIAL_GAME_ADD_HERO",
+    "va": "0x48fd90"
+  },
+  {
+    "name": "TUTORIAL_GAME_ADD_MONSTER",
+    "va": "0x4904d0"
+  },
+  {
+    "name": "TUTORIAL_GET_INV_MODE",
+    "va": "0x4905b0"
+  },
+  {
+    "name": "TUTORIAL_OPEN",
+    "va": "0x48f6a0"
+  },
+  {
+    "name": "TUTORIAL_CLOSE",
+    "va": "0x48f240"
+  },
+  {
+    "name": "TUTORIAL_PRESS_BUTTON",
+    "va": "0x48f250"
+  },
+  {
+    "name": "TUTORIAL_GET_HERO",
+    "va": "0x48f340"
+  },
+  {
+    "name": "TUTORIAL_GLOW_RECT",
+    "va": "0x48f3a0"
+  },
+  {
+    "name": "TUTORIAL_GLOW_WIDGET",
+    "va": "0x48f490"
+  },
+  {
+    "name": "TUTORIAL_OPEN_INVENTORY",
+    "va": "0x4905d0"
+  },
+  {
+    "name": "TUTORIAL_ACTIVE",
+    "va": "0x48f370"
+  },
+  {
+    "name": "TUTORIAL_OPPTUTE_GEM",
+    "va": "0x4905f0"
+  },
+  {
+    "name": "TUTORIAL_OPPTUTE_SPELL",
+    "va": "0x490800"
+  },
+  {
+    "name": "TUTORIAL_OPPTUTE_SWAP",
+    "va": "0x4909c0"
+  },
+  {
+    "name": "GET_PLATFORM",
+    "va": "0x494980"
+  }
+]

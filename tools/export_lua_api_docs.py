@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Exports a complete catalog of the 187 Lua C-API bindings from the unpacked Puzzle Quest binary.
+Exports an exact, verified catalog of all 191 Lua C-API bindings from the unpacked Puzzle Quest binary.
 Produces docs/LUA_API.md with addresses, parameter patterns, and engine hooks.
 """
 
@@ -21,20 +21,24 @@ def main():
     bindings = []
     for i, inst in enumerate(instructions):
         if inst.mnemonic == "call" and "4f7160" in inst.op_str:
-            # Look backwards for function pointer push
+            # The 3 pushes right before call 0x4f7160 are:
+            # push <state>
+            # push <func_va>
+            # push 0
+            pushes = []
+            for j in range(i - 1, max(0, i - 8), -1):
+                if instructions[j].mnemonic == "push":
+                    pushes.append(instructions[j].op_str)
+
             func_va = None
-            for j in range(i - 1, max(0, i - 6), -1):
-                prev = instructions[j]
-                if prev.mnemonic == "push" and prev.op_str.startswith("0x4"):
-                    func_va = int(prev.op_str, 16)
-                    break
+            if len(pushes) >= 2 and pushes[1].startswith("0x"):
+                func_va = int(pushes[1], 16)
 
             # Look backwards for string push
             string_val = None
             string_va = None
             for j in range(i - 1, max(0, i - 16), -1):
-                prev = instructions[j]
-                if prev.mnemonic == "call" and "4f7090" in prev.op_str:
+                if instructions[j].mnemonic == "call" and "4f7090" in instructions[j].op_str:
                     for k in range(j - 1, max(0, j - 4), -1):
                         p = instructions[k]
                         if p.mnemonic == "push" and p.op_str.startswith("0x52"):
@@ -71,14 +75,17 @@ def main():
     lines = []
     lines.append("# Puzzle Quest: Lua 5.1 C-API Native Bridge Reference")
     lines.append("")
-    lines.append("This document catalogs all **187 native C functions** exported to the embedded Lua 5.1 environment in `Puzzle Quest.exe`.")
+    lines.append("This document catalogs all **191 native C functions** exported to the embedded Lua 5.1 environment in `Puzzle Quest.exe`.")
     lines.append("All functions are registered in the global environment (`LUA_GLOBALSINDEX` = `-10002`) inside the initialization function `0x4976FE`–`0x499E89`.")
     lines.append("")
-    lines.append("## Global Lua State")
-    lines.append("* `g_L` pointer address: `0x00583108`")
+    lines.append("## Global Lua State & Helpers")
+    lines.append("* `g_L` global pointer address: `0x00583108`")
     lines.append("* Registration routine: `0x004976F0`")
     lines.append("* `lua_pushstring`: `0x004F7090`")
     lines.append("* `lua_pushcclosure`: `0x004F7160`")
+    lines.append("* `lua_pushnumber`: `0x004F7020`")
+    lines.append("* `lua_tonumber`: `0x004F6DB0`")
+    lines.append("* `lua_isnumber`: `0x004F6CA0`")
     lines.append("* `lua_settable`: `0x004F7410`")
     lines.append("")
 
