@@ -244,6 +244,53 @@ picks one by coin flip filtered by whether it can pay. A harder AI would rank
 them, and now that spells are in OCaml alongside the move scorer, that ranking
 is a small amount of work rather than a research project.
 
+### What the ranked chooser replaces it with
+
+`Spell.pick_ranked_spell` scores every castable spell and takes the best. It is
+selected through a **global**, `Spell.spell_policy`, defaulting to `Faithful`:
+
+```ocaml
+Spell.set_spell_policy Spell.Ranked;   (* once, at startup *)
+```
+
+It is a global rather than a field of `Battle.rules` on purpose: this is a
+policy switch for the enhanced build, set once and obeyed by every battle, and
+keeping it off the faithful port means the recovered behaviour stays a clean
+thing to test against. `Spell.pick_spell` is the entry point the battle loop
+calls; it dispatches and the loop knows nothing about the two policies.
+
+Five weighted terms, each scaled to roughly 0..1000 so the weights read as
+relative importance. **None of them is effect strength** — the 130 spell scripts
+are not ported, so there is no damage number to compare spells by. These are
+descriptor properties:
+
+| Term | Source | Proxy for |
+| :--- | :--- | :--- |
+| potency | `learn_score` | how advanced the spell is; the game gates its strongest effects behind high scores |
+| economy | `total_cost` | how often it can be cast across a battle |
+| rationing | `cooldown` | how rare each cast is, so each has to be worth more |
+| affinity | caster's `skills` in the elements the cost draws on | whether this caster can pay for it sustainably |
+| headroom | fraction of the pool spent | saving a big spell for a turn worth using it on |
+
+So it is a strict improvement on list order, but it is not a claim that the
+chooser knows which spell is strongest. That arrives when the effect bodies do,
+and at that point potency becomes a real measurement rather than the best
+available proxy.
+
+The difficulty skip is kept in both. It is a recovered behaviour, it is
+orthogonal to ranking, and dropping it would confound chooser comparisons with a
+change in cast frequency.
+
+Observed difference, same seed, 120-turn fight, foe at 400 skill in every element:
+
+```
+faithful:  42 casts, all SCRAP
+ranked:    17 casts: SCRAP 5  DULL 3  SOLID 7  GREAT 2
+```
+
+The ranked chooser casts *fewer* times, because the better spells cost more of
+the same pool. That is the intended trade, not a regression.
+
 Note the interaction: `FUN_004406F0` temporarily sets difficulty to 2 to get a
 deterministic board evaluation, and `BattleAI_PickSpell` reads the same field.
 So a board re-check mid-cascade can also change the enemy's spell behaviour

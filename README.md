@@ -55,6 +55,10 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - Matching, Red Skull explosions, 5-run wildcards, gold, and XP all come from `Board.resolve_matches`; the board reports its own run groupings so there is one matcher rather than two.
   - Skills are modelled per element and drive mana yield, rather than being read off the mana balance.
   - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, cooldowns, damage hooks, gold/XP/Heroic Effort, death, and the stalemate cap.
+- [x] **Ranked AI Spell Chooser** ([docs/SPELLS.md](docs/SPELLS.md)):
+  - The original's `BattleAI_PickSpell` takes the *first* affordable spell with no scoring, so an enemy with twenty spells casts the cheapest one forever.
+  - `Spell.pick_ranked_spell` scores every castable spell and takes the best, selected through the global `Spell.spell_policy` (default `Faithful`, so the recovered behaviour is what runs unless asked otherwise).
+  - Five weighted terms — potency (`learn_score`), economy, rationing (`cooldown`), affinity (caster's skills), headroom. Scored on descriptor properties, **not** effect strength, which needs the ported effect bodies.
 
 ---
 
@@ -121,3 +125,13 @@ dune exec bin/pq_battle.exe -- --seed 7 --hero-skill 200
 dune exec bin/pq_battle.exe -- --seed 7 --trace --board
 ```
 The same seed always produces the same fight, so a trace is reproducible.
+
+### Compare the Two Spell Choosers
+```powershell
+# Same seed, same fight, only the AI's spell policy differs
+dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400
+dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400 --spell-ai ranked
+```
+`faithful` (the default) takes the first affordable spell and so casts only
+`SCRAP`. `ranked` spreads across the roster. Give the foe skill, or it earns too
+little mana to afford anything but the cheapest and the two look identical.

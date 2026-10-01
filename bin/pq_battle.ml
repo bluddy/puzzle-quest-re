@@ -79,9 +79,27 @@ let usage () =
   Printf.eprintf "  --hero-life N     Hero life (default 60)\n";
   Printf.eprintf "  --foe-life N      Enemy life (default 60)\n";
   Printf.eprintf "  --hero-skill N    Hero skill in every element (default 0)\n";
+  Printf.eprintf "  --foe-skill N     Enemy skill in every element (default 0). Skill drives\n";
+  Printf.eprintf "                    mana yield, so a foe at 0 can only ever afford the\n";
+  Printf.eprintf "                    cheapest spell and the two choosers look identical.\n";
   Printf.eprintf "  --trace           Print every event (default: summary only)\n";
   Printf.eprintf "  --board           Print the final board\n";
+  Printf.eprintf "  --spell-ai P      Spell chooser: faithful (the original's) or ranked\n";
+  Printf.eprintf "                    (default: %s)\n" (Spell.string_of_spell_policy (Spell.get_spell_policy ()));
+  Printf.eprintf "  --spells N        Give the foe N spells of mixed quality, so the\n";
+  Printf.eprintf "                    choosers can be compared (default 0)\n";
   exit 1
+
+(** A stand-in roster with the descriptor properties the chooser actually reads:
+    cost, learn score, and cooldown. The effect bodies are not ported, so these
+    are not the real spells, but they are enough to show the two choosers
+    diverging: the faithful one always takes [SCRAP], the ranked one climbs the
+    learn scores as mana allows. *)
+let demo_spells =
+  [ Spell.make_spell ~cost_fire:1 ~learn_score:100 ~cooldown:0 "SCRAP" "scrap spell";
+    Spell.make_spell ~cost_fire:2 ~learn_score:350 ~cooldown:0 "DULL" "dull spell";
+    Spell.make_spell ~cost_fire:4 ~learn_score:600 ~cooldown:2 "SOLID" "solid spell";
+    Spell.make_spell ~cost_fire:8 ~learn_score:990 ~cooldown:4 "GREAT" "great spell" ]
 
 let () =
   let seed = ref 1 in
@@ -90,8 +108,10 @@ let () =
   let hero_life = ref 60 in
   let foe_life = ref 60 in
   let hero_skill = ref 0 in
+  let foe_skill = ref 0 in
   let trace = ref false in
   let show_final = ref false in
+  let spell_count = ref 0 in
   let args = Array.to_list Sys.argv in
   let rec parse = function
     | [] -> ()
@@ -113,11 +133,25 @@ let () =
     | "--hero-skill" :: n :: rest ->
         hero_skill := int_of_string n;
         parse rest
+    | "--foe-skill" :: n :: rest ->
+        foe_skill := int_of_string n;
+        parse rest
     | "--trace" :: rest ->
         trace := true;
         parse rest
     | "--board" :: rest ->
         show_final := true;
+        parse rest
+    | "--spell-ai" :: p :: rest ->
+        (match p with
+        | "faithful" -> Spell.set_spell_policy Spell.Faithful
+        | "ranked" -> Spell.set_spell_policy Spell.Ranked
+        | _ ->
+            Printf.eprintf "pq_battle: --spell-ai must be 'faithful' or 'ranked'\n\n";
+            usage ());
+        parse rest
+    | "--spells" :: n :: rest ->
+        spell_count := int_of_string n;
         parse rest
     | a :: _ ->
         Printf.eprintf "pq_battle: unexpected argument %s\n\n" a;
@@ -130,14 +164,31 @@ let () =
     make_combatant ~cunning:5 ~max_life:!hero_life ~life:!hero_life
       ~skills:(skill !hero_skill) 0 "hero"
   in
-  let foe = make_combatant ~cunning:3 ~max_life:!foe_life ~life:!foe_life 1 "foe" in
+  let foe =
+    make_combatant ~cunning:3 ~max_life:!foe_life ~life:!foe_life
+      ~skills:(skill !foe_skill) 1 "foe"
+  in
+  (* The demo roster is built in increasing quality, so the faithful chooser
+     locks onto the first entry and never uses the rest, while the ranked one
+     climbs as mana allows. That contrast is the point of the flag. *)
+  let foe_spells =
+    let n = min !spell_count (List.length demo_spells) in
+    let rec take acc = function
+      | _ when List.length acc >= n -> List.rev acc
+      | [] -> List.rev acc
+      | s :: rest -> take (s :: acc) rest
+    in
+    take [] demo_spells
+  in
   let rules =
     { default_rules with max_turns = !max_turns; difficulty = !difficulty }
   in
   let b =
-    create ~rng ~rules (seed_skulls (fresh_board rng) rng) hero foe
+    create ~rng ~rules ~enemy_spells:foe_spells
+      (seed_skulls (fresh_board rng) rng) hero foe
   in
-  Printf.printf "seed %d  difficulty %d  cap %d turns\n\n" !seed !difficulty !max_turns;
+  Printf.printf "seed %d  difficulty %d  cap %d turns  spell-ai %s\n\n" !seed !difficulty
+    !max_turns (Spell.string_of_spell_policy (Spell.get_spell_policy ()));
   show_combatant "hero" hero;
   show_combatant "foe" foe;
   print_newline ();
@@ -168,6 +219,21 @@ let () =
     (count (function BankedTurn _ -> true | _ -> false))
     (count (function SizeTurn _ -> true | _ -> false));
   Printf.printf "  gold %d  xp %d" done_b.gold done_b.xp;
+  if foe_spells <> [] then begin
+    let casts =
+      List.filter_map
+        (function SpellCast (who, id) -> Some (who, id) | _ -> None) events
+    in
+    let by_id id = List.length (List.filter (fun (_, i) -> i = id) casts) in
+    print_newline ();
+    Printf.printf "  spells cast   %d by the foe: " (by_id "SCRAP" + by_id "DULL" + by_id "SOLID" + by_id "GREAT");
+    List.iter
+      (fun s ->
+        let n = by_id s.Spell.id in
+        if n > 0 then Printf.printf "%s %d  " s.Spell.id n)
+      demo_spells;
+    print_newline ()
+  end;
   (match done_b.winner with
   | Some Draw -> print_endline "  (mutual destruction)"
   | _ -> ());

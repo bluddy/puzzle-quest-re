@@ -74,7 +74,7 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 * [x] **Mana yield**: `(skill + 100) * run_multiplier * 0.01`, skill capped at 999, multipliers 1/2/3 for 3/4/5-of-a-kind.
 * [x] **Stat-based extra turn**: chance is `gained / 100`, rolled per element per match at `0x0047D4F0`. Identified from a playtesting observation and confirmed in the binary.
 * [ ] **Spell effect bodies**: the 130 `.lua` effect scripts. Must be rewritten in OCaml; the XML gives ids, costs and cooldowns but not effects.
-* [ ] **The AI's spell ranking**: `BattleAI_PickSpell` takes the first affordable spell with no scoring. This is the intended replacement, not a port.
+* [x] **The AI's spell ranking**: `Spell.pick_ranked_spell`, behind the global `Spell.spell_policy` (default `Faithful`). Five weighted descriptor terms — potency, economy, rationing, affinity, headroom. Scored on `learn_score`, cost, cooldown, and the caster's skills, **not** on effect strength, which is unavailable until the effect bodies land. See `docs/SPELLS.md` §5.
 * **Mini-game Variations**:
   * Spell Research (clear board using exact sequence).
   * Mount Training (clear specific targets within turn/time limit).

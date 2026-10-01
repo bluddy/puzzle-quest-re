@@ -275,12 +275,16 @@ let play_move (b : battle) (defender : combatant) : unit =
       b.board <- reshuffle ~rng:b.rng b.board;
       emit b Refilled
 
-(** The acting side casts if it wants to, else plays a move. Both sides use the
-    same path; the original scripts the player through the UI and runs the same
-    rules underneath. *)
+(** One turn for the acting side: at most one spell, then always a board action.
+
+    Two things are worth separating, because they are easy to conflate. Casting
+    is {e in addition to} swapping, not instead of it: the difficulty-gated skip
+    decides whether a spell is cast at all, and the swap happens either way. The
+    original's state machine runs both, which is why mana economy and the
+    extra-turn roll interact the way they do. *)
 let take_action (b : battle) (actor : combatant) (defender : combatant)
     (spells : spell list) : unit =
-  (match pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng actor spells with
+  (match pick_spell ~difficulty:b.rules.difficulty ~roll:b.rng actor spells with
   | None -> emit b (SpellHeld actor.name)
   | Some s ->
       pay_cost actor s;
