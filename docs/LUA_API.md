@@ -1,13 +1,16 @@
 # Puzzle Quest: Lua 5.1 C-API Native Bridge Reference
 
-This document catalogs all **187 native C functions** exported to the embedded Lua 5.1 environment in `Puzzle Quest.exe`.
+This document catalogs all **191 native C functions** exported to the embedded Lua 5.1 environment in `Puzzle Quest.exe`.
 All functions are registered in the global environment (`LUA_GLOBALSINDEX` = `-10002`) inside the initialization function `0x4976FE`–`0x499E89`.
 
-## Global Lua State
-* `g_L` pointer address: `0x00583108`
+## Global Lua State & Helpers
+* `g_L` global pointer address: `0x00583108`
 * Registration routine: `0x004976F0`
 * `lua_pushstring`: `0x004F7090`
 * `lua_pushcclosure`: `0x004F7160`
+* `lua_pushnumber`: `0x004F7020`
+* `lua_tonumber`: `0x004F6DB0`
+* `lua_isnumber`: `0x004F6CA0`
 * `lua_settable`: `0x004F7410`
 
 ## Board & Match-3 (12 functions)
