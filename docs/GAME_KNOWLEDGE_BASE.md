@@ -77,6 +77,10 @@ The Hero management screen (`Assets/Screens/HeroDetailsMenu.xml`, `ManageHeroMen
 * **Illegal Move Penalty**:
   * An invalid swap (does not produce a match-3+) snaps back.
   * In combat with `SET_ILLEGAL_MOVE_DAMAGE_ENABLED` active: deals **5 points of damage** to the moving combatant and forfeits the turn!
+* **Mana Burn (No Available Moves)**:
+  * When no legal swaps exist on the board for the active combatant, **Mana Burn** occurs.
+  * **Both players lose all their stored elemental mana** (Air, Earth, Fire, and Water pools drop to 0).
+  * The board is automatically cleared and reshuffled until at least one valid move is available.
 * **Spell Casting**:
   * Spells require specific mana thresholds (e.g. 8 Earth, 4 Fire).
   * Up to 7 spells equipped.

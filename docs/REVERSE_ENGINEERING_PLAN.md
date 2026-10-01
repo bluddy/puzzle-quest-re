@@ -32,23 +32,21 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 
 ### Phase 1: Tooling, Infrastructure & Automation
 - [x] Git repository initialization and `.gitignore` setup.
-- [x] Python virtual environment (`venv`) with binary inspection tools (`pefile`).
-- [ ] Ghidra project setup (headless analysis & symbol export).
-- [ ] Automated Ghidra / Python analysis pipeline for extracting cross-references, decompiler output, and symbol maps.
-- [ ] Living documentation suite:
+- [x] Python virtual environment (`venv`) with binary inspection tools (`pefile`, `capstone`).
+- [x] SteamStub DRM unpacking (`game/Puzzle Quest.unpacked.exe`).
+- [x] Ghidra project setup (headless analysis & symbol export).
+- [x] Automated Ghidra / Python analysis pipeline for extracting cross-references, decompiler output, and symbol maps.
+- [x] Living documentation suite:
   - `docs/REVERSE_ENGINEERING_PLAN.md`: Strategic roadmap and progress tracker.
   - `docs/GAME_KNOWLEDGE_BASE.md`: High-level game mechanics, rules, and hypotheses.
-  - `docs/LUA_API.md`: Detailed catalog of all 163 Lua-exported C functions and their signatures.
-  - `docs/DATA_STRUCTURES.md`: C++ structs, memory layouts, offsets, and class hierarchies.
+  - `docs/LUA_API.md`: Detailed catalog of all 191 Lua-exported C functions and their signatures.
+  - `docs/DATA_STRUCTURES.md`: Engine structs, memory layouts, offsets, and class hierarchies.
+  - `docs/SAVE_FILE_FORMAT.md`: Complete `.pqhero` encryption and binary schema specification.
 
 ### Phase 2: The Lua Native Bridge (Gateway into Core Engine)
-Because the game coordinates combat, spells, and quest outcomes through Lua scripts in `Assets.zip`, the Lua C-API registration table is the cleanest, highest-yield entry point into the engine core:
-1. Locate `lua_State*` creation and the registration table in `.rdata` / `.text`.
-2. Extract all 163 exported function pointers and their internal native dispatchers.
-3. For each bridge function:
-   - Identify which global singleton or object instance (`g_pGame`, `pBattleManager`, `pHero`, `pBoard`) is dereferenced.
-   - Map parameter extraction (`lua_tointeger`, `lua_tostring`, `lua_push*`).
-   - Determine return values and side effects on the engine state.
+- [x] Located `lua_State*` creation and registration loop at `0x004976FE`–`0x00499E89`.
+- [x] Extracted all 191 exported function pointers and their internal native dispatchers into `tools/lua_bindings.json`.
+- [x] Batch-decompiled 345 C/Lua native functions into `docs/decompiled/`.
 
 ### Phase 3: Core Game Logic Reverse Engineering
 #### A. Board & Match-3 Simulation Engine

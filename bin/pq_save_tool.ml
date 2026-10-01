@@ -73,19 +73,18 @@ let run_board_sim () =
   Printf.printf "  PUZZLE QUEST MATCH-3 ENGINE SIMULATION\n";
   Printf.printf "========================================================\n\n";
   Random.self_init ();
-  let empty_grid = Array.make_matrix 8 8 Board.Empty in
-  let b = Board.create_board empty_grid in
-  Board.refill_board b;
+  let empty_board = Board.create_board [] in
+  let b = Board.refill_board empty_board in
   Printf.printf "Initial random board:\n";
   Board.print_board b;
-  let init_cascades = Board.cascade_step b in
+  let b_stable, init_cascades = Board.cascade_step b in
   if init_cascades <> [] then begin
     Printf.printf "\nSettled initial matches (%d cascade rounds). Stable board:\n"
       (List.length init_cascades);
-    Board.print_board b
+    Board.print_board b_stable
   end;
 
-  let moves = Board.find_all_legal_moves b in
+  let moves = Board.find_all_legal_moves b_stable in
   Printf.printf "\nFound %d legal moves on board:\n" (List.length moves);
   List.iteri
     (fun i (m : Board.swap) ->
@@ -96,28 +95,28 @@ let run_board_sim () =
   if List.length moves > 8 then
     Printf.printf "  ... and %d more\n" (List.length moves - 8);
 
-  match moves with
-  | [] -> Printf.printf "\nNo legal moves! (Triggers board reshuffle in game)\n"
-  | first_move :: _ ->
-      Printf.printf "\nExecuting Move: Swap (%d, %d) <-> (%d, %d)\n"
-        first_move.from_pos.x first_move.from_pos.y first_move.to_pos.x
-        first_move.to_pos.y;
-      let g1 = Board.get_gem b first_move.from_pos in
-      let g2 = Board.get_gem b first_move.to_pos in
-      Board.set_gem b first_move.from_pos g2;
-      Board.set_gem b first_move.to_pos g1;
-      let cascades = Board.cascade_step b in
-      Printf.printf "Move resolved in %d cascade step(s)!\n" (List.length cascades);
-      List.iteri
-        (fun idx (res : Board.match_result) ->
-          Printf.printf
-            "  Cascade #%d: Mana [Air:+%d, Earth:+%d, Fire:+%d, Water:+%d], Gold:+%d, XP:+%d, Damage:%d, ExtraTurn:%b, Wildcards:%d\n"
-            (idx + 1) res.air_mana res.earth_mana res.fire_mana res.water_mana
-            res.gold res.xp res.damage res.extra_turn
-            (List.length res.wildcards_created))
-        cascades;
-      Printf.printf "\nBoard state after turn:\n";
-      Board.print_board b
+  if Board.is_mana_burn b_stable then
+    Printf.printf "\nMANA BURN! No moves available! Both players lose all stored mana & board reshuffles.\n"
+  else
+    match moves with
+    | [] -> ()
+    | first_move :: _ ->
+        Printf.printf "\nExecuting Move: Swap (%d, %d) <-> (%d, %d)\n"
+          first_move.from_pos.x first_move.from_pos.y first_move.to_pos.x
+          first_move.to_pos.y;
+        let b_swapped = Board.swap_gems b_stable first_move.from_pos first_move.to_pos in
+        let b_after, cascades = Board.cascade_step b_swapped in
+        Printf.printf "Move resolved in %d cascade step(s)!\n" (List.length cascades);
+        List.iteri
+          (fun idx (res : Board.match_result) ->
+            Printf.printf
+              "  Cascade #%d: Mana [Air:+%d, Earth:+%d, Fire:+%d, Water:+%d], Gold:+%d, XP:+%d, Damage:%d, ExtraTurn:%b, Wildcards:%d\n"
+              (idx + 1) res.air_mana res.earth_mana res.fire_mana res.water_mana
+              res.gold res.xp res.damage res.extra_turn
+              (List.length res.wildcards_created))
+          cascades;
+        Printf.printf "\nBoard state after turn:\n";
+        Board.print_board b_after
 
 let usage () =
   Printf.eprintf "Usage: pq_save_tool <command> [options] [save_file.pqhero]\n";

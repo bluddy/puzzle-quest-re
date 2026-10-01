@@ -1,5 +1,5 @@
-(** Pure OCaml Match-3 Simulation Engine for Puzzle Quest: Challenge of the Warlords
-    Clean-room implementation matching decompiled CBoard / CBattleManager mechanics.
+(** Pure Functional Match-3 Simulation Engine for Puzzle Quest: Challenge of the Warlords
+    Implemented using immutable persistent maps (PosMap).
 *)
 
 type mana_element =
@@ -19,11 +19,14 @@ type gem =
 
 type position = { x : int; y : int }
 
-type direction =
-  | Up
-  | Down
-  | Left
-  | Right
+module Position = struct
+  type t = position
+  let compare p1 p2 =
+    let c = Int.compare p1.y p2.y in
+    if c <> 0 then c else Int.compare p1.x p2.x
+end
+
+module PosMap = Map.Make(Position)
 
 type swap = {
   from_pos : position;
@@ -46,33 +49,47 @@ type match_result = {
 type board = {
   width : int;
   height : int;
-  grid : gem array array;  (** grid.(y).(x) *)
+  grid : gem PosMap.t;
 }
 
-(** Board dimensions (Standard Puzzle Quest is 8x8) *)
 let default_width = 8
 let default_height = 8
 
-(** Initialize a board from a 2D array *)
-let create_board ?(width = default_width) ?(height = default_height) (grid : gem array array) : board =
-  { width; height; grid }
-
-(** Create a deep copy of a board *)
-let copy_board (b : board) : board =
-  let new_grid = Array.init b.height (fun y -> Array.copy b.grid.(y)) in
-  { b with grid = new_grid }
-
-(** Get gem at (x, y) *)
+(** Get gem at position; out-of-bounds or unset defaults to Empty *)
 let get_gem (b : board) (p : position) : gem =
   if p.x < 0 || p.x >= b.width || p.y < 0 || p.y >= b.height then Empty
-  else b.grid.(p.y).(p.x)
+  else
+    match PosMap.find_opt p b.grid with
+    | Some g -> g
+    | None -> Empty
 
-(** Set gem at (x, y) *)
-let set_gem (b : board) (p : position) (g : gem) : unit =
-  if p.x >= 0 && p.x < b.width && p.y >= 0 && p.y < b.height then
-    b.grid.(p.y).(p.x) <- g
+(** Set gem at position (pure functional: returns new board) *)
+let set_gem (p : position) (g : gem) (b : board) : board =
+  if p.x < 0 || p.x >= b.width || p.y < 0 || p.y >= b.height then b
+  else { b with grid = PosMap.add p g b.grid }
 
-(** Gem equality for matching purposes (Wildcards match any elemental mana) *)
+(** Create a board from a list of ((x, y), gem) bindings *)
+let create_board ?(width = default_width) ?(height = default_height) (bindings : (position * gem) list) : board =
+  let m = List.fold_left (fun acc (p, g) -> PosMap.add p g acc) PosMap.empty bindings in
+  { width; height; grid = m }
+
+(** Create a board from a 2D array representation *)
+let of_array_matrix ?(width = default_width) ?(height = default_height) (matrix : gem array array) : board =
+  let bindings = ref [] in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      bindings := ({ x; y }, matrix.(y).(x)) :: !bindings
+    done
+  done;
+  create_board ~width ~height !bindings
+
+(** Swap two gems purely functionally *)
+let swap_gems (b : board) (p1 : position) (p2 : position) : board =
+  let g1 = get_gem b p1 in
+  let g2 = get_gem b p2 in
+  b |> set_gem p1 g2 |> set_gem p2 g1
+
+(** Gem matching rules (Wildcards substitute for any elemental mana) *)
 let gems_match (g1 : gem) (g2 : gem) : bool =
   match (g1, g2) with
   | Empty, _ | _, Empty -> false
@@ -86,11 +103,10 @@ let gems_match (g1 : gem) (g2 : gem) : bool =
   | Wildcard _, Wildcard _ -> true
   | _ -> false
 
-(** Check if two gems can form a 3-gem combination *)
+(** Check if three gems form a valid 3-match *)
 let match_triple (g1 : gem) (g2 : gem) (g3 : gem) : bool =
   if g1 = Empty || g2 = Empty || g3 = Empty then false
   else
-    (* If any non-mana gems are involved, they must all be matching skulls/coins/stars *)
     match (g1, g2, g3) with
     | Skull, Skull, Skull
     | RedSkull, RedSkull, RedSkull
@@ -103,22 +119,23 @@ let match_triple (g1 : gem) (g2 : gem) (g3 : gem) : bool =
     | Gold, Gold, Gold -> true
     | Experience, Experience, Experience -> true
     | _ ->
-        (* Check if they can be unified to a single mana element *)
-        let element_of = function
-          | Mana m -> Some m
-          | Wildcard _ -> None
-          | _ -> None
+        let is_mana_or_wildcard = function
+          | Mana _ | Wildcard _ -> true
+          | _ -> false
         in
-        let elems = List.filter_map element_of [g1; g2; g3] in
-        match elems with
-        | [] -> (* All 3 are wildcards *) true
-        | e :: rest ->
-            List.for_all (( = ) e) rest
-            && (match g1 with Mana _ | Wildcard _ -> true | _ -> false)
-            && (match g2 with Mana _ | Wildcard _ -> true | _ -> false)
-            && (match g3 with Mana _ | Wildcard _ -> true | _ -> false)
+        if is_mana_or_wildcard g1 && is_mana_or_wildcard g2 && is_mana_or_wildcard g3 then
+          let element_of = function
+            | Mana m -> Some m
+            | _ -> None
+          in
+          let elems = List.filter_map element_of [g1; g2; g3] in
+          match elems with
+          | [] -> true  (* All 3 are wildcards *)
+          | e :: rest -> List.for_all (( = ) e) rest
+        else
+          false
 
-(** Find all matches on the board (horizontal and vertical runs >= 3) *)
+(** Find all matches (runs >= 3) on the board *)
 let find_matches (b : board) : (position list * gem) list =
   let matches = ref [] in
 
@@ -126,12 +143,12 @@ let find_matches (b : board) : (position list * gem) list =
   for y = 0 to b.height - 1 do
     let x = ref 0 in
     while !x < b.width - 2 do
-      let g1 = b.grid.(y).(!x) in
-      let g2 = b.grid.(y).(!x + 1) in
-      let g3 = b.grid.(y).(!x + 2) in
+      let g1 = get_gem b { x = !x; y } in
+      let g2 = get_gem b { x = !x + 1; y } in
+      let g3 = get_gem b { x = !x + 2; y } in
       if match_triple g1 g2 g3 then begin
         let run_len = ref 3 in
-        while !x + !run_len < b.width && match_triple g1 g2 b.grid.(y).(!x + !run_len) do
+        while !x + !run_len < b.width && match_triple g1 g2 (get_gem b { x = !x + !run_len; y }) do
           incr run_len
         done;
         let coords = List.init !run_len (fun i -> { x = !x + i; y }) in
@@ -146,12 +163,12 @@ let find_matches (b : board) : (position list * gem) list =
   for x = 0 to b.width - 1 do
     let y = ref 0 in
     while !y < b.height - 2 do
-      let g1 = b.grid.(!y).(x) in
-      let g2 = b.grid.(!y + 1).(x) in
-      let g3 = b.grid.(!y + 2).(x) in
+      let g1 = get_gem b { x; y = !y } in
+      let g2 = get_gem b { x; y = !y + 1 } in
+      let g3 = get_gem b { x; y = !y + 2 } in
       if match_triple g1 g2 g3 then begin
         let run_len = ref 3 in
-        while !y + !run_len < b.height && match_triple g1 g2 b.grid.(!y + !run_len).(x) do
+        while !y + !run_len < b.height && match_triple g1 g2 (get_gem b { x; y = !y + !run_len }) do
           incr run_len
         done;
         let coords = List.init !run_len (fun i -> { x; y = !y + i }) in
@@ -173,11 +190,8 @@ let is_valid_swap (b : board) (p1 : position) (p2 : position) : bool =
     let g2 = get_gem b p2 in
     if g1 = Empty || g2 = Empty then false
     else begin
-      (* Perform temporary swap on copy *)
-      let temp_board = copy_board b in
-      set_gem temp_board p1 g2;
-      set_gem temp_board p2 g1;
-      let matches = find_matches temp_board in
+      let swapped_board = swap_gems b p1 p2 in
+      let matches = find_matches swapped_board in
       List.exists
         (fun (coords, _) ->
           List.exists (fun p -> p = p1 || p = p2) coords)
@@ -209,8 +223,13 @@ let find_all_legal_moves (b : board) : swap list =
   done;
   List.rev !moves
 
-(** Resolve matched gems, compute rewards, damage, extra turns, and wildcard creation *)
-let resolve_matches (b : board) : match_result option =
+(** Check if Mana Burn condition is reached (0 legal moves available) *)
+let is_mana_burn (b : board) : bool =
+  find_all_legal_moves b = []
+
+(** Resolve matches: clears matched gems, calculates rewards, spawns wildcards.
+    Returns (new_board, match_result) or None if no matches. *)
+let resolve_matches (b : board) : (board * match_result) option =
   let raw_matches = find_matches b in
   if raw_matches = [] then None
   else
@@ -230,14 +249,12 @@ let resolve_matches (b : board) : match_result option =
         let count = List.length coords in
         if count >= 4 then extra_turn := true;
 
-        (* 5-match generates a Wildcard at the center of the match *)
         if count >= 5 then begin
           let mid_pos = List.nth coords (count / 2) in
           let multiplier = min 8 count in
           wildcards := (mid_pos, multiplier) :: !wildcards
         end;
 
-        (* Calculate match rewards *)
         List.iter
           (fun p ->
             let g = get_gem b p in
@@ -252,7 +269,6 @@ let resolve_matches (b : board) : match_result option =
             | Gold -> incr gold_res
             | Experience -> incr xp_res
             | Wildcard mult ->
-                (* Wildcard applies multiplier to mana *)
                 air := !air * mult;
                 earth := !earth * mult;
                 fire := !fire * mult;
@@ -261,52 +277,67 @@ let resolve_matches (b : board) : match_result option =
           coords)
       raw_matches;
 
-    (* Clear matched cells on board *)
-    let cleared_list =
+    (* Build new board with cleared gems set to Empty *)
+    let b_after_clear =
       Hashtbl.fold
-        (fun p g acc ->
-          set_gem b p Empty;
-          (p, g) :: acc)
-        to_clear []
+        (fun p _ acc_b -> set_gem p Empty acc_b)
+        to_clear b
     in
 
     (* Place newly created wildcards *)
-    List.iter
-      (fun (p, mult) -> set_gem b p (Wildcard mult))
-      !wildcards;
+    let b_after_wildcards =
+      List.fold_left
+        (fun acc_b (p, mult) -> set_gem p (Wildcard mult) acc_b)
+        b_after_clear !wildcards
+    in
+
+    let cleared_list =
+      Hashtbl.fold (fun p g acc -> (p, g) :: acc) to_clear []
+    in
 
     Some
-      {
-        gems_cleared = cleared_list;
-        air_mana = !air;
-        earth_mana = !earth;
-        fire_mana = !fire;
-        water_mana = !water;
-        gold = !gold_res;
-        xp = !xp_res;
-        damage = !dmg;
-        extra_turn = !extra_turn;
-        wildcards_created = !wildcards;
-      }
+      ( b_after_wildcards,
+        {
+          gems_cleared = cleared_list;
+          air_mana = !air;
+          earth_mana = !earth;
+          fire_mana = !fire;
+          water_mana = !water;
+          gold = !gold_res;
+          xp = !xp_res;
+          damage = !dmg;
+          extra_turn = !extra_turn;
+          wildcards_created = !wildcards;
+        } )
 
-(** Apply gravity: shift gems down into Empty cells *)
-let apply_gravity (b : board) : unit =
+(** Pure functional gravity: drops gems down into Empty spaces column by column *)
+let apply_gravity (b : board) : board =
+  let new_grid = ref b.grid in
   for x = 0 to b.width - 1 do
-    let write_y = ref (b.height - 1) in
+    (* Collect all non-empty gems in column from top to bottom into a stack;
+       head of the stack will be the bottom-most gem *)
+    let non_empty = ref [] in
+    for y = 0 to b.height - 1 do
+      let p = { x; y } in
+      let g = get_gem b p in
+      if g <> Empty then non_empty := g :: !non_empty
+    done;
+    (* Place non-empty gems starting at bottom *)
+    let curr_gems = ref !non_empty in
     for y = b.height - 1 downto 0 do
-      let g = b.grid.(y).(x) in
-      if g <> Empty then begin
-        if !write_y <> y then begin
-          b.grid.(!write_y).(x) <- g;
-          b.grid.(y).(x) <- Empty
-        end;
-        decr write_y
-      end
+      let p = { x; y } in
+      match !curr_gems with
+      | g :: rest ->
+          new_grid := PosMap.add p g !new_grid;
+          curr_gems := rest
+      | [] ->
+          new_grid := PosMap.add p Empty !new_grid
     done
-  done
+  done;
+  { b with grid = !new_grid }
 
-(** Fill empty top cells with newly spawned random gems *)
-let refill_board ?(rng = Random.int) (b : board) : unit =
+(** Pure functional refill: fills Empty cells with newly spawned random gems *)
+let refill_board ?(rng = Random.int) (b : board) : board =
   let random_gem () =
     match rng 7 with
     | 0 -> Mana Air
@@ -317,26 +348,27 @@ let refill_board ?(rng = Random.int) (b : board) : unit =
     | 5 -> Gold
     | _ -> Experience
   in
+  let grid = ref b.grid in
   for y = 0 to b.height - 1 do
     for x = 0 to b.width - 1 do
-      if b.grid.(y).(x) = Empty then
-        b.grid.(y).(x) <- random_gem ()
+      let p = { x; y } in
+      if get_gem b p = Empty then
+        grid := PosMap.add p (random_gem ()) !grid
     done
-  done
-
-(** Full cascade step: clears matches, drops gravity, and refills until stable *)
-let cascade_step (b : board) : match_result list =
-  let all_results = ref [] in
-  let finished = ref false in
-  while not !finished do
-    match resolve_matches b with
-    | None -> finished := true
-    | Some res ->
-        all_results := res :: !all_results;
-        apply_gravity b;
-        refill_board b
   done;
-  List.rev !all_results
+  { b with grid = !grid }
+
+(** Pure functional cascade: resolves matches, applies gravity, refills until quiescent *)
+let cascade_step (initial_b : board) : board * match_result list =
+  let rec loop b acc =
+    match resolve_matches b with
+    | None -> (b, List.rev acc)
+    | Some (b_cleared, res) ->
+        let b_dropped = apply_gravity b_cleared in
+        let b_refilled = refill_board b_dropped in
+        loop b_refilled (res :: acc)
+  in
+  loop initial_b []
 
 (** ASCII board visualization *)
 let string_of_gem = function
@@ -357,7 +389,7 @@ let print_board (b : board) : unit =
   for y = 0 to b.height - 1 do
     Printf.printf "%d |" y;
     for x = 0 to b.width - 1 do
-      Printf.printf "%s|" (string_of_gem b.grid.(y).(x))
+      Printf.printf "%s|" (string_of_gem (get_gem b { x; y }))
     done;
     Printf.printf "\n  +---+---+---+---+---+---+---+---+\n"
   done
