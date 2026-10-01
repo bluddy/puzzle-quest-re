@@ -109,11 +109,12 @@ let run_board_sim () =
         Printf.printf "Move resolved in %d cascade step(s)!\n" (List.length cascades);
         List.iteri
           (fun idx (res : Board.match_result) ->
+            let heroic_str = if res.heroic_effort then " *** HEROIC EFFORT! (+100 XP & Extra Turn) ***" else "" in
             Printf.printf
-              "  Cascade #%d: Mana [Air:+%d, Earth:+%d, Fire:+%d, Water:+%d], Gold:+%d, XP:+%d, Damage:%d, ExtraTurn:%b, Wildcards:%d\n"
+              "  Cascade #%d: Mana [Air:+%d, Earth:+%d, Fire:+%d, Water:+%d], Gold:+%d, XP:+%d, Damage:%d, ExtraTurn:%b, Wildcards:%d%s\n"
               (idx + 1) res.air_mana res.earth_mana res.fire_mana res.water_mana
               res.gold res.xp res.damage res.extra_turn
-              (List.length res.wildcards_created))
+              (List.length res.wildcards_created) heroic_str)
           cascades;
         Printf.printf "\nBoard state after turn:\n";
         Board.print_board b_after

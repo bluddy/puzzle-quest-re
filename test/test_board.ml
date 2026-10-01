@@ -148,6 +148,64 @@ let test_mana_burn () =
   assert_eq "Should trigger Mana Burn" true (is_mana_burn b);
   Printf.printf "  [PASS] test_mana_burn passed!\n"
 
+let test_red_skull_explosion () =
+  Printf.printf "Running test_red_skull_explosion...\n";
+  let b = create_board [] in
+  (* Place 3 Red Skulls at row 2, cols 2..4 *)
+  let b =
+    b
+    |> set_gem { x = 2; y = 2 } RedSkull
+    |> set_gem { x = 3; y = 2 } RedSkull
+    |> set_gem { x = 4; y = 2 } RedSkull
+    (* Surround with benefits: Gold, Exp, Fire, Air *)
+    |> set_gem { x = 2; y = 1 } Gold
+    |> set_gem { x = 3; y = 1 } Experience
+    |> set_gem { x = 4; y = 1 } (Mana Fire)
+    |> set_gem { x = 2; y = 3 } (Mana Air)
+  in
+  let res = resolve_matches b in
+  match res with
+  | None -> failwith "Expected match result"
+  | Some (b_after, r) ->
+      (* 3 Red Skulls deal 3 * 5 = 15 base damage *)
+      assert_eq "Red skull match deals 15 damage" 15 r.damage;
+      assert_eq "Gold collected from blast" 1 r.gold;
+      assert_eq "XP collected from blast" 1 r.xp;
+      assert_eq "Fire mana collected from blast" 1 r.fire_mana;
+      assert_eq "Air mana collected from blast" 1 r.air_mana;
+      (* Verify exploded tiles became Empty on board *)
+      assert_eq "(2, 1) exploded to Empty" Empty (get_gem b_after { x = 2; y = 1 });
+      assert_eq "(3, 1) exploded to Empty" Empty (get_gem b_after { x = 3; y = 1 });
+      assert_eq "(4, 1) exploded to Empty" Empty (get_gem b_after { x = 4; y = 1 });
+      assert_eq "(2, 3) exploded to Empty" Empty (get_gem b_after { x = 2; y = 3 });
+      Printf.printf "  [PASS] test_red_skull_explosion passed!\n"
+
+let test_heroic_effort () =
+  Printf.printf "Running test_heroic_effort...\n";
+  let b = non_matching_board () in
+  (* Start with one 3-match of Air at row 0, cols 0..2 *)
+  let b =
+    b
+    |> set_gem { x = 0; y = 0 } (Mana Air)
+    |> set_gem { x = 1; y = 0 } (Mana Air)
+    |> set_gem { x = 2; y = 0 } (Mana Air)
+  in
+  (* Use a deterministic refill function that spawns Air for 4 rounds (total 5 rounds of matches),
+     then spawns non-matching gems to terminate the cascade *)
+  let refills = ref 0 in
+  let custom_rng _ =
+    incr refills;
+    if !refills <= 12 then 0 (* 0 = Mana Air, completes next match of Air *)
+    else (!refills mod 4) (* 1, 2, 3 -> Earth, Fire, Water -> breaks chain! *)
+  in
+  let _, cascades = cascade_step ~rng:custom_rng b in
+  assert_eq "Should produce at least 5 cascade rounds" true (List.length cascades >= 5);
+  let last = List.nth cascades (List.length cascades - 1) in
+  assert_eq "Heroic effort flag set on last cascade" true last.heroic_effort;
+  assert_eq "Extra turn granted by heroic effort" true last.extra_turn;
+  assert_eq "Bonus 100 XP awarded" true (last.xp >= 100);
+  Printf.printf "  [PASS] test_heroic_effort passed!\n"
+
 let () =
   Printf.printf "=== PUZZLE QUEST MATCH-3 SIMULATION ENGINE TESTS ===\n\n";
   test_3_match ();
@@ -156,4 +214,6 @@ let () =
   test_valid_and_invalid_swap ();
   test_gravity ();
   test_mana_burn ();
+  test_red_skull_explosion ();
+  test_heroic_effort ();
   Printf.printf "\nALL TESTS PASSED SUCCESSFULLY!\n"

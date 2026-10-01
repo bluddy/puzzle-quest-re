@@ -67,13 +67,19 @@ The Hero management screen (`Assets/Screens/HeroDetailsMenu.xml`, `ManageHeroMen
 * **Coins (Gold)**: Awards Gold directly to player reserves (capped at 99,999).
 * **Purple Stars (Experience)**: Awards XP (capped at 99,999 in battle).
 * **Skulls**: Deals physical damage equal to base skull count + Battle attribute bonuses and active equipment/companion multipliers.
-* **+5 Skulls (Heavy/Explosive Skulls)**: Deals 5 base damage + regular skull damage; triggers surrounding area destruction.
+* **+5 Skulls (Heavy/Explosive Red Skulls)**:
+  * Deals 5 base damage + regular skull damage.
+  * **Explosion Radius 1**: Explodes all tiles in its $3 \times 3$ vicinity ($\Delta x, \Delta y \in \{-1, 0, 1\}$).
+  * **Full Harvest**: Destroys all blocks in the explosion radius, collecting their full benefits (damage from skulls, elemental mana, gold from coins, XP from stars).
 * **Wildcards / Multipliers (x2, x3, x4, etc.)**: Can substitute for any mana gem; multiplies resulting mana or damage.
 
 ### Turn & Move Resolution
 * **Turn Sequence**: Alternate turns between Player and Opponent.
 * **4-of-a-Kind**: Destroys the 4 gems, awards standard yields, and grants an **Extra Turn** (`EXTRA_TURN`).
 * **5-of-a-Kind**: Clears matched gems, creates a **Wildcard gem**, and grants an **Extra Turn**.
+* **Heroic Effort (Cascade Chain ≥ 5)**:
+  * Achieving a chain reaction of **5 or more consecutive cascade matches** from a single swap (falling gems creating successive matches) triggers a **Heroic Effort**!
+  * Awards: **+100 Experience Points (XP)** and grants an **Extra Turn**.
 * **Illegal Move Penalty**:
   * An invalid swap (does not produce a match-3+) snaps back.
   * In combat with `SET_ILLEGAL_MOVE_DAMAGE_ENABLED` active: deals **5 points of damage** to the moving combatant and forfeits the turn!

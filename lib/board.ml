@@ -44,6 +44,7 @@ type match_result = {
   damage : int;
   extra_turn : bool;
   wildcards_created : (position * int) list;
+  heroic_effort : bool;
 }
 
 type board = {
@@ -243,6 +244,7 @@ let resolve_matches (b : board) : (board * match_result) option =
     let extra_turn = ref false in
     let wildcards = ref [] in
     let to_clear = Hashtbl.create 64 in
+    let to_explode = Queue.create () in
 
     List.iter
       (fun (coords, _sample_gem) ->
@@ -258,24 +260,50 @@ let resolve_matches (b : board) : (board * match_result) option =
         List.iter
           (fun p ->
             let g = get_gem b p in
-            Hashtbl.replace to_clear p g;
-            match g with
-            | Mana Air -> incr air
-            | Mana Earth -> incr earth
-            | Mana Fire -> incr fire
-            | Mana Water -> incr water
-            | Skull -> dmg := !dmg + 1
-            | RedSkull -> dmg := !dmg + 5
-            | Gold -> incr gold_res
-            | Experience -> incr xp_res
-            | Wildcard mult ->
-                air := !air * mult;
-                earth := !earth * mult;
-                fire := !fire * mult;
-                water := !water * mult
-            | Empty -> ())
+            if not (Hashtbl.mem to_clear p) then begin
+              Hashtbl.replace to_clear p g;
+              if g = RedSkull then Queue.push p to_explode
+            end)
           coords)
       raw_matches;
+
+    (* Process Red Skull radius 1 explosions (3x3 area), harvesting all benefits *)
+    while not (Queue.is_empty to_explode) do
+      let center = Queue.pop to_explode in
+      for dy = -1 to 1 do
+        for dx = -1 to 1 do
+          let p = { x = center.x + dx; y = center.y + dy } in
+          if p.x >= 0 && p.x < b.width && p.y >= 0 && p.y < b.height then
+            if not (Hashtbl.mem to_clear p) then begin
+              let g = get_gem b p in
+              if g <> Empty then begin
+                Hashtbl.replace to_clear p g;
+                if g = RedSkull then Queue.push p to_explode
+              end
+            end
+        done
+      done
+    done;
+
+    (* Harvest all benefits (damage, mana, gold, xp) from cleared & exploded tiles *)
+    Hashtbl.iter
+      (fun _ g ->
+        match g with
+        | Mana Air -> incr air
+        | Mana Earth -> incr earth
+        | Mana Fire -> incr fire
+        | Mana Water -> incr water
+        | Skull -> dmg := !dmg + 1
+        | RedSkull -> dmg := !dmg + 5
+        | Gold -> incr gold_res
+        | Experience -> incr xp_res
+        | Wildcard mult ->
+            air := !air * mult;
+            earth := !earth * mult;
+            fire := !fire * mult;
+            water := !water * mult
+        | Empty -> ())
+      to_clear;
 
     (* Build new board with cleared gems set to Empty *)
     let b_after_clear =
@@ -308,6 +336,7 @@ let resolve_matches (b : board) : (board * match_result) option =
           damage = !dmg;
           extra_turn = !extra_turn;
           wildcards_created = !wildcards;
+          heroic_effort = false;
         } )
 
 (** Pure functional gravity: drops gems down into Empty spaces column by column *)
@@ -358,14 +387,36 @@ let refill_board ?(rng = Random.int) (b : board) : board =
   done;
   { b with grid = !grid }
 
-(** Pure functional cascade: resolves matches, applies gravity, refills until quiescent *)
-let cascade_step (initial_b : board) : board * match_result list =
+(** Pure functional cascade: resolves matches, applies gravity, refills until quiescent.
+    If chain reaction reaches >= 5 steps, awards a Heroic Effort (+100 XP & Extra Turn). *)
+let cascade_step ?(rng = Random.int) (initial_b : board) : board * match_result list =
   let rec loop b acc =
     match resolve_matches b with
-    | None -> (b, List.rev acc)
+    | None ->
+        let results = List.rev acc in
+        let chain_len = List.length results in
+        if chain_len >= 5 then
+          (* Heroic Effort triggered! Awards +100 XP and an extra turn *)
+          let updated_results =
+            match List.rev results with
+            | [] -> []
+            | last :: rest_rev ->
+                let heroic_last =
+                  {
+                    last with
+                    xp = last.xp + 100;
+                    extra_turn = true;
+                    heroic_effort = true;
+                  }
+                in
+                List.rev (heroic_last :: rest_rev)
+          in
+          (b, updated_results)
+        else
+          (b, results)
     | Some (b_cleared, res) ->
         let b_dropped = apply_gravity b_cleared in
-        let b_refilled = refill_board b_dropped in
+        let b_refilled = refill_board ~rng b_dropped in
         loop b_refilled (res :: acc)
   in
   loop initial_b []
