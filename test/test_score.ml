@@ -213,13 +213,24 @@ let () =
 let () =
   check_eq "payout: easy multiplies by 3/4" (compute_co_op_payout ~game_mode:0 ~difficulty:0 1000) 750;
   check_eq "payout: normal is unscaled" (compute_co_op_payout ~game_mode:0 ~difficulty:1 1000) 1000;
-  check_eq "payout: hard multiplies by 5/4" (compute_co_op_payout ~game_mode:0 ~difficulty:2 1000) 1250;
+  check_eq "payout: hard multiplicates by 5/4" (compute_co_op_payout ~game_mode:0 ~difficulty:2 1000) 1250;
   check_eq "payout: game mode 4 is unscaled" (compute_co_op_payout ~game_mode:4 ~difficulty:0 1000) 1000;
-  (* The inversion is real and worth pinning down in a test, since it is the
-     kind of thing a future reader will assume is a typo. *)
-  check "payout difficulty runs opposite to score difficulty"
+  (* Both functions rise with difficulty; neither is inverted. The discrepancy
+     is the baseline: this one leaves difficulty 1 alone while the score
+     function discounts it. Pinned so a future reader does not "fix" one to
+     match the other without noticing. *)
+  check "the payout is monotonic in difficulty"
     (compute_co_op_payout ~game_mode:0 ~difficulty:0 1000
-    < compute_co_op_payout ~game_mode:0 ~difficulty:2 1000);
+    < compute_co_op_payout ~game_mode:0 ~difficulty:1 1000
+    && compute_co_op_payout ~game_mode:0 ~difficulty:1 1000
+       < compute_co_op_payout ~game_mode:0 ~difficulty:2 1000);
+  let score_at d =
+    compute_score ~inputs:{ (coop ~turns:0 ()) with difficulty = d } ~hero_index:0 [ hero () ]
+  in
+  check "difficulty 1 is discounted for the score"
+    (score_at 1 < score_at 2);
+  check "difficulty 1 is untouched for the payout"
+    (compute_co_op_payout ~game_mode:0 ~difficulty:1 1000 = 1000);
   ()
 
 let () =

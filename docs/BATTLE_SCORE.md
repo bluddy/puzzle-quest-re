@@ -172,24 +172,76 @@ single shared setting: it makes the enemy both weaker and your score lower.
 
 ---
 
+## 2a. This score has nothing to do with move choice
+
+Worth stating plainly, because the two functions share a field and a word.
+
+The **battle score** in this document is the number on the post-battle results
+screen. It is computed once, after the fight is over, by the results handler.
+Nothing reads it back. It cannot influence a single move the enemy makes.
+
+The **match score** in [`BATTLE_AI.md`](BATTLE_AI.md) is a different number in a
+different function (`BattleAI_ScoreMatchResult`, 0x43F970). That one does pick
+moves. The only thing the two share is `m_difficulty`, read independently by
+each.
+
+So the allies, the level difference, and the ±150 step described above are all
+purely about the score a player banks. They are not an influence on the AI's
+play, however much they look like it.
+
+---
+
 ## 3. The sibling function
 
 `FUN_0043E400` is the co-op counterpart, called on the same path when the branch
 flag is set. It fills two out-parameters with `other->vfunc_0x38()` and
 `other->vfunc_0x34()`, applies a `turns * 5` percent bonus to each, and then
-applies the same difficulty division — but *inverted*:
+applies its own difficulty scaling:
 
 ```c
-if (difficulty == 0)      out = out * 3 / 4;   // harder
-else if (difficulty == 2) out = out * 5 / 4;   // easier
+if (difficulty == 0)      out = out * 3 / 4;
+else if (difficulty == 2) out = out * 5 / 4;
 // difficulty == 1: unscaled
 ```
 
-Note the asymmetry: `FUN_0043DA90` treats 0 as easy and 1 as normal, while
-`FUN_0043E400` treats 0 as hard and 2 as easy. Difficulty 1 is unscaled in both.
-That is worth confirming against the difficulty-selection UI before relying on
-either mapping, since it is the kind of thing that reads as a bug and may well
-be one in the original.
+### The oddity: the two functions disagree about which difficulty is neutral
+
+An earlier draft of this document called these mappings "inverted". That was
+wrong, and the error is worth correcting precisely because the arithmetic looks
+like it supports the claim at a glance.
+
+Both functions are **monotonically increasing in difficulty**:
+
+| Difficulty | `FUN_0043DA90` (score) | `FUN_0043E400` (payout) |
+| :--- | :--- | :--- |
+| 0 (easy) | ×1/3 | ×3/4 |
+| 1 | ×2/3 | ×1 |
+| 2 | ×1 | ×5/4 |
+| 3+ | ×1 | ×5/4 |
+
+No inversion. In both, a harder setting is worth more. The real discrepancy is
+the **anchor point**: `FUN_0043DA90` treats difficulty 2 and above as the
+unscaled baseline, while `FUN_0043E400` treats difficulty 1 as its baseline and
+pays a bonus at 2.
+
+So the same setting is discounted in one function and not the other:
+
+| Difficulty | Score | Payout |
+| :--- | :--- | :--- |
+| 1 | discounted to 2/3 | untouched |
+| 2 | untouched | boosted to 5/4 |
+
+Both curves are individually sensible — one ramps up to a ceiling at 2, the
+other straddles its midpoint at 1 — but they cannot both be calibrated against
+the same difficulty-selection UI. Either difficulty 1 is meant to be the
+"normal, no adjustment" setting, in which case the score function is
+double-discounting the common case, or difficulty 2 is, in which case the payout
+function pays a bonus on top of an already-reduced score.
+
+I have not resolved which is intended. It reads as the kind of inconsistency
+that could easily be a genuine bug in the original, but it is equally likely to
+be two different reward curves that were simply never reconciled. Worth
+checking against the difficulty menu before relying on either.
 
 ---
 

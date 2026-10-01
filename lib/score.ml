@@ -99,10 +99,14 @@ let compute_score ?(party_member_contributes = fun _ _ -> true) ~inputs ~hero_in
     out-parameters.
 
     The caller applies a [turns * 5] percent bonus first, so [raw] here is
-    the post-bonus value. Note the inversion relative to {!compute_score}:
-    here difficulty 0 makes the result *larger* and difficulty 2 makes it
-    smaller, with 1 unscaled. Flagged in docs/BATTLE_SCORE.md as a probable
-    oddity in the original. *)
+    the post-bonus value.
+
+    Both this and {!compute_score} scale monotonically upward with difficulty;
+    neither is inverted. They differ on the baseline: this one treats
+    difficulty 1 as unscaled and pays a bonus at 2, while {!compute_score}
+    treats 2 and above as unscaled and discounts 0 and 1. So difficulty 1 is
+    discounted for the score and untouched for the payout. Unexplained, and
+    documented as an open discrepancy in docs/BATTLE_SCORE.md. *)
 let compute_co_op_payout ~game_mode ~difficulty raw =
   if game_mode = 4 then raw
   else if difficulty = 0 then (raw * 3) / 4
