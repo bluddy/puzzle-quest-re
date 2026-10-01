@@ -37,6 +37,8 @@ public class DecompileSaveSystem extends GhidraScript {
         saveTargets.put("Hero_ReadHeader_468450", 0x00468450L);
         saveTargets.put("Save_EnumerateHeroes_46cd00", 0x0046cd00L);
         saveTargets.put("Network_PQHERO_Parse_4d8780", 0x004d8780L);
+        saveTargets.put("File_Load_4d7cd0", 0x004d7cd0L);
+        saveTargets.put("File_Save_4d76e0", 0x004d76e0L);
 
         for (Map.Entry<String, Long> entry : saveTargets.entrySet()) {
             Address a = currentAddress.getAddress(Long.toHexString(entry.getValue()));

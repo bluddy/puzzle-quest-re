@@ -16,7 +16,7 @@ ghidra_project/
 
 # Build outputs
 build/
-bin/
+_build/
 out/
 obj/
 *.exe
@@ -32,3 +32,4 @@ obj/
 .idea/
 *.user
 *.suo
+.aider*

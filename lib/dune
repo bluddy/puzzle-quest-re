@@ -1,0 +1,2 @@
+(library
+ (name puzzle_quest_lib))

@@ -1,0 +1,3 @@
+(executable
+ (name pq_save_tool)
+ (libraries puzzle_quest_lib))
