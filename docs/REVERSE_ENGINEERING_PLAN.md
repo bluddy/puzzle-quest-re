@@ -5,7 +5,7 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 1. Complete architectural and algorithmic documentation of the game engine (Infinite Interactive WET Engine).
 2. Documented Lua 5.1 native bridge (all ~163 C exported functions, signatures, calling conventions, engine pointers).
 3. Complete data structure layouts (Character, Board, Gem, Spell, Quest, Inventory, AI).
-4. A clean, modern C++ (C++20) recreation capable of running the original game data (`Assets.zip`) with 100% mechanic and logic parity.
+4. A clean, modern OCaml recreation capable of running the original game data (`Assets.zip`) with 100% mechanic and logic parity.
 
 ---
 
@@ -50,15 +50,18 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 
 ### Phase 3: Core Game Logic Reverse Engineering
 #### A. Board & Match-3 Simulation Engine
-* **Grid State**: $8 \times 8$ tile matrix, gem types (0–7: Red/Fire, Yellow/Air, Blue/Water, Green/Earth, Skull, +5 Skull, Gold, Mana Surge/Wildcard multipliers 2x–8x).
-* **Move Rules**: Gem swap validation (horizontal/vertical adjacent swap only valid if creating a match-3+).
-* **Match Resolution**:
-  * Matching clusters (horizontal, vertical, L-shapes, T-shapes).
-  * 4-of-a-kind (grants Extra Turn + mana/damage).
-  * 5-of-a-kind (creates Wildcard gem + Extra Turn).
-  * Cascades & Gravity: Tile drop calculations, filling top row with pseudo-random or fixed gems.
-  * Cascades mana/damage accumulation and multiplier chaining.
-* **AI Evaluation**: Reverse-engineer `EVALUATE_BOARD` to uncover the AI's heuristic scoring matrix for board moves based on enemy archetype, difficulty, and available mana.
+* [x] **Grid State**: $8 \times 8$ tile matrix, gem types 0–7 plus 0x0F and 0x10–0x11 (red skull and two unidentified specials), wildcards 8–14 (×2–×8).
+* [x] **Move Rules**: Adjacent horizontal/vertical swap, valid only if it creates a run of 3+.
+* [x] **Match Resolution**:
+  * Matching clusters along both axes.
+  * 4-of-a-kind (Extra Turn + mana/damage), 5-of-a-kind (Wildcard + Extra Turn).
+  * Cascades & Gravity: tile drop, top-row refill, per-cascade accumulation.
+  * Wildcard multiplier *chaining* (a 2x and a 3x in one run scale it by 6).
+* [x] **AI Evaluation**: `EVALUATE_BOARD` fully recovered. See [`BATTLE_AI.md`](BATTLE_AI.md).
+  * Weighted sum over ten resource buckets, plus `3 × run_length`, plus the anchor column, plus 30 per bonus tier.
+  * Default weights: mana 2 each, skull 10, red skull 20, gold/xp 1, specials 20.
+  * Two jitter terms: difficulty-driven (±50 always at easy, ±20 on 40% at normal, none at hard) and hero-level-driven, the latter widening as the hero nears its level cap.
+  * Move enumeration uses four hardcoded probe windows in `.rdata` that miss ~4.8% of scoring moves. Reproduced verbatim rather than corrected.
 
 #### B. RPG Mechanics, Stats & Combat Flow
 * **Combatants**: Hero vs Enemy (Health, Mana reserves, Max mana caps, Masteries, Morale, Battle, Cunning).
@@ -76,10 +79,10 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 * **Audio & Music**: SFX and ambient playback routing.
 * **Save Game Format**: Reverse engineering the profile / hero save format (saved in `%APPDATA%` or Windows registry / user documents).
 
-### Phase 5: Modern C++ Reimplementation
-* Stand up clean C++20 engine:
-  * Platform layer: SDL2 / SDL3 (cross-platform windowing, input, audio, timing).
-  * Embedded Lua 5.1/LuaJIT runtime.
+### Phase 5: Modern OCaml Reimplementation
+* Stand up clean OCaml engine (Dune, `puzzle_quest_lib`):
+  * Platform layer: SDL2 via `tsdl` (cross-platform windowing, input, audio, timing).
+  * Embedded Lua 5.1 runtime.
   * Direct loading of original game assets (`Assets.zip`).
 * Rebuild and verify:
   1. `BoardSimulator` and deterministic test suite.

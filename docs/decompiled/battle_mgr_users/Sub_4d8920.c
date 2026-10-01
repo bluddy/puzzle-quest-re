@@ -1,0 +1,73 @@
+// refs 0x0043f870 @ 004d8a1e
+
+void FUN_004d8920(void)
+
+{
+  undefined4 uVar1;
+  
+  Engine_ACTIVATE_COMPANION_483650();
+  FUN_004839d0();
+  FUN_00459730();
+  FUN_00459f80();
+  Engine_HANDLE_SPELL_COST_4622c0();
+  FUN_00462620();
+  Engine_GET_CURRENT_RUNE_BASEDATA_460a80();
+  FUN_004619f0();
+  Engine_GET_CURRENT_RUNE_CODE_44f8e0();
+  FUN_0044fe30();
+  FUN_0045cf30();
+  FUN_0045d230();
+  FUN_0045adc0();
+  thunk_FUN_0045bae0();
+  FUN_00442e40();
+  FUN_00443140();
+  FUN_004654f0();
+  FUN_00465af0();
+  FUN_00445950();
+  FUN_00445ba0();
+  Engine_QUEST_ADD_AWARD_441ed0();
+  FUN_004423e0();
+  FUN_0045ded0();
+  FUN_0045e590();
+  Engine_ACTIVATE_COMPANION_443cb0();
+  FUN_004444b0();
+  Engine_TUTORIAL_OPEN_4a8600();
+  FUN_004a88f0();
+  FUN_004561a0();
+  FUN_004566b0();
+  uVar1 = 0xffffffff;
+  Engine_QUEST_ABANDON_44e920(0xffffffff);
+  Save_HeroFile_44ea10(uVar1);
+  Engine_GET_GAME_ID_4481d0();
+  FUN_00447f90();
+  Engine_ADD_ANIMEFFECT_TO_GRID_47a820();
+  FUN_0047bd20();
+  FUN_0047a470();
+  FUN_0047a4f0();
+  Engine_ADD_GOLD_447c60();
+  FUN_00447cd0();
+  Engine_EXTRA_TURN_4646e0();
+  FUN_00401000();
+  CBattleManager_GetSingleton();
+  FUN_0043f8d0();
+  Engine_GET_STATUS_EFFECT_ON_PLAYER_464430();
+  FUN_004646b0();
+  FUN_0045c160();
+  FUN_0045c5d0();
+  FUN_00457b60();
+  thunk_FUN_004584c0();
+  FUN_00462ff0();
+  thunk_FUN_00463b50();
+  Engine_QUEST_ENCOUNTER_ADD_4556f0();
+  FUN_00453020();
+  Engine_QUEST_ENCOUNTER_CONTINUE_44c080();
+  FUN_0044c100();
+  Engine_ADD_ANIMEFFECT_TO_GRID_483380();
+  FUN_004835b0();
+  FUN_00457800();
+  FUN_00457b50();
+  FUN_0044be10();
+  FUN_0044be60();
+  return;
+}
+

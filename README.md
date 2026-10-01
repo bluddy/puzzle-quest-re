@@ -19,6 +19,10 @@ The reimplementation targets cross-platform desktop (via SDL2 / `tsdl`) and even
   - Implemented pure functional match-3 simulation in OCaml ([lib/board.ml](lib/board.ml)).
   - Features: 3/4/5-of-a-kind, extra turns, wildcards with multipliers, skull damage, gravity, multi-step cascade resolution, and Mana Burn (reshuffle when no legal moves remain).
   - Comprehensive unit test suite ([test/test_board.ml](test/test_board.ml)).
+- [x] **Option C: Enemy Battle AI** ([docs/BATTLE_AI.md](docs/BATTLE_AI.md)):
+  - Fully recovered `CBattleManager::EvaluateBoard` (0x00440C20) and `BattleAI_ScoreMatchResult` (0x0043F970), plus the gem-compatibility predicate, the run-measuring routine, and the default scoring weights.
+  - Ported to OCaml in [lib/ai.ml](lib/ai.ml) with tests in [test/test_ai.ml](test/test_ai.ml).
+  - Notable findings: the AI's ten resource weights, its two independent jitter terms (difficulty and hero level), and four hardcoded probe windows that miss ~4.8% of scoring moves — reproduced verbatim.
 
 ---
 
@@ -26,14 +30,16 @@ The reimplementation targets cross-platform desktop (via SDL2 / `tsdl`) and even
 
 * `lib/`: Core OCaml library modules (`puzzle_quest_lib`):
   * `board.ml`: Pure functional 8x8 match-3 simulation engine, swap validation, cascades, and gravity.
+  * `ai.ml`: Enemy move selection — probe windows, match scoring, difficulty and hero-level jitter.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).
   * `save_file.ml`: `.pqhero` binary deserializer, PNG thumbnail slicer, and hero state parser.
 * `bin/`: CLI utilities:
   * `pq_save_tool.ml`: Save file inspector, PNG extractor, and interactive board simulator.
-* `test/`: Automated test suites (`test_board.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
+  * [`BATTLE_AI.md`](docs/BATTLE_AI.md): Enemy AI move selection, scoring weights, and probe windows.
   * [`SAVE_FILE_FORMAT.md`](docs/SAVE_FILE_FORMAT.md): Detailed `.pqhero` format and crypto specification.
   * [`LUA_API.md`](docs/LUA_API.md): Catalog of 191 native C functions registered to Lua.
   * [`DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md): Engine memory layouts and structures.
