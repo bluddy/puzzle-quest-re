@@ -68,17 +68,70 @@ let dump_payload (save : Save_file.save_file) (outfile : string) =
   Printf.printf "Dumped %d bytes decrypted binary payload to %s\n"
     (Bytes.length save.hero.raw_payload) outfile
 
+let run_board_sim () =
+  Printf.printf "========================================================\n";
+  Printf.printf "  PUZZLE QUEST MATCH-3 ENGINE SIMULATION\n";
+  Printf.printf "========================================================\n\n";
+  Random.self_init ();
+  let empty_grid = Array.make_matrix 8 8 Board.Empty in
+  let b = Board.create_board empty_grid in
+  Board.refill_board b;
+  Printf.printf "Initial random board:\n";
+  Board.print_board b;
+  let init_cascades = Board.cascade_step b in
+  if init_cascades <> [] then begin
+    Printf.printf "\nSettled initial matches (%d cascade rounds). Stable board:\n"
+      (List.length init_cascades);
+    Board.print_board b
+  end;
+
+  let moves = Board.find_all_legal_moves b in
+  Printf.printf "\nFound %d legal moves on board:\n" (List.length moves);
+  List.iteri
+    (fun i (m : Board.swap) ->
+      if i < 8 then
+        Printf.printf "  [%d] Swap (%d, %d) <-> (%d, %d)\n" i m.from_pos.x
+          m.from_pos.y m.to_pos.x m.to_pos.y)
+    moves;
+  if List.length moves > 8 then
+    Printf.printf "  ... and %d more\n" (List.length moves - 8);
+
+  match moves with
+  | [] -> Printf.printf "\nNo legal moves! (Triggers board reshuffle in game)\n"
+  | first_move :: _ ->
+      Printf.printf "\nExecuting Move: Swap (%d, %d) <-> (%d, %d)\n"
+        first_move.from_pos.x first_move.from_pos.y first_move.to_pos.x
+        first_move.to_pos.y;
+      let g1 = Board.get_gem b first_move.from_pos in
+      let g2 = Board.get_gem b first_move.to_pos in
+      Board.set_gem b first_move.from_pos g2;
+      Board.set_gem b first_move.to_pos g1;
+      let cascades = Board.cascade_step b in
+      Printf.printf "Move resolved in %d cascade step(s)!\n" (List.length cascades);
+      List.iteri
+        (fun idx (res : Board.match_result) ->
+          Printf.printf
+            "  Cascade #%d: Mana [Air:+%d, Earth:+%d, Fire:+%d, Water:+%d], Gold:+%d, XP:+%d, Damage:%d, ExtraTurn:%b, Wildcards:%d\n"
+            (idx + 1) res.air_mana res.earth_mana res.fire_mana res.water_mana
+            res.gold res.xp res.damage res.extra_turn
+            (List.length res.wildcards_created))
+        cascades;
+      Printf.printf "\nBoard state after turn:\n";
+      Board.print_board b
+
 let usage () =
-  Printf.eprintf "Usage: pq_save_tool <command> [options] <save_file.pqhero>\n";
+  Printf.eprintf "Usage: pq_save_tool <command> [options] [save_file.pqhero]\n";
   Printf.eprintf "Commands:\n";
   Printf.eprintf "  info <file.pqhero>                    Show hero stats & details\n";
   Printf.eprintf "  extract-png <file.pqhero> -o <out.png> Export embedded 256x256 portrait\n";
   Printf.eprintf "  dump-payload <file.pqhero> -o <out.bin> Export decrypted binary payload\n";
+  Printf.eprintf "  board-sim                             Simulate a live match-3 battle board\n";
   exit 1
 
 let () =
   let args = Array.to_list Sys.argv in
   match args with
+  | _ :: "board-sim" :: _ -> run_board_sim ()
   | _ :: "info" :: filename :: _ ->
       let save = Save_file.load_save_file filename in
       print_hero_info save
