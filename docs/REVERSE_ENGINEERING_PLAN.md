@@ -5,7 +5,9 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 1. Complete architectural and algorithmic documentation of the game engine (Infinite Interactive WET Engine).
 2. Documented Lua 5.1 native bridge (all ~163 C exported functions, signatures, calling conventions, engine pointers).
 3. Complete data structure layouts (Character, Board, Gem, Spell, Quest, Inventory, AI).
-4. A clean, modern OCaml recreation capable of running the original game data (`Assets.zip`) with 100% mechanic and logic parity.
+4. A clean, modern OCaml recreation. Parity with the original's *mechanics* is
+   the target; parity with the original's *content pipeline* was deliberately
+   abandoned when the Lua layer was dropped — see the decision in Phase 5.
 
 ---
 
@@ -64,8 +66,11 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
   * Move enumeration uses four hardcoded probe windows in `.rdata` that miss ~4.8% of scoring moves. Reproduced verbatim rather than corrected.
 
 #### B. RPG Mechanics, Stats & Combat Flow
-* **Combatants**: Hero vs Enemy (Health, Mana reserves, Max mana caps, Masteries, Morale, Battle, Cunning).
-* **Turn Sequence**: Turn initiative, status effect tick (Poison, Disease, Burn, Web, Silence, Stun), Action phase (Spell cast or Gem swap), Post-move cascade resolution, Extra-turn determination, Turn handoff.
+* [x] **Combatants**: Hero vs Enemy. Health at `+0x64`/`+0x70`, level at `+0x68`, four mana pools at `+0x74`, cunning at skill slot 5. Modelled in `lib/combat.ml`.
+* [x] **Turn Sequence**: Turn order is a rotation of the roster seeded by the highest Cunning, so the scan only picks who leads. Banked extra turns replay the matcher. Ported in `lib/combat.ml`; see [`COMBAT_FLOW.md`](COMBAT_FLOW.md).
+* [x] **Status Effects**: Data read from `Assets/StatusEffects/*.xml`; expiry is a decrement-and-test with no separate removal path. Effect behaviour is a Lua table of named callbacks in the original.
+* [x] **The scripting surface**: 37 named hooks at `0x005239E8`. See below.
+* [ ] **Spell resolution**: `HANDLE_SPELL_COST`, `IS_SPELL_CASTABLE`, and the per-spell effect bodies. Blocked on the scripting decision below.
 * **Mini-game Variations**:
   * Spell Research (clear board using exact sequence).
   * Mount Training (clear specific targets within turn/time limit).
@@ -82,10 +87,50 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 ### Phase 5: Modern OCaml Reimplementation
 * Stand up clean OCaml engine (Dune, `puzzle_quest_lib`):
   * Platform layer: SDL2 via `tsdl` (cross-platform windowing, input, audio, timing).
-  * Embedded Lua 5.1 runtime.
-  * Direct loading of original game assets (`Assets.zip`).
+  * **No Lua runtime.** See the decision below.
+  * Original `Assets.zip` XML data parsed directly; the `.lua` content files are
+    replaced by OCaml implementations.
 * Rebuild and verify:
-  1. `BoardSimulator` and deterministic test suite.
-  2. `CombatEngine` with Lua integration.
+  1. `BoardSimulator` and deterministic test suite. — **done**, `lib/board.ml`
+  2. `CombatEngine` with turn order, extra turns, and status effects. — **done**, `lib/combat.ml`
   3. `WorldMapEngine` with city graphs and quest state.
+  4. Spell resolution and the spell effect table.
+
+---
+
+## Decision: no Lua layer
+
+**Decided.** The engine will not embed a Lua runtime, and content will be
+authored in OCaml rather than loaded from the original `.lua` files.
+
+The reason is not preference. The original's entire scripting surface is **37
+named callbacks** in a contiguous table at `0x005239E8`, each dispatched by name
+out of a Lua table. The VM does not evaluate expressions or hold game state; it
+is a late-bound function table with named entry points. In OCaml that is a
+record of optional function fields, and the 191 native bindings become ordinary
+functions the hooks call directly. There is no FFI boundary and no host-language
+crossing to pay for.
+
+It also removes the constraint that motivated this work. In the original, an AI
+cannot read its own inventory or spells because that state lives in a scripting
+VM the C++ side cannot see. With everything in one language, an informed AI is
+the default rather than a retrofit.
+
+**What is given up.** The original's *content* is authored in Lua: 260 spell
+scripts, 17 status effects, quest logic, dialogue. `Assets.zip` holds 4,401
+entries; the XMLs remain parseable and give us ids, costs, durations, stacks and
+icons, but the `.lua` halves are replaced by hand-written OCaml. The ~20 status
+effect behaviours and the spell effect table are a bounded amount of work, and
+most of it is work the AI project needs regardless.
+
+**What this retires.** The original goal of "100% mechanic and logic parity with
+the original game data" in §1. Parity with the original *mechanics* is retained
+and is what the tests assert. Parity with the original *content pipeline* is
+deliberately abandoned. `LUA_API.md` remains valuable regardless: it is a
+complete inventory of what the engine can do, and the best available
+specification for the functions we reimplement.
+
+**Reversible.** The hook record is a drop-in seam. If a Lua interpreter is ever
+wanted, `Combat.hooks` is exactly the surface it would need to bind, and
+`LUA_API.md` is the binding table.
   4. Complete UI / Game Loop.
