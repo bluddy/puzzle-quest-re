@@ -45,6 +45,60 @@ let hook_iboi ctx damage _source _target =
     missing. *)
 let hook_ibsh _ctx damage _source _target = damage
 
+(** [SET_ITEM(idx, n, id)`, the other half of SDUP's item duplication: copies the
+    item id out of the enemy into one of the caster's slots, displacing whatever
+    was there.
+
+    Lives here rather than in [Item] because it needs [Item_data] to turn an id
+    back into an item, and [Item_data] depends on [Item]. That dependency is the
+    reason [Item.get_item_slot] can read a slot but not write one. *)
+let set_item_slot (l : loadout) (n : int) (id : string) : Item.item option =
+  match Item_data.descriptor_of id with
+  | None -> None
+  | Some d -> Item.equip_at l n (make_item d)
+
+(** The item in a slot, as [GET_ITEM] reports it: the id, or [""] when empty. *)
+let get_item_slot (l : loadout) (n : int) : string = Option.value (Item.get_item_slot l n) ~default:""
+
+(** SDUP's item duplication, which is the only place in the whole asset set that
+    reads [GET_ITEM] or calls [SET_ITEM].
+
+    ```lua
+    local idxEnemy = GET_ENEMY(idxCaster,0);
+    if (GET_ITEM(idxEnemy,0) ~= GET_ITEM(idxCaster,0) and GET_ITEM(idxEnemy,0) ~= "") then
+      legalList[legalListSize] = 0; legalListSize = legalListSize + 1;
+    end
+    -- ...same for slots 1, 2 and 3...
+    if (legalListSize > 0) then
+      local myChoice = GET_RANDOM_SYNC(0,legalListSize-1);
+      local myItem = legalList[myChoice];
+      SET_ITEM(idxCaster,myItem,GET_ITEM(idxEnemy,myItem));
+    end
+    ```
+
+    So it builds the list of slots where the enemy has something the caster does
+    not, then picks one at random. Returns the slot it copied into, or [None] when
+    there was nothing worth copying.
+
+    Written here rather than alongside SDUP's hook so the [GET_ITEM] and [SET_ITEM]
+    halves are live and tested rather than dead code awaiting the spell's port. *)
+let duplicate_item ~(caster : loadout) ~(enemy : loadout) ~(roll : int -> int) =
+  let candidates =
+    List.filter_map
+      (fun n ->
+        let theirs = Item.get_item_slot enemy n in
+        let ours = Item.get_item_slot caster n in
+        (* The Lua tests `~= ""` and `~=` against the caster's own slot. *)
+        if theirs <> ours && theirs <> Some "" then Some (n, theirs) else None)
+      [ 0; 1; 2; 3 ]
+  in
+  match candidates with
+  | [] -> None
+  | _ ->
+      let n, id = List.nth candidates (roll (List.length candidates)) in
+      ignore (set_item_slot caster n (Option.value id ~default:""));
+      Some n
+
 (** The ported hooks by item id. *)
 let hook_of = function
   | "IAOM" -> Some hook_iaom

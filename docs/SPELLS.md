@@ -153,7 +153,61 @@ The constants are `100.0f` at `0x005217B4` and `0.01f` at `0x0051E4C8`. The
 `+ 100` floor means a character with zero skill still banks one mana per matched
 gem, and the `0.01` is just a scale factor so the multiply reads as a
 percentage. The multiplier is 1.0 for a 3-run, 2.0 for a 4-run and 3.0 for a
-5-run â€” the same tiers the AI's move scoring rewards.
+5-run - the same tiers the AI's move scoring rewards.
+
+### Mana has a ceiling
+
+A pool is not unbounded. `GET_MAX_MANA_*` (`0x0048DCE0` and siblings) reads
+`character + 0x84 + element * 4`, so the four maxima are four contiguous ints
+sitting immediately after the four current pools at `+0x74`. The setter at
+`0x004839F0` stores the new maximum and then clamps the pool down to it:
+
+```
+max = new_value
+if (current > max) current = max
+```
+
+Two consequences worth having straight:
+
+- **Lowering a ceiling can take mana away.** It is not a pure cap; it is a clamp
+  on the way through. An item that *lowers* max mana can therefore destroy mana
+  the character is currently holding.
+- **The ceiling is per element.** Setting Fire's maximum does not touch Earth's.
+
+The base value is **not recovered**. Nothing in the save file persists it -
+`docs/SAVE_FILE_FORMAT.md` records the masteries and the current reserves, but
+no maximum-mana field - so the ceiling is a derived runtime quantity and its
+starting value has not been located in the binary. `Combat.default_mana_limit`
+is set to 10 as a placeholder, and it is deliberately low compared to real
+characters because of the next paragraph.
+
+### The ceiling has to be well above 10 for the spell scripts to work
+
+This is the one place where an unverified default actively breaks mechanics, so
+it is worth stating plainly rather than leaving as a hidden trap. Grepping the
+spell scripts for `GET_MANA_* >= n` gives the thresholds the game actually tests:
+
+| threshold | occurrences |
+| --- | --- |
+| 8 | 1 |
+| 10 | 2 |
+| 12 | 4 |
+| 14 | 1 |
+| 15 | 9 |
+| 20 | 1 |
+
+(18 in total across the 130 spell scripts.) All nine spells whose turn rule is
+`KeepsTurnIfMana` need 8 or more. At a ceiling of 10, **every condition at 12 or
+above is unsatisfiable**, which would silently disable the turn rules for `SBAC`,
+`SBRA`, `SCHL`, `SSOA` and `SSWP`, and the cast conditions of the nine spells
+reading `>= 15`.
+
+Real characters raise their ceilings with skills and items - that is what the
+"+N to max Fire Mana" bonuses on the item table are *for* - so a character that
+casts `SSWP` at all is necessarily above 15 in Air. The lesson for the port is
+that `default_mana_limit` cannot be a constant that real battles rely on. Treat
+a battle run at 10 as a test of the cap itself, and set a realistic ceiling
+whenever a mana-gated condition is part of what is being exercised.
 
 ---
 

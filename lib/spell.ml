@@ -50,12 +50,18 @@ type descriptor = {
 (** What a spell's [ShouldAICastSpell] is evaluated against.
 
     Every one of the 130 battle spells defines the hook, so this is not a corner
-    case ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it is how the original AI chooses. [ctx_evaluation] and
+    case: it is how the original AI chooses. [ctx_evaluation] and
     [ctx_percentile] are precomputed once per turn rather than per spell, because
     [Std_AISpellcastingChance] reads both and they do not change within a turn.
 
     [ctx_board] is the live board, in [Board]'s 0-based rows. Several hooks sweep
-    it directly. *)
+    it directly.
+
+    [ctx_items] is [GET_ITEM]. The original implements it as a four-slot array of
+    item id strings and only SDUP's duplication script reads it, through
+    [Item.get_item_slot]; there is deliberately no wrapper here, since one would
+    have no caller until SDUP is ported. [None] means "no loadout in scope", which
+    is what a bare spell built in a test gets. *)
 type ai_context = {
   ctx_caster : combatant;
   ctx_enemy : combatant;
@@ -66,6 +72,7 @@ type ai_context = {
   ctx_percentile : int;
   (** Injected randomness for hooks that need it. *)
   ctx_roll : int -> int;
+  ctx_items : Item.loadout option;
 }
 type spell = {
   id : string;
@@ -387,6 +394,13 @@ let gskull = count_gems GSkull
 let gredskull = count_gems GRedSkull
 let ggold = count_gems GGold
 let gstar = count_gems GStar
+
+(** [GET_ITEM(n)]: the item id in slot [n] of the caster's loadout, or [""] when
+    there is no loadout in scope or the slot is empty. The empty case is [Some
+    ""] rather than [None] because the original returns a string and the scripts
+    test it against the empty string. *)
+let ctx_get_item (ctx : ai_context) (n : int) : string =
+  Option.value (Item.loadout_for ctx.ctx_items n) ~default:""
 
 (** The game's colour names for the elements, which is how the spell
     descriptions refer to them. Earth is green, Fire red, Air yellow, Water

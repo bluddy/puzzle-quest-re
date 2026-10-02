@@ -18,7 +18,7 @@
 
     The damage hooks are the important ones: 53 items hook [OnGiveDamage] and 38
     hook [OnReceiveDamage], out of 160. That is where most of an item's strength
-    lives, and it is also the part the battle loop already had a hole in Ã¢â‚¬â€ the
+    lives, and it is also the part the battle loop already had a hole in - the
     status-effect equivalents were called with an empty effect list. *)
 
 open Combat
@@ -33,16 +33,25 @@ type item_location =
     level.
 
     The skill form covers all seven character skills, not just the four
-    elemental ones: 30 of the 58 skill restrictions are elemental and the other 28
+    elemental ones: 30 of the 58 skill restrictions are elemental and the other28
     ask for Battle, Morale, or Cunning.
+
+    [Skill] carries its own threshold because the XML's [level] attribute means
+    different things on the two forms. On `type="skill" skill="earth" level="20"`
+    it is the required *skill* level; on `type="level" level="10"` it is the
+    required *hero* level. Sharing one number between them, which an earlier
+    version did, makes a 20-earth staff wearable by anyone.
 
     [NoRequirement] rather than [None], because a constructor named [None] here
     would shadow [option]'s across the whole module and silently turn every
     `ref None` into a [restriction ref]. *)
 type restriction =
   | NoRequirement
-  | Skill of skill
-  | Level of int
+  | Skill of skill * int  (** the skill, and the level required in it *)
+  | Level of int  (** the hero's own level *)
+
+let skill_needed (r : restriction) : (skill * int) option =
+  match r with Skill (s, n) -> Some (s, n) | _ -> None
 
 (** The descriptor as the generator emits it: [restriction] is the {e kind} of
     requirement and the detail sits alongside it, because a table of 160 records
@@ -63,7 +72,10 @@ and restriction_kind = RK_none | RK_skill | RK_level
 
 let restriction_of (d : raw_descriptor) : restriction =
   match d.restriction_kind with
-  | RK_skill -> (match d.restriction_skill with Some e -> Skill e | None -> NoRequirement)
+  | RK_skill -> (
+      match d.restriction_skill with
+      | Some e -> Skill (e, d.restriction_level)
+      | None -> NoRequirement)
   | RK_level -> (match d.restriction_level with 0 -> NoRequirement | n -> Level n)
   | RK_none -> NoRequirement
 
@@ -127,9 +139,9 @@ let gem_of_kind = function
     value per call, so with several items on a character this is a deviation; it
     is noted in [lib/item_hooks.ml] rather than hidden.
 
-    [ic_max_mana] is per-element mana {e ceiling}, read by IBST and others. It is
-    [None] because the battle loop does not model mana caps yet, and the items
-    that need it are unported for that reason rather than approximated. *)
+    [ic_max_mana] used to be [None] and is no longer a field: the ceilings now
+    live on the combatants, as [Combat.max_mana], because they are raised by
+    items and have to persist across the fight rather than being recomputed. *)
 type item_context = {
   ic_board : Board.board option;
   ic_percentile : int;
@@ -138,8 +150,8 @@ type item_context = {
   ic_defender : combatant option;
   ic_hero : combatant;
   ic_enemy : combatant;
-  ic_max_mana : element option;  (** None: mana caps are not modelled yet *)
 }
+
 
 (** [CountGems] as the item scripts use it. *)
 let count_gems (kind : gem_kind) (ctx : item_context) : int =
@@ -212,16 +224,29 @@ let location_of (i : item) = i.descriptor.location
 
 let make_item ?(hooks = no_hooks) (d : descriptor) : item = { descriptor = d; hooks }
 
-(** Whether a character may equip [i], given their skills and level.
+(** Whether a character may equip [i], given their skills and hero level.
 
     The skill requirement is the item's own element, and it is checked against
     the {e skill} rather than the mana balance, for the same reason the extra turn
-    roll reads skill: the pool is spendable, the skill is not. *)
+    roll reads skill: the pool is spendable, the skill is not. The threshold is
+    the one the item carries, not [level]. *)
 let can_equip (c : combatant) ~(level : int) (i : item) : bool =
   match i.descriptor.restriction with
   | NoRequirement -> true
-  | Skill e -> skill_in e c.skills >= level
+  | Skill (e, needed) -> skill_in e c.skills >= needed
   | Level n -> level >= n
+
+(** Why [can_equip] said no, for a message or a test. *)
+let cannot_equip_reason (c : combatant) ~(level : int) (i : item) : string option =
+  if can_equip c ~level i then None
+  else
+    match i.descriptor.restriction with
+    | NoRequirement -> None
+    | Skill (e, needed) ->
+        Some
+          (Printf.sprintf "needs %d %s, has %d" needed (skill_name e)
+             (skill_in e c.skills))
+    | Level n -> Some (Printf.sprintf "needs hero level %d, is %d" n level)
 
 (** Runs an item's [OnGiveDamage]. [attacker] is whose item it is, [defender] the
     other party, matching the Lua's `sourceIdx` and `targetIdx`. *)
@@ -246,8 +271,7 @@ let receive_gold (i : item) ~(value : int) ~(character : int) : int =
 let receive_xp (i : item) ~(value : int) ~(character : int) : int =
   match i.hooks.on_receive_xp with Some f -> f value character | None -> value
 
-(** The items a character is carrying, in slot order. Kept on the combatant so
-    the battle loop can walk them without a separate registry. *)
+(** The items a character is carrying, keyed by slot. *)
 type loadout = {
   mutable weapon : item option;
   mutable head : item option;
@@ -296,6 +320,57 @@ let get_item (l : loadout) (loc : item_location) : item option =
   | Head -> l.head
   | Body -> l.body
   | Misc -> l.misc
+
+(** The slot order [GET_ITEM] indexes, recovered from SDUP's item-duplication
+    script: it walks slots 0 to 3 and compares the holder's against the enemy's
+    to find something worth copying, so the indices are a fixed four-slot array.
+
+    The {e mapping} from index to slot is not recovered. This uses weapon, head,
+    body, misc, which matches [equipped]'s order; nothing in the scripts pins the
+    engine's own ordering, so that part is a choice. *)
+let slot_at (n : int) : item_location option =
+  match n with
+  | 0 -> Some Weapon
+  | 1 -> Some Head
+  | 2 -> Some Body
+  | 3 -> Some Misc
+  | _ -> None
+
+(** Puts [i] into a specific slot index rather than the slot its location implies.
+
+    Needed because [SET_ITEM] takes an explicit slot, and routing a copy through
+    [equip] would file it under the item's own location instead. *)
+let equip_at (l : loadout) (n : int) (i : item) : item option =
+  let previous = ref None in
+  let place x =
+    previous := x;
+    Some i
+  in
+  (match slot_at n with
+  | Some Weapon -> l.weapon <- place l.weapon
+  | Some Head -> l.head <- place l.head
+  | Some Body -> l.body <- place l.body
+  | Some Misc -> l.misc <- place l.misc
+  | None -> ());
+  !previous
+
+
+(** [GET_ITEM(idx, n)]: the item id in slot [n], or [""] when the slot is empty.
+
+    The original returns a {e string}, not an index: [Engine_GET_ITEM_483af0]
+    pushes a std::string - and the scripts compare ids directly and test against
+    the empty string, which is why the empty case is [Some ""] rather than
+    [None]. *)
+let get_item_slot (l : loadout) (n : int) : string option =
+  match slot_at n with
+  | None -> Some ""
+  | Some loc -> (
+      match get_item l loc with Some i -> Some (item_id i) | None -> Some "")
+
+(** The loadout [GET_ITEM(idx, n)] would read for a given combatant, which is
+    what the spell AI hooks need in order to answer it. *)
+let loadout_for (b : loadout option) (n : int) : string option =
+  match b with None -> Some "" | Some l -> get_item_slot l n
 
 (** Folds [f] over every equipped item's [OnGiveDamage], in slot order.
 

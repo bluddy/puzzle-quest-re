@@ -168,9 +168,9 @@ let skill_of (c : combatant) (b : battle) (e : element) : int =
 let credit_run (b : battle) (attacker : combatant) (e : element) (n : int) : unit =
   let gained = mana_yield ~skill:(skill_of attacker b e) ~run_length:n in
   (* The original accumulates in float and the pools are integers, so the credit
-     truncates. *)
-  let banked = int_of_float gained in
-  attacker.mana <- add_mana e banked attacker.mana;
+     truncates. [credit_mana] also stops at the element's ceiling, which is what
+     the AI's "is the pool full" test depends on. *)
+  let banked = credit_mana attacker e (int_of_float gained) in
   emit b (ManaGained (attacker.name, element_index e, banked));
   if
     extra_turn_roll ~gained ~pending:b.tm.extra_turn_pending
@@ -286,7 +286,6 @@ let attacker = attacker_of b defender in
               ic_defender = Some defender;
               ic_hero = b.hero;
               ic_enemy = b.enemy;
-              ic_max_mana = None;
             }
         in
         (* Items first, then status effects, each as its own chain.
@@ -357,6 +356,7 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.a
       ctx_evaluation = evaluation;
       ctx_percentile = b.rng 100;
       ctx_roll = b.rng;
+      ctx_items = Some (loadout_of b actor);
     }
 
 (** One turn for the acting side: at most one spell, then a swap only if the

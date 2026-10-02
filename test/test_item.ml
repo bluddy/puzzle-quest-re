@@ -19,6 +19,15 @@ let check_eq name got want =
     incr failures
   end
 
+(** [check_eq] for string options, which is what GET_ITEM returns. *)
+let check_str_eq name got want =
+  let show = function None -> "<none>" | Some s -> "\"" ^ s ^ "\"" in
+  if got = want then Printf.printf "ok   - %s\n" name
+  else begin
+    Printf.printf "FAIL - %s (got %s, want %s)\n" name (show got) (show want);
+    incr failures
+  end
+
 let lcg seed =
   let s = ref seed in
   fun n ->
@@ -57,14 +66,25 @@ let () =
   (match Item_data.descriptor_of "IALS" with
   | Some d ->
       check "IALS needs 20 earth"
-        (match d.restriction with Skill SEarth -> true | _ -> false);
+        (match d.restriction with Skill (SEarth, 20) -> true | _ -> false);
       check "and it is a weapon" (d.location = Weapon);
       check "with a real shop cost" (d.shop_cost = 1560)
   | None -> check "IALS is present" false);
   check "an unknown id is absent" (Item_data.descriptor_of "NOPE" = None)
 
+(** An item id from the generated table with the given location and no
+    restriction. Picked from the data rather than hardcoded so the fixtures do
+    not depend on remembering which of the 160 ids happens to be which. *)
+let some_item ~(location : item_location) ~(restricted : bool) : item =
+  let ok (d : Item.descriptor) =
+    d.location = location
+    && (d.restriction <> NoRequirement) = restricted
+  in
+  let d = List.hd (List.filter ok Item_data.descriptors) in
+  Option.get (Item_hooks.item_of_id d.Item.id)
+
 (* ------------------------------------------------------------------ *)
-(* Loadouts                                                              *)
+(* GET_ITEM and SET_ITEM                                                *)
 (* ------------------------------------------------------------------ *)
 
 let () =
@@ -100,7 +120,7 @@ let () =
 let () =
   (* Restrictions are checked against skill, not the mana balance: the pool is
      spendable, the skill is not. *)
-  let staff = make_item { (descriptor "IALS") with restriction = Skill SEarth } in
+  let staff = make_item { (descriptor "IALS") with restriction = Skill (SEarth, 20) } in
   let trained = Combat.make_combatant ~skills:{ zero_skills with earth = 25 } 0 "a" in
   let untrained = Combat.make_combatant 0 "b" in
   check "a trained character may wear it" (can_equip trained ~level:20 staff);
@@ -126,7 +146,6 @@ let ictx ?(board = Some (of_array_matrix (Array.make_matrix 8 8 Skull))) ?(perce
   ; ic_defender = None
   ; ic_hero = fighter 0 "hero"
   ; ic_enemy = fighter 1 "foe"
-  ; ic_max_mana = None
   }
 
 let () =
@@ -271,6 +290,92 @@ let () =
   check "the status effect applied with an empty loadout" (raw > 0 && dealt > raw)
 
 let () =
+  (* GET_ITEM returns a string id, or the empty string for an empty slot. The
+     scripts test against "", which is why the empty case is Some "" and not
+     None. *)
+  let l = new_loadout () in
+  check "an empty loadout reports empty strings"
+    (List.for_all (fun n -> Item.get_item_slot l n = Some "") [ 0; 1; 2; 3 ]);
+  let w = some_item ~location:Weapon ~restricted:false in
+  ignore (equip l w);
+  check_str_eq "slot 0, the weapon, now reports its id"
+    (Item.get_item_slot l 0) (Some (Item.item_id w));
+  check "and the others are still empty" (Item.get_item_slot l 1 = Some "");
+  (* The slot-to-index mapping is a choice, weapon/head/body/misc. *)
+  check "slot_at 0 is the weapon" (slot_at 0 = Some Weapon);
+  check "slot_at 3 is misc" (slot_at 3 = Some Misc);
+  check "an out-of-range slot is nothing" (slot_at 9 = None);
+  check "and reads as empty" (Item.get_item_slot l 9 = Some "")
+
+let () =
+  (* SET_ITEM writes a slot by id, displacing what was there. It lives in
+     Item_hooks because it needs Item_data, which depends on Item. *)
+  let l = new_loadout () in
+  (* Copying into an occupied slot hands back what was there. *)
+  let held = some_item ~location:Weapon ~restricted:false in
+  ignore (equip l held);
+  let copy = some_item ~location:Head ~restricted:false in
+  let copied = Item_hooks.set_item_slot l 0 (Item.item_id copy) in
+  check "the displaced item comes back" (copied <> None);
+  check "and it is the one that was in the slot"
+    (match copied with Some i -> Item.item_id i = Item.item_id held | None -> false);
+  check "and the slot now holds the copy"
+    (Item.get_item_slot l 0 = Some (Item.item_id copy));
+  check "an unknown id copies nothing"
+    (Item_hooks.set_item_slot l 1 "NOPE" = None);
+  check "and leaves that slot alone" (Item.get_item_slot l 1 = Some "")
+
+let () =
+  (* SDUP's duplication: build the list of slots where the enemy has something
+     the caster does not, then take one at random.
+
+     One weapon each with different ids. Both go in the same slot, which is the
+     point: there is only ever one item per slot, so the duplication has to look
+     across slots to find anything. *)
+  let enemy = new_loadout () in
+  let enemy_w = some_item ~location:Weapon ~restricted:false in
+  let caster_w = some_item ~location:Head ~restricted:false in
+  ignore (equip enemy enemy_w);
+  let caster = new_loadout () in
+  ignore (equip caster caster_w);
+  let copy_into slot =
+    Item_hooks.duplicate_item ~caster ~enemy ~roll:(fun _ -> slot)
+  in
+  check "the two weapons differ, so slot 0 is a candidate" (copy_into 0 = Some 0);
+  let fresh = new_loadout () in
+  let empty = new_loadout () in
+  check "nothing to copy when the enemy has nothing"
+    (Item_hooks.duplicate_item ~caster:fresh ~enemy:empty ~roll:(fun _ -> 0) = None);
+  let only_enemy = new_loadout () in
+  ignore (equip only_enemy enemy_w);
+  check "but there is something when the enemy has an item"
+    (Item_hooks.duplicate_item ~caster:fresh ~enemy:only_enemy ~roll:(fun _ -> 0) = Some 0);
+  check "and it landed in the caster's slot"
+    (Item.get_item_slot fresh 0 = Some (Item.item_id enemy_w));
+  check "a same-item pair has nothing to copy"
+    (Item_hooks.duplicate_item ~caster:fresh ~enemy:fresh ~roll:(fun _ -> 0) = None)
+
+let () =
+  (* The battle loop keeps each side's loadout apart, which is what makes
+     GET_ITEM answerable per combatant. The board is only a starting position
+     here; nothing in this block plays it. *)
+  let e = [| Board.Mana Fire; Board.Mana Water; Board.Mana Air; Board.Mana Earth |] in
+  let board =
+    of_array_matrix
+      (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+  in
+  let b = Battle.create ~rng:(lcg 5) board (fighter 0 "hero") (fighter 1 "foe") in
+  let carried = some_item ~location:Weapon ~restricted:false in
+  ignore (Battle.give_item b b.hero ~level:1 carried);
+  check_eq "the item is on the hero" (List.length (Item.equipped b.hero_items)) 1;
+  check "and readable through GET_ITEM"
+    (Item.get_item_slot b.hero_items 0 = Some (Item.item_id carried));
+  check "while the foe has nothing" (Item.get_item_slot b.enemy_items 0 = Some "");
+  ignore (Battle.give_item b b.enemy ~level:1 carried);
+  check_eq "the foe now has one too" (List.length (Item.equipped b.enemy_items)) 1;
+  check "and the hero still has exactly one"
+    (List.length (Item.equipped b.hero_items) = 1);
+
   if !failures = 0 then print_endline "\nAll item tests passed."
   else begin
     Printf.printf "\n%d item test(s) failed.\n" !failures;

@@ -21,6 +21,40 @@ type mana = { earth : int; fire : int; air : int; water : int }
 
 let zero_mana = { earth = 0; fire = 0; air = 0; water = 0 }
 
+(** The per-element mana ceiling, one int per element, same order as [mana].
+
+    **Recovered**: the storage and the setter semantics. `GET_MAX_MANA_*`
+    (0x48dce0 and siblings) reads `character + 0x84 + element * 4`, and the
+    setter at 0x4839f0 stores the new ceiling then clamps the {e current} pool
+    down to it. So lowering a ceiling can reduce mana you already hold, and the
+    four ceilings are contiguous ints at +0x84.
+
+    **Not recovered**: the starting value. Nothing in the save file stores it -
+    [SAVE_FILE_FORMAT.md] has the masteries and the current reserves but no cap
+    field - so the ceiling is a derived runtime quantity and its base value has
+    not been located in the binary. Ten per element is used as the default, but
+    treat it as a parameter rather than a fact: it is a field on the combatant so
+    it can be set per fight.
+
+    **And ten is too low to be plausible.** The spell scripts test mana against
+    thresholds of 8, 10, 12, 14, 15 and 20, and all nine spells whose turn rule
+    is conditional need 8 or more. At a ceiling of ten, every condition at 12 or
+    above can never fire, which would silently disable the turn rules for [SBAC],
+    [SBRA], [SCHL], [SSOA] and [SSWP] among others. Real characters raise their
+    ceilings with skills and items, which is what the "+N to max Fire Mana" bonuses
+    are for. Read a battle set up at the default as exercising the cap rather than
+    reproducing a real character, and raise the ceiling wherever mana conditions
+    matter. *)
+let default_mana_limit = 10
+
+let zero_caps =
+  { earth = default_mana_limit
+  ; fire = default_mana_limit
+  ; air = default_mana_limit
+  ; water = default_mana_limit
+  }
+
+
 let mana_of e m =
   match e with
   | Earth -> m.earth
@@ -125,6 +159,9 @@ type combatant = {
   max_life : int;
   mutable life : int;
   mutable mana : mana;
+  (* The per-element ceiling. See [default_mana_limit] for what is and is not
+     recovered about the base value. *)
+  mutable max_mana : mana;
   (* Trained skill per element. Drives mana yield and the extra turn roll, and
      is independent of the balance above: spending mana never lowers it. *)
   mutable skills : skills;
@@ -141,7 +178,8 @@ type combatant = {
 }
 
 let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_mana)
-    ?(skills = zero_skills) ?(extra_turns = 0) ?(effects = []) ?(cooldowns = []) id name =
+    ?(max_mana = zero_caps) ?(skills = zero_skills) ?(extra_turns = 0) ?(effects = [])
+    ?(cooldowns = []) id name =
   {
     id;
     name;
@@ -149,12 +187,14 @@ let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_
     max_life;
     life;
     mana;
+    max_mana;
     skills;
     is_dead = false;
     extra_turns;
     effects;
     cooldowns;
   }
+
 
 (** Status effect definitions, parsed from the [Assets/StatusEffects/*.xml]
     descriptors. [max_stack] is the [stack] attribute: how many copies can sit
@@ -462,7 +502,7 @@ let apply_effect (def : effect_def) (c : combatant) : unit =
     every duration ticks down, and lapsed effects are dropped.
 
     Hooks run before the tick, so an effect that expires this turn still takes
-    effect — matching the original, where the countdown is consulted after the
+    effect - matching the original, where the countdown is consulted after the
     turn's callbacks have run. *)
 let run_start_of_turn_effects (c : combatant) (defs : effect_def list) (turn : int) : unit =
   let def_of_id id = List.find_opt (fun d -> d.def_id = id) defs in
@@ -533,3 +573,37 @@ let describe (t : turn_manager) : string =
   let order = String.concat " -> " (Array.to_list (Array.map (fun i -> names.(i)) t.turn_order)) in
   Printf.sprintf "round %d, slot %d (%s); order: %s" t.round t.current_slot
     names.(current_index t) order
+
+
+(** Credits mana, stopping at the element's ceiling.
+
+    This is where the cap is enforced going {e up}; [set_mana_limit] enforces it
+    going down. Both halves matter: the AI hooks test
+    `GET_MANA_X >= GET_MAX_MANA_X` to mean "the pool is full", which only means
+    something if the pool can reach the cap and can never pass it. *)
+let credit_mana (c : combatant) (e : element) (amount : int) : int =
+  if amount <= 0 then 0
+  else begin
+    let granted = min amount (max 0 (mana_of e c.max_mana - mana_of e c.mana)) in
+    if granted > 0 then c.mana <- add_mana e granted c.mana;
+    granted
+  end
+
+(** Sets an element's ceiling and clamps the pool to it, matching the setter at
+    0x4839f0: the pool is reduced if it sat above the new ceiling and left alone
+    if it sat below. So lowering a ceiling can take mana away. *)
+let set_mana_limit (c : combatant) (e : element) (limit : int) : unit =
+  c.max_mana <-
+    (match e with
+    | Earth -> { c.max_mana with earth = limit }
+    | Fire -> { c.max_mana with fire = limit }
+    | Air -> { c.max_mana with air = limit }
+    | Water -> { c.max_mana with water = limit });
+  let have = mana_of e c.mana in
+  if have > limit then c.mana <- add_mana e (limit - have) c.mana
+
+(** Whether a pool is at its ceiling, which is the test the item and spell AI
+    hooks make with `GET_MANA_X >= GET_MAX_MANA_X`. *)
+let mana_at_limit (c : combatant) (e : element) : bool =
+  mana_of e c.mana >= mana_of e c.max_mana
+

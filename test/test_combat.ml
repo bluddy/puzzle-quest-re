@@ -358,7 +358,59 @@ let () =
     (List.map (fun e -> mana_of e a.mana) all_elements)
     [ 0; -3; 0; -1 ]
 
+(* ------------------------------------------------------------------ *)
+(* Mana ceilings                                                        *)
+(* ------------------------------------------------------------------ *)
+
 let () =
+  (* The cap is enforced going up, and the setter clamps going down. Both halves
+     matter, because the AI hooks read "pool >= cap" as "pool is full". *)
+  let c = make_combatant 0 "hero" in
+  check_eq "a fresh combatant has the default cap" (mana_of Fire c.max_mana) default_mana_limit;
+  let granted = credit_mana c Fire 4 in
+  check_eq "credit grants what it can" granted 4;
+  check_eq "and the pool holds it" (mana_of Fire c.mana) 4;
+  check "not at the limit yet" (not (mana_at_limit c Fire));
+  ignore (credit_mana c Fire 100);
+  check_eq "the pool stops at the cap" (mana_of Fire c.mana) default_mana_limit;
+  check "and reports at the limit" (mana_at_limit c Fire);
+  check_eq "a full pool grants nothing" (credit_mana c Fire 5) 0;
+  (* Other elements are independent. *)
+  check_eq "fire does not affect air" (mana_of Air c.mana) 0;
+  check "and air is not at its limit" (not (mana_at_limit c Air))
+
+let () =
+  (* The setter clamps the pool down when the ceiling drops, matching the
+     routine at 0x4839f0, and leaves it alone when it does not. *)
+  let c = make_combatant ~mana:{ (zero_mana) with fire = 8; earth = 3 } 0 "hero" in
+  set_mana_limit c Fire 5;
+  check_eq "dropping the ceiling takes the excess" (mana_of Fire c.mana) 5;
+  check_eq "and the new ceiling is stored" (mana_of Fire c.max_mana) 5;
+  set_mana_limit c Fire 20;
+  check_eq "raising it does not refill" (mana_of Fire c.mana) 5;
+  check_eq "but stores the new value" (mana_of Fire c.max_mana) 20;
+  check "and the pool is no longer full" (not (mana_at_limit c Fire));
+  check "the other element is untouched" (mana_of Earth c.mana = 3);
+  check "including its ceiling" (mana_of Earth c.max_mana = default_mana_limit)
+
+let () =
+  (* A raised ceiling lets the same match bank more, which is the whole point of
+     items that add to max mana. *)
+  let c = make_combatant 0 "hero" in
+  ignore (credit_mana c Fire 10);
+  check "capped at ten to begin with" (mana_at_limit c Fire);
+  set_mana_limit c Fire 25;
+  check_eq "raising it to 25 allows fifteen more" (credit_mana c Fire 15) 15;
+  check_eq "and the pool is full again" (mana_of Fire c.mana) 25
+
+let () =
+  (* The default is a parameter, not a recovered constant, so it is settable per
+     combatant. *)
+  let c = make_combatant ~max_mana:{ zero_caps with fire = 3 } 0 "hero" in
+  ignore (credit_mana c Fire 99);
+  check_eq "a three-mana cap holds" (mana_of Fire c.mana) 3;
+  check "and air still has the default" (mana_of Air c.max_mana = default_mana_limit);
+
   if !failures = 0 then print_endline "\nAll combat tests passed."
   else begin
     Printf.printf "\n%d combat test(s) failed.\n" !failures;

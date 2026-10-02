@@ -246,7 +246,8 @@ let ctx ?(evaluation = 0) ?(percentile = 0) ?(caster = rich ())
   ; ctx_board = board
   ; ctx_evaluation = evaluation
   ; ctx_percentile = percentile
-  ; ctx_roll = fun n -> if n <= 0 then 0 else 0 mod n
+  ; ctx_roll = (fun n -> if n <= 0 then 0 else 0 mod n)
+  ; ctx_items = None
   }
 
 let () =
@@ -351,6 +352,7 @@ let bctx ?(caster = rich ()) ?(evaluation = 0) ?(percentile = 0) (b : Board.boar
   ; ctx_evaluation = evaluation
   ; ctx_percentile = percentile
   ; ctx_roll = (fun _ -> 0)
+  ; ctx_items = None
   }
 
 let yellows n = board_with Spell.GYellow n
