@@ -3,6 +3,8 @@
  (modules
   board
   spell_data
+  spell_ai
+  spell_ai_manual
   spell
   combat
   ai

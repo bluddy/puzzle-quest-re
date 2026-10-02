@@ -11,17 +11,6 @@
 
 open Combat
 
-(** The colour names the game's scripts use for the elements. [GEM_YELLOW] and
-    friends appear throughout the spell scripts. *)
-type gem_kind = GYellow | GBlue | GRed | GGreen | GSkull | GRedSkull | GGold | GPurple | GAny
-
-let mana_of_gem = function
-  | GYellow -> Some Air
-  | GBlue -> Some Water
-  | GRed -> Some Fire
-  | GGreen -> Some Earth
-  | _ -> None
-
 (** Whether casting a spell ends your turn.
 
     The overwhelming majority of spells end it, which means the caster does
@@ -288,10 +277,20 @@ let apply_match_gain ?(enabled = true) ?(roll = Random.int) ?(pending = false) t
     answer to why the enemy sometimes plays a move instead of casting: a board
     worth more than 30 points is worth more than whatever the spell does.
 
-    37 of the 130 spells call this with a modifier of 0, so they are cast on at
+    The modifier is a [float], not an int: SDDI passes `numYellow * 1.5`, and
+    Lua's `>` promotes the comparison, so a fractional modifier shifts the
+    threshold fractionally. Keeping it a float here is what makes SDDI's 7.5
+    behave as it does.
+
+    37 of the 130 spells call this with a modifier of 0, so those are cast on at
     most half the turns that reach them, and never when the board is good. *)
-let ai_spellcasting_chance ~modifier (ctx : ai_context) : bool =
-  if ctx.ctx_percentile > 50 + modifier then false else ctx.ctx_evaluation <= 30
+let ai_spellcasting_chance ~(modifier : float) (ctx : ai_context) : bool =
+  if float_of_int ctx.ctx_percentile > 50.0 +. modifier then false
+  else ctx.ctx_evaluation <= 30
+
+(** The same, from an integer modifier, which is what most hooks pass. *)
+let ai_spellcasting_chance_i ~(modifier : int) (ctx : ai_context) : bool =
+  ai_spellcasting_chance ~modifier:(float_of_int modifier) ctx
 
 (** A spell's [ShouldAICastSpell]. [None] means "the script does not define one",
     which for the 130 battle spells never happens but which a bare spell built in
@@ -334,6 +333,61 @@ let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) (ctx : ai_context)
         && should_ai_cast s ctx)
       spells
 
+(** The gem kinds the spell scripts refer to, as [CountGems]' arguments.
+
+    [GYellow] and friends are the game's colour names, not the board's gem ids:
+    Earth is green, Fire red, Air yellow, Water blue. That is the reverse of the
+    board's id order, which is exactly where a transposition would creep in, so
+    the mapping is done once here rather than at each call site. [GStar] is the
+    purple star, id 7 on the board. *)
+type gem_kind = GYellow | GBlue | GRed | GGreen | GSkull | GRedSkull | GGold | GStar | GAny
+
+let gem_kind_of_board = function
+  | Board.Mana Air -> GYellow
+  | Board.Mana Water -> GBlue
+  | Board.Mana Fire -> GRed
+  | Board.Mana Earth -> GGreen
+  | Board.Skull -> GSkull
+  | Board.RedSkull -> GRedSkull
+  | Board.Gold -> GGold
+  | Board.Experience -> GStar
+  | _ -> GAny
+
+(** The board gem a kind stands for. Tests and fixtures build boards out of
+    these; [count_gems] goes the other way. *)
+let gem_of_kind = function
+  | GYellow -> Board.Mana Air
+  | GBlue -> Board.Mana Water
+  | GRed -> Board.Mana Fire
+  | GGreen -> Board.Mana Earth
+  | GSkull -> Board.Skull
+  | GRedSkull -> Board.RedSkull
+  | GGold -> Board.Gold
+  | GStar -> Board.Experience
+  | GAny -> Board.Empty
+
+(** [CountGems]: how many gems of one kind are on the board. 37 of the 130 AI
+    hooks read the board through this. *)
+let count_gems (kind : gem_kind) (ctx : ai_context) : int =
+  let matches g = if kind = GAny then g <> Board.Empty else gem_kind_of_board g = kind in
+  let n = ref 0 in
+  for y = 0 to ctx.ctx_board.Board.height - 1 do
+    for x = 0 to ctx.ctx_board.Board.width - 1 do
+      if matches (Board.get_gem ctx.ctx_board { Board.x; y }) then incr n
+    done
+  done;
+  !n
+
+(** Shorthand the hooks use constantly: [count_gems GYellow ctx]. *)
+let gyellow = count_gems GYellow
+let gblue = count_gems GBlue
+let gred = count_gems GRed
+let ggreen = count_gems GGreen
+let gskull = count_gems GSkull
+let gredskull = count_gems GRedSkull
+let ggold = count_gems GGold
+let gstar = count_gems GStar
+
 (** The game's colour names for the elements, which is how the spell
     descriptions refer to them. Earth is green, Fire red, Air yellow, Water
     blue. Note this is the {e reverse} of the board's gem-id order, and the
@@ -353,8 +407,9 @@ let string_of_turn_cost = function
 (** Builds a runtime spell from a descriptor. The name is passed separately
     because it comes from the localisation table's [NAME] tag rather than the
     descriptor; [tools/extract_spell_data.ps1] does not extract it. *)
-let spell_of_descriptor (d : descriptor) ?(name = "") () : spell =
+let spell_of_descriptor (d : descriptor) ?(name = "") ?should_ai_cast ?is_cast_legal
+    ?cast_spell () : spell =
   make_spell ~cost_earth:d.cost_earth ~cost_fire:d.cost_fire ~cost_air:d.cost_air
     ~cost_water:d.cost_water ~cooldown:d.cooldown ~learn_score:d.learn_score
     ~learn_masks:d.learn_masks ~learn_keys:d.learn_keys ~input_type:d.input_type
-    ~turn_cost:d.turn_cost d.id name
+    ~turn_cost:d.turn_cost ?should_ai_cast ?is_cast_legal ?cast_spell d.id name

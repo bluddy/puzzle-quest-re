@@ -417,6 +417,40 @@ let descriptor_of (id : string) : Spell.descriptor option =
 
 (** The table as runtime spells, ready to hand to [Battle.create]. Lives here
     rather than in [Spell] because [spell] defines [turn_cost] and this module
-    consumes it; a loader in [spell] would close the dependency cycle. *)
+    consumes it; a loader in [spell] would close the dependency cycle.
+
+    [Spell_ai.hook_of] supplies the spell's own [ShouldAICastSpell] where it has
+    been ported. Where it has not, the hook is attached as "never cast" rather
+    than left absent.
+
+    The distinction matters. An absent hook means the script defines none, and
+    that is a yes, which is right for a spell built in a test. An unported hook
+    is not the same thing: we know the script has one and we know we have not
+    read it yet, and guessing yes would make the AI cast spells the game
+    deliberately suppresses. SBRA is the clear case, since its hook requires six
+    or more red gems on the board and a mediocre board evaluation, and a
+    permissive default would have it cast whenever the mana is there.
+
+    So the policy is: unknown means no. 49 of 129 hooks are ported; the other 80
+    are listed by [tools/extract_spell_ai.ps1]. *)
 let load_spell_table () : Spell.spell list =
-  List.map (fun (d : Spell.descriptor) -> Spell.spell_of_descriptor d ()) spell_descriptors
+  List.map
+    (fun (d : Spell.descriptor) ->
+      let hook =
+        match Spell_ai.hook_of d.id with
+        | Some f -> f
+        | None -> fun (_ : Spell.ai_context) -> false
+      in
+      Spell.spell_of_descriptor d ?should_ai_cast:(Some hook) ())
+    spell_descriptors
+
+(** Spells whose AI hook has been ported. *)
+let spells_with_ai_hook =
+  List.filter
+    (fun (d : Spell.descriptor) -> Spell_ai.hook_of d.id <> None)
+    spell_descriptors
+
+let spells_without_ai_hook =
+  List.filter
+    (fun (d : Spell.descriptor) -> Spell_ai.hook_of d.id = None)
+    spell_descriptors

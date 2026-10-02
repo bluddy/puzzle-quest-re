@@ -45,7 +45,7 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - Recovered mana yield — `(skill + 100) * run_multiplier * 0.01`, skill capped at 999.
   - **The stat-based extra turn**: chance is `gained / 100`, rolled per element per match, which is why extra turns become common late game. Found by playtesting observation and confirmed at `0x0047D4F0`.
   - **Casting usually ends the turn**, so the caster does not also swap. The rule is stated per spell in each spell's DETL line; 97 of 129 end it, 13 keep it, 10 end it after an effect, and 9 are conditional on the caster's mana.
-  - The AI's spell choice is a difficulty-gated skip plus an affordability filter, first affordable wins, with no ranking at all.
+  - **The AI's spell choice is per-spell, not first-affordable.** All 130 spells define their own `ShouldAICastSpell`: 107 call `Std_AISpellcastingChance` (a Lua function in `Assets/Scripts/`), 37 count gems on the board, 20 read `EVALUATE_BOARD`, 12 read `GET_ITEM`. 77 hooks ported — 49 generated, 28 hand-written.
   - Ported to OCaml in [lib/spell.ml](lib/spell.ml) with tests in [test/test_spell.ml](test/test_spell.ml).
 - [x] **Option G: Headless Battle Loop** ([lib/battle.ml](lib/battle.ml)):
   - A complete, seeded, animation-free battle: both sides take turns, the AI picks moves, matches cascade, damage lands, deaths end the fight, and a turn cap forces a stalemate.
@@ -69,7 +69,10 @@ chooser, which is implemented but off by default.
   * `board.ml`: Pure functional 8x8 match-3 simulation engine, swap validation, cascades, and gravity.
   * `ai.ml`: Enemy move selection — probe windows, match scoring, difficulty and hero-level jitter.
   * `combat.ml`: Turn order, banked extra turns, status effect lifetimes, and the 37-hook record.
-  * `spell.ml`: Spell costs, mana yield, the stat-based extra turn roll, and the AI's spell pick.
+  * `spell.ml`: Spell costs, mana yield, the stat-based extra turn roll, the turn-ending rule, and the AI's spell pick.
+  * `spell_data.ml`: The 129 spell descriptors parsed from the game's assets. Generated.
+  * `spell_ai.ml`: Per-spell `ShouldAICastSpell` hooks. Generated.
+  * `spell_ai_manual.ml`: Hand-ported hooks that read the board.
   * `score.ml`: End-of-battle score, both solo and co-op paths.
   * `battle.ml`: Headless battle loop wiring board, AI, combat, and spells together.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).
@@ -127,15 +130,12 @@ dune exec bin/pq_battle.exe -- --seed 7 --trace --board
 ```
 The same seed always produces the same fight, so a trace is reproducible.
 
-### Compare the Two Spell Choosers
+### Watch the AI Decide Spells
 ```powershell
-# Same seed, same fight, only the AI's spell policy differs.
-# `faithful` is the default and is the original's behaviour; `ranked` is an
-# enhancement, off by default. See docs/ENHANCEMENTS.md.
-dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400
-dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400 --spell-ai ranked
+dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400 --trace
 ```
-`--spells N` hands the foe N real spells from the game's own table, so you can
-see which it reaches for and whether the cast ended its turn. Give the foe skill
-(`--foe-skill`), or it earns too little mana to afford anything but the cheapest
-spell.
+`--spells N` hands the foe N real spells from the game's own table. Each one
+carries its ported `ShouldAICastSpell`, which reads the board, so `--trace` shows
+the enemy weighing a gem count or a board evaluation before it commits. Give the
+foe skill (`--foe-skill`), or it earns too little mana to afford anything but the
+cheapest spell.

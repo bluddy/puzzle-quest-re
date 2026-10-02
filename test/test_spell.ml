@@ -297,30 +297,201 @@ let () =
 (* Std_AISpellcastingChance                                            *)
 (* ------------------------------------------------------------------ *)
 
+(* The Lua, from Assets/Scripts/StandardUtilityScripts.lua:
+
+     function Std_AISpellcastingChance(modifier)
+       local evaluation = EVALUATE_BOARD();
+       local chance = PERCENTILE_CHANCE_SYNC();
+       if (chance > 50 + modifier) then return 0; end
+       if (evaluation > 30) then return 0; end
+       return 1;
+     end
+
+   Both comparisons are strict `>`, so a percentile of exactly 50 casts at
+   modifier 0 and an evaluation of exactly 30 does not veto. *)
 let () =
-  (* The body, transcribed:
-
-       function Std_AISpellcastingChance(modifier)
-         local evaluation = EVALUATE_BOARD();
-         local chance = PERCENTILE_CHANCE_SYNC();
-         if (chance > 50 + modifier) then return 0; end
-         if (evaluation > 30) then return 0; end
-         return 1;
-       end
-
-     Note `>` on both sides: a percentile of exactly 50 casts at modifier 0, and
-     an evaluation of exactly 30 does not veto. *)
-  check "modifier 0 casts at percentile 50"
-    (ai_spellcasting_chance ~modifier:0 (ctx ~percentile:50 ()));
-  check "and not at 51" (not (ai_spellcasting_chance ~modifier:0 (ctx ~percentile:51 ())));
-  check "modifier 50 casts at 100" (ai_spellcasting_chance ~modifier:50 (ctx ~percentile:99 ()));
-  check "modifier 50 also at 101, since the roll is 0..99"
-    (ai_spellcasting_chance ~modifier:50 (ctx ~percentile:100 ()));
-  check "evaluation 30 does not veto" (ai_spellcasting_chance ~modifier:0 (ctx ~evaluation:30 ()));
-  check "evaluation 31 does" (not (ai_spellcasting_chance ~modifier:0 (ctx ~evaluation:31 ())));
+  let cast_at percentile modifier =
+    ai_spellcasting_chance_i ~modifier (ctx ~percentile ())
+  in
+  check "modifier 0 casts at percentile 50" (cast_at 50 0);
+  check "and not at 51" (not (cast_at 51 0));
+  check "modifier 50 casts at 99" (cast_at 99 50);
+  check "modifier 50 also at 100, since the roll is 0..99" (cast_at 100 50);
+  check "evaluation 30 does not veto"
+    (ai_spellcasting_chance_i ~modifier:0 (ctx ~percentile:0 ~evaluation:30 ()));
+  check "evaluation 31 does"
+    (not (ai_spellcasting_chance_i ~modifier:0 (ctx ~percentile:0 ~evaluation:31 ())));
   (* The two clauses are independent: a good board vetoes regardless of the roll. *)
   check "a good board vetoes even on a lucky roll"
-    (not (ai_spellcasting_chance ~modifier:99 (ctx ~evaluation:31 ~percentile:0 ())));
+    (not (ai_spellcasting_chance_i ~modifier:99 (ctx ~percentile:0 ~evaluation:31 ())))
+
+(* ------------------------------------------------------------------ *)
+(* The ported board-reading hooks                                       *)
+(* ------------------------------------------------------------------ *)
+
+(* A board with exactly [n] gems of one kind, counted across the whole board
+   rather than per row, and the rest a kind the hook under test does not read, so
+   a gem-count gate can be driven exactly. *)
+let board_with (kind : Spell.gem_kind) (n : int) : Board.board =
+  let filler = if kind = Spell.GGreen then Board.Mana Fire else Board.Mana Earth in
+  let left = ref n in
+  Board.of_array_matrix
+    (Array.init 8 (fun _ ->
+         Array.init 8 (fun _ ->
+             if !left > 0 then begin
+               decr left;
+               Spell.gem_of_kind kind
+             end else filler)))
+
+let bctx ?(caster = rich ()) ?(evaluation = 0) ?(percentile = 0) (b : Board.board) () :
+    ai_context =
+  { ctx_caster = caster
+  ; ctx_enemy = hero ()
+  ; ctx_board = b
+  ; ctx_evaluation = evaluation
+  ; ctx_percentile = percentile
+  ; ctx_roll = (fun _ -> 0)
+  }
+
+let yellows n = board_with Spell.GYellow n
+let reds n = board_with Spell.GRed n
+let greens n = board_with Spell.GGreen n
+let skulls n = board_with Spell.GSkull n
+
+(* For hooks that count more than one colour at once, the filler has to be a
+   colour the hook does {e not} read. Water works for the red-plus-green hooks;
+   the default Earth filler would be green itself and inflate the count to 60. *)
+let reds_among_water n =
+  let left = ref n in
+  Board.of_array_matrix
+    (Array.init 8 (fun _ ->
+         Array.init 8 (fun _ ->
+             if !left > 0 then begin
+               decr left;
+               Board.Mana Fire
+             end else Board.Mana Water)))
+
+(* Run a hook against a board, with the percentile and evaluation pinned. *)
+let run (hook : ai_context -> bool) (b : Board.board) percentile evaluation =
+  hook (bctx ~percentile ~evaluation b ())
+
+let () =
+  (* SBNA: five yellow or more, then three per yellow. *)
+  check "SBNA refuses below five yellow"
+    (not (run Spell_ai_manual.hook_sbna (yellows 4) 0 0));
+  check "SBNA at five yellow clears a percentile of 65"
+    (run Spell_ai_manual.hook_sbna (yellows 5) 65 0);
+  check "and not 66" (not (run Spell_ai_manual.hook_sbna (yellows 5) 66 0));
+  check "but a good board vetoes even on a lucky roll"
+    (not (run Spell_ai_manual.hook_sbna (yellows 5) 0 31))
+
+let () =
+  (* SDDI passes a float modifier, numYellow * 1.5. At five yellow the threshold
+     is 57.5, so percentile 57 casts and 58 does not. Truncating the modifier to
+     an integer would move the boundary to 57 and let both through, which is the
+     mistake this test exists to catch. *)
+  check "SDDI refuses at four or fewer yellow"
+    (not (run Spell_ai_manual.hook_sddi (yellows 4) 0 0));
+  check "SDDI's threshold is fractional" (run Spell_ai_manual.hook_sddi (yellows 5) 57 0);
+  check "and rejects the next integer up"
+    (not (run Spell_ai_manual.hook_sddi (yellows 5) 58 0))
+
+let () =
+  (* SHBT: a flat 5, jumping to three per gem at 8 or more. *)
+  check "SHBT pays a flat 5 below the jump" (run Spell_ai_manual.hook_shbt (reds 3) 55 0);
+  check "and not 56" (not (run Spell_ai_manual.hook_shbt (reds 3) 56 0));
+  check "SHBT jumps at eight" (run Spell_ai_manual.hook_shbt (reds 8) 73 0);
+  check "and the jump is three per gem, putting the bar at 74"
+    (run Spell_ai_manual.hook_shbt (reds 8) 74 0);
+  check "so 75 is out" (not (run Spell_ai_manual.hook_shbt (reds 8) 75 0))
+
+let () =
+  (* SCTH falls back to a modifier of -20 rather than refusing, which is not a
+     veto: -20 puts the threshold at 30, so the spell still casts on percentiles
+     up to 30. Reading it as a refusal would make it fire far less often than the
+     game does, which is what this test pins down. *)
+  check "SCTH still casts below its floor, on a low percentile"
+    (run Spell_ai_manual.hook_scth (reds_among_water 4) 30 0);
+  check "and not on a higher one"
+    (not (run Spell_ai_manual.hook_scth (reds_among_water 4) 31 0));
+  check "but above the floor it pays five per gem"
+    (run Spell_ai_manual.hook_scth (reds_among_water 8) 89 0);
+  check "and not at ninety, since the bar is 90 inclusive"
+    (run Spell_ai_manual.hook_scth (reds_among_water 8) 90 0);
+  check "and not at ninety-one" (not (run Spell_ai_manual.hook_scth (reds_among_water 8) 91 0))
+
+let () =
+  (* SLIS has no threshold, unlike its near-twins SCLI and STHR, because the
+     Lua's `if` that picks a target is dead: an unconditional second
+     GetRandomGrid_Type overwrites it. Ported as written, not as intended. *)
+  check "SLIS is a candidate with no red skulls on the board"
+    (run Spell_ai_manual.hook_slis (reds 4) 50 0);
+  check "but not above the bar" (not (run Spell_ai_manual.hook_slis (reds 4) 51 0));
+  check "while SCLI insists on at least one red skull"
+    (not (run Spell_ai_manual.hook_scli (reds 4) 0 0));
+  let with_red_skulls =
+    Board.of_array_matrix
+      (Array.init 8 (fun _ ->
+           Array.init 8 (fun x -> if x < 2 then Board.RedSkull else Board.Mana Earth)))
+  in
+  check "and SCLI pays ten per red skull"
+    (run Spell_ai_manual.hook_scli with_red_skulls 69 0)
+
+let () =
+  (* SWTD's two `if`s are not `elseif`, so at 20 or more earth mana the modifier
+     is 30, not 40. Reading it as an elseif would only show up at 20+. *)
+  let earth n = hero ~mana:{ zero_mana with earth = n } () in
+  let board = skulls 4 in
+  let swtd mana percentile =
+    Spell_ai_manual.hook_swtd
+      { (bctx ~percentile board ()) with ctx_caster = earth mana }
+  in
+  check "SWTD pays nothing below 15 earth" (swtd 14 50);
+  check "and 10 at fifteen, so the bar is 60" (swtd 15 60);
+  check "and not 61" (not (swtd 15 61));
+  check "twenty or more earth pays thirty, not forty" (swtd 20 80);
+  check "and eighty is still in" (swtd 20 80);
+  check "but eighty-one is out" (not (swtd 20 81))
+
+let () =
+  (* SCON needs a strict majority of one gem type, and only pays above eleven.
+     A two-way tie falls through to the Lua's `else return 0`. *)
+  let flat = Board.of_array_matrix (Array.make_matrix 8 8 Board.Skull) in
+  check "SCON refuses when nothing is a strict majority" (not (run Spell_ai_manual.hook_scon flat 0 0));
+  check "and when the leader is only five of sixty-four"
+    (not (run Spell_ai_manual.hook_scon (greens 5) 0 0));
+  let dominated =
+    Board.of_array_matrix
+      (Array.init 8 (fun y ->
+           Array.init 8 (fun x -> if (x + (y * 8)) < 20 then Board.Mana Earth else Board.Mana Air)))
+  in
+  check "SCON refuses on a twenty-vs-forty-four board, which is not a majority"
+    (not (run Spell_ai_manual.hook_scon dominated 0 0))
+
+let () =
+  (* Coverage, so the port's size is stated rather than guessed. *)
+  check "49 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 49);
+  check "and 28 board-reading ones are hand written"
+    (List.length Spell_ai_manual.manual_hook_of_spell_ids = 28);
+  check_eq "so 77 of the 129 are ported" (List.length Spell_data.spells_with_ai_hook) 77;
+  check_eq "and 52 are not, and must say so" (List.length Spell_data.spells_without_ai_hook) 52;
+  (* An unported spell must be treated as never cast rather than always cast, or
+     the AI would fire spells the game deliberately suppresses. *)
+  let unported =
+    List.hd
+      (List.filter
+         (fun (d : Spell.descriptor) -> Spell_ai.hook_of d.id = None)
+         Spell_data.spell_descriptors)
+  in
+  let s =
+    List.hd
+      (List.filter (fun (x : Spell.spell) -> x.id = unported.id)
+         (Spell_data.load_spell_table ()))
+  in
+  check "an unported spell's hook says no"
+    (match s.should_ai_cast with
+    | Some f -> not (f (bctx (yellows 8) ()))
+    | None -> false);
 
   if !failures = 0 then print_endline "\nAll spell tests passed."
   else begin

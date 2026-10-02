@@ -221,27 +221,98 @@ a rescale the whole gain is multiplied by a separate factor held at
 
 ## 5. The AI's spell choice
 
-`FUN_00440FB0` (`BattleAI_PickSpell`) iterates the enemy's spell list and skips
-candidates on a percentile roll gated by difficulty:
+`FUN_00440FB0` (`BattleAI_PickSpell`) reads as a thin driver:
 
 ```c
 if (difficulty == 0 && roll(1,100) < 50) skip;   // 50% skip on easy
 if (difficulty == 1 && roll(1,100) < 25) skip;   // 25% skip on normal
 ```
 
-Then it checks each skill against the character's current mana, and on a
-survivable candidate writes the index to `CBattleManager + 0x44` and clears
-`m_hasValidMove`. So the AI's spell choice is:
+then walk the enemy's spell list and take the first candidate that passes an
+affordability filter and writes the index to `CBattleManager + 0x44`, clearing
+`m_hasValidMove`.
 
-- A random gate on difficulty, deliberately making the enemy less reliable on
-  easier settings.
-- An affordability filter identical to `IS_SPELL_CASTABLE`.
-- **No scoring whatsoever.** It takes the first affordable spell, not the best
-  one.
+**The intelligence is per spell, not in this function.** All 130 battle spells
+define their own `ShouldAICastSpell`, and that is where the decision is actually
+made:
 
-That last point is the same gap as the move chooser. The enemy has spells, and
-picks one by coin flip filtered by whether it can pay. A ranked replacement is
-written and lives in `docs/ENHANCEMENTS.md`; it is not part of the port.
+```lua
+-- SBNA
+local function ShouldAICastSpell(idxCaster)
+  local bonus = CountGems(GEM_YELLOW);
+  if (bonus < 5) then return 0; end
+  return Std_AISpellcastingChance(3*bonus);
+end
+```
+
+```lua
+-- SBRA
+local function ShouldAICastSpell(idxCaster)
+  local evaluation = EVALUATE_BOARD();
+  local chance = PERCENTILE_CHANCE_SYNC();
+  local numRedGems = 0;
+  ... sweep the board counting red gems ...
+  chance = chance + numRedGems;
+  if (GET_MANA_FIRE(idxCaster) >= 15) then chance = chance - 30;
+  else chance = chance + 30; end
+  if (chance < 50) then return 0; end
+  if (evaluation > 30) then return 0; end
+  if (numRedGems < 6) then return 0; end
+  return 1;
+end
+```
+
+Across the 130 hooks: 107 call `Std_AISpellcastingChance`, 37 use `CountGems`,
+21 use `PERCENTILE_CHANCE_SYNC`, 20 use `EVALUATE_BOARD`, and 12 read `GET_ITEM`.
+So the enemy consults the board, its own mana, and its items before choosing. It
+is not taking list order; list order is only the tiebreak between spells that all
+vote yes.
+
+### `Std_AISpellcastingChance`
+
+Lua, in `Assets/Scripts/StandardUtilityScripts.lua` — not an engine native,
+which is why `Std_` and `CountGems` do not appear in the binary's string table
+while `EVALUATE_BOARD` and `PERCENTILE_CHANCE_SYNC` do.
+
+```lua
+function Std_AISpellcastingChance(modifier)
+  local evaluation = EVALUATE_BOARD();
+  local chance = PERCENTILE_CHANCE_SYNC();
+  if (chance > 50 + modifier) then return 0; end
+  if (evaluation > 30) then return 0; end
+  return 1;
+end
+```
+
+Two clauses. The modifier is added to 50 and the percentile must come in at or
+under it — so it is not "a modifier percent", and the modifier is a float, since
+`SDDI` passes `numYellow * 1.5`. And `evaluation > 30` vetoes regardless of the
+roll.
+
+**That veto is the real answer to why the enemy sometimes plays a move instead of
+casting.** A board worth more than 30 points is worth more than whatever the
+spell does.
+
+Two consequences worth stating because they are easy to get backwards:
+
+- A modifier of -20 is **not** a veto. It puts the bar at 30, so the spell still
+  casts on percentiles 0..30. `SCTH`, `SDRR` and `SSWM` all use -20 this way and
+  still fire when their board gate is not met. Only `SCON`'s -100 actually
+  vetoes, since that puts the bar at -50.
+- 31 spells pass a modifier of 0, so they are cast on at most half the turns that
+  reach them, and never when the board is good.
+
+### What is ported
+
+77 of the 129. The 49 mechanical hooks (`return Std_AISpellcastingChance(N)`) are
+generated into `lib/spell_ai.ml` by `tools/extract_spell_ai.ps1`; the 28 that
+read the board are hand-written in `lib/spell_ai_manual.ml` with their Lua
+alongside. The script reports the remaining 52 by name.
+
+An unported hook is treated as **never cast**, not as always cast. An absent hook
+means the script defines none, which is a yes; an unported one means we know it
+exists and have not read it yet, and guessing yes would have the AI fire spells
+the game deliberately suppresses.
 
 Note the interaction: `FUN_004406F0` temporarily sets difficulty to 2 to get a
 deterministic board evaluation, and `BattleAI_PickSpell` reads the same field.
