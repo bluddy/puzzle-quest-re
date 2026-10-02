@@ -32,20 +32,26 @@ let zero_mana = { earth = 0; fire = 0; air = 0; water = 0 }
     **Not recovered**: the starting value. Nothing in the save file stores it -
     [SAVE_FILE_FORMAT.md] has the masteries and the current reserves but no cap
     field - so the ceiling is a derived runtime quantity and its base value has
-    not been located in the binary. Ten per element is used as the default, but
-    treat it as a parameter rather than a fact: it is a field on the combatant so
-    it can be set per fight.
+    not been located in the binary. Treat the constant below as a chosen
+    parameter rather than a recovered fact; it is a field on the combatant so a
+    fight can set its own.
 
-    **And ten is too low to be plausible.** The spell scripts test mana against
-    thresholds of 8, 10, 12, 14, 15 and 20, and all nine spells whose turn rule
-    is conditional need 8 or more. At a ceiling of ten, every condition at 12 or
-    above can never fire, which would silently disable the turn rules for [SBAC],
-    [SBRA], [SCHL], [SSOA] and [SSWP] among others. Real characters raise their
-    ceilings with skills and items, which is what the "+N to max Fire Mana" bonuses
-    are for. Read a battle set up at the default as exercising the cap rather than
-    reproducing a real character, and raise the ceiling wherever mana conditions
-    matter. *)
-let default_mana_limit = 10
+    **Why the default is 20 and not 10.** The ceiling has to clear the largest
+    number any script compares a pool against, or the comparison is dead code
+    rather than a conditional. The spell scripts test `GET_MANA_*` against 8, 10,
+    12, 14, 15 and 20, and all nine spells whose turn rule is `KeepsTurnIfMana`
+    need 8 or more. Twenty is therefore the smallest default under which every
+    threshold the game actually uses is reachable, which makes it the right
+    ceiling to ship: too low and mechanics silently switch off, too high and the
+    hooks that gate on "a lot of mana" stop meaning anything.
+
+    It is a floor, not a model of a real character. Characters raise their
+    ceilings with skills and with the "+N to max Fire Mana" item bonuses, and the
+    ceiling in a real late fight is comfortably above 20 - the AI hooks that scale
+    a modifier by two or three times a pool ([SFBO], [SSOB], [SFSP]) assume pools
+    in the twenties and thirties. Anything testing those should set an explicit
+    ceiling on the combatant rather than inherit this. *)
+let default_mana_limit = 20
 
 let zero_caps =
   { earth = default_mana_limit

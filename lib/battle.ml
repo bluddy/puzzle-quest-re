@@ -352,11 +352,17 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.a
     {
       ctx_caster = actor;
       ctx_enemy = defender;
+      (* A [battle] is one hero against one monster, so GET_NUM_ENEMIES is
+         always 1 here and SSWP's loop over the enemy side has a single
+         iteration. Keeping it a list rather than hardcoding that means the
+         hook reads the same as the Lua when a multi-enemy fight is added. *)
+      ctx_enemies = [ defender ];
       ctx_board = b.board;
       ctx_evaluation = evaluation;
       ctx_percentile = b.rng 100;
       ctx_roll = b.rng;
       ctx_items = Some (loadout_of b actor);
+      ctx_enemy_items = Some (loadout_of b defender);
     }
 
 (** One turn for the acting side: at most one spell, then a swap only if the

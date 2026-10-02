@@ -36,8 +36,13 @@ let check_opt name got want =
     incr failures
   end
 
-let hero ?(mana = zero_mana) ?(skills = zero_skills) ?(cunning = 0) () =
-  make_combatant ~mana ~skills ~cunning 0 "hero"
+(** A caster or enemy. [life], [max_life] and [effects] are exposed because the
+    hooks that read GET_LIFE and HAS_STATUS_EFFECT need a combatant that can be
+    part way down and already carrying a status; the mana-and-status hooks have
+    their own file, [test_spell_hooks.ml]. *)
+let hero ?(mana = zero_mana) ?(skills = zero_skills) ?(cunning = 0)
+    ?(life = 100) ?(max_life = 100) ?(effects = []) () =
+  make_combatant ~mana ~skills ~cunning ~life ~max_life ~effects 0 "hero"
 
 (* ------------------------------------------------------------------ *)
 (* Spell definitions                                                   *)
@@ -239,15 +244,18 @@ let () =
    these tests are about. *)
 let rich () = hero ~mana:{ earth = 999; fire = 999; air = 999; water = 999 } ()
 
-let ctx ?(evaluation = 0) ?(percentile = 0) ?(caster = rich ())
-    ?(board = Board.of_array_matrix (Array.make_matrix 8 8 Board.Skull)) () =
+let ctx ?(evaluation = 0) ?(percentile = 0) ?(caster = rich ()) ?(enemy = hero ())
+    ?(board = Board.of_array_matrix (Array.make_matrix 8 8 Board.Skull))
+    ?(items = None) ?(enemy_items = None) () =
   { ctx_caster = caster
-  ; ctx_enemy = hero ()
+  ; ctx_enemy = enemy
+  ; ctx_enemies = [ enemy ]
   ; ctx_board = board
   ; ctx_evaluation = evaluation
   ; ctx_percentile = percentile
   ; ctx_roll = (fun n -> if n <= 0 then 0 else 0 mod n)
-  ; ctx_items = None
+  ; ctx_items = items
+  ; ctx_enemy_items = enemy_items
   }
 
 let () =
@@ -344,15 +352,17 @@ let board_with (kind : Spell.gem_kind) (n : int) : Board.board =
                Spell.gem_of_kind kind
              end else filler)))
 
-let bctx ?(caster = rich ()) ?(evaluation = 0) ?(percentile = 0) (b : Board.board) () :
-    ai_context =
+let bctx ?(caster = rich ()) ?(enemy = hero ()) ?(evaluation = 0) ?(percentile = 0)
+    (b : Board.board) () : ai_context =
   { ctx_caster = caster
-  ; ctx_enemy = hero ()
+  ; ctx_enemy = enemy
+  ; ctx_enemies = [ enemy ]
   ; ctx_board = b
   ; ctx_evaluation = evaluation
   ; ctx_percentile = percentile
   ; ctx_roll = (fun _ -> 0)
   ; ctx_items = None
+  ; ctx_enemy_items = None
   }
 
 let yellows n = board_with Spell.GYellow n
@@ -471,12 +481,22 @@ let () =
     (not (run Spell_ai_manual.hook_scon dominated 0 0))
 
 let () =
-  (* Coverage, so the port's size is stated rather than guessed. *)
-  check "49 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 49);
-  check "and 28 board-reading ones are hand written"
-    (List.length Spell_ai_manual.manual_hook_of_spell_ids = 28);
-  check_eq "so 77 of the 129 are ported" (List.length Spell_data.spells_with_ai_hook) 77;
-  check_eq "and 52 are not, and must say so" (List.length Spell_data.spells_without_ai_hook) 52;
+  (* Coverage, so the port's size is stated rather than guessed. The generated
+     count went from 49 to 53 when the extractor learned to accept a signed
+     literal, which picked up SCHV, SCLE and SSTL, plus SSNK's bare [return 1].
+     None of those needed judgement; they had been invisible to a pattern that
+     only matched non-negative digits. *)
+  check "53 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 53);
+  check "and 74 board-reading, mana and item ones are hand written"
+    (List.length Spell_ai_manual.manual_hook_of_spell_ids = 74);
+  check_eq "so 127 of the 129 are ported" (List.length Spell_data.spells_with_ai_hook) 127;
+  (* The two left are SCHG, which needs the untranscribed EvaluateRows helper,
+     and SFBA, which searches the board for a random skull and writes it back
+     through SET_INPUT_DATA. Both named here so the gap is on the record. *)
+  check "and only SCHG and SFBA are not"
+    (List.sort compare
+       (List.map (fun (d : Spell.descriptor) -> d.id) Spell_data.spells_without_ai_hook)
+    = [ "SCHG"; "SFBA" ]);
   (* An unported spell must be treated as never cast rather than always cast, or
      the AI would fire spells the game deliberately suppresses. *)
   let unported =

@@ -6,7 +6,7 @@ Recovered from `game/Puzzle Quest.unpacked.exe`, cross-referenced against
 **This document answers a question from playtesting.** A player observed that
 matching a colour with a high skill in that element makes a free extra turn more
 likely, and suspected the probability is a ratio against a maximum, rising as
-the character grows. That is correct, and the mechanism is at `0x0047D4F0`. Â§4
+the character grows. That is correct, and the mechanism is at `0x0047D4F0`. §4
 has the exact formula.
 
 ---
@@ -56,14 +56,14 @@ Across all 130 spells:
 
 | Total mana | Spells |
 | :--- | :--- |
-| 5â€“13 | 37 |
-| 14â€“16 | 32 |
-| 18â€“26 | 22 |
-| 30â€“45 | 28 |
-| 50â€“80 | 11 |
+| 5–13 | 37 |
+| 14–16 | 32 |
+| 18–26 | 22 |
+| 30–45 | 28 |
+| 50–80 | 11 |
 
 Per-element maxima are tight: air 30, earth 30, fire 32, water 30. Cooldowns
-run 0â€“5, with 2 and 3 most common. Learn scores span 250 to 2000.
+run 0–5, with 2 and 3 most common. Learn scores span 250 to 2000.
 
 ---
 
@@ -109,8 +109,8 @@ time, or a cooldown check.
 
 ### Resistance
 
-`FUN_004466E0` returns a 0â€“4 resistance code for the target, mapping to sound
-effects 7â€“10 and `L"snd_resistspell"`. A resisted cast still pays its cost
+`FUN_004466E0` returns a 0–4 resistance code for the target, mapping to sound
+effects 7–10 and `L"snd_resistspell"`. A resisted cast still pays its cost
 (`FUN_0043FE30` checks the latch, not the resistance result), which matches the
 game: resistance reduces the effect, it does not refund.
 
@@ -181,11 +181,11 @@ starting value has not been located in the binary. `Combat.default_mana_limit`
 is set to 10 as a placeholder, and it is deliberately low compared to real
 characters because of the next paragraph.
 
-### The ceiling has to be well above 10 for the spell scripts to work
+### The ceiling has to clear the largest threshold the scripts use
 
-This is the one place where an unverified default actively breaks mechanics, so
-it is worth stating plainly rather than leaving as a hidden trap. Grepping the
-spell scripts for `GET_MANA_* >= n` gives the thresholds the game actually tests:
+This is the one place where an unverified default actively breaks mechanics, so it
+is worth stating plainly rather than leaving as a hidden trap. Grepping the spell
+scripts for `GET_MANA_* >= n` gives the thresholds the game actually tests:
 
 | threshold | occurrences |
 | --- | --- |
@@ -197,17 +197,22 @@ spell scripts for `GET_MANA_* >= n` gives the thresholds the game actually tests
 | 20 | 1 |
 
 (18 in total across the 130 spell scripts.) All nine spells whose turn rule is
-`KeepsTurnIfMana` need 8 or more. At a ceiling of 10, **every condition at 12 or
-above is unsatisfiable**, which would silently disable the turn rules for `SBAC`,
-`SBRA`, `SCHL`, `SSOA` and `SSWP`, and the cast conditions of the nine spells
-reading `>= 15`.
+`KeepsTurnIfMana` need 8 or more.
 
-Real characters raise their ceilings with skills and items - that is what the
-"+N to max Fire Mana" bonuses on the item table are *for* - so a character that
-casts `SSWP` at all is necessarily above 15 in Air. The lesson for the port is
-that `default_mana_limit` cannot be a constant that real battles rely on. Treat
-a battle run at 10 as a test of the cap itself, and set a realistic ceiling
-whenever a mana-gated condition is part of what is being exercised.
+A ceiling of **10**, which was the placeholder this section originally carried,
+silently disables everything above it: at 10, every condition at 12 or above is
+permanently false, taking the turn rules for `SBAC`, `SBRA`, `SCHL`, `SSOA` and
+`SSWP` with it, along with the cast conditions of the nine spells reading `>= 15`.
+That is not a tuning choice, it is dead code.
+
+`Combat.default_mana_limit` is therefore **20**: the smallest default under which
+every threshold the game uses is reachable, so no mechanic is switched off. It is
+a floor rather than a model of a real character. Characters raise their ceilings
+with skills and with the "+N to max Fire Mana" item bonuses, and a real late fight
+sits comfortably above 20 - the AI hooks that scale a modifier by two or three
+times a pool (`SFBO`, `SSOB`, `SFSP`) assume pools in the twenties and thirties.
+Anything testing those should set an explicit ceiling on the combatant rather than
+inherit the default.
 
 ---
 
@@ -231,7 +236,7 @@ if (board->[0x391] != 0) {                    // extra turns enabled
 ```
 
 So the probability is **`gained / 100`**, and `gained` is the mana banked by that
-match in that element. With the Â§3 formula substituted:
+match in that element. With the §3 formula substituted:
 
 ```
 chance = (skill + 100) * multiplier * 0.01 / 100
@@ -258,7 +263,7 @@ grant these. And the `m_extraTurn` check means at most one is banked per
 pending state â€” a second success is dropped rather than stacking.
 
 This is a completely separate mechanism from the 4-of-a-kind extra turn in
-[`COMBAT_FLOW.md`](COMBAT_FLOW.md) Â§1. Both write to the same
+[`COMBAT_FLOW.md`](COMBAT_FLOW.md) §1. Both write to the same
 `m_turnsLeft` bank, so they stack: a 5-of-a-kind from a high-skill character can
 bank two turns. But the triggers are independent, and only the match-size one is
 deterministic.
@@ -317,10 +322,19 @@ end
 ```
 
 Across the 130 hooks: 107 call `Std_AISpellcastingChance`, 37 use `CountGems`,
-21 use `PERCENTILE_CHANCE_SYNC`, 20 use `EVALUATE_BOARD`, and 12 read `GET_ITEM`.
-So the enemy consults the board, its own mana, and its items before choosing. It
-is not taking list order; list order is only the tiebreak between spells that all
-vote yes.
+21 use `PERCENTILE_CHANCE_SYNC`, and 20 use `EVALUATE_BOARD`.
+
+**Correction: only one hook reads `GET_ITEM`, not twelve.** An earlier count here
+said twelve. That came from counting *calls* rather than *scripts* - SDUP's body
+contains four `GET_ITEM` calls, plus one in its `CastSpell`, and the figure was
+never re-derived. Grepping `Assets/Spells/*.lua` for the name returns exactly one
+file, `SDUP.lua`, which is also the only spell that duplicates an item and so the
+only one with a reason to ask. The port now has `GET_ITEM`, so that hook is
+implemented.
+
+So the enemy consults the board and its own mana before choosing. It is not
+taking list order; list order is only the tiebreak between spells that all vote
+yes.
 
 ### `Std_AISpellcastingChance`
 
@@ -358,10 +372,34 @@ Two consequences worth stating because they are easy to get backwards:
 
 ### What is ported
 
-77 of the 129. The 49 mechanical hooks (`return Std_AISpellcastingChance(N)`) are
-generated into `lib/spell_ai.ml` by `tools/extract_spell_ai.ps1`; the 28 that
-read the board are hand-written in `lib/spell_ai_manual.ml` with their Lua
-alongside. The script reports the remaining 52 by name.
+**127 of the 129.** Two remain, and both are named:
+
+- 53 mechanical hooks are generated into `lib/spell_ai.ml` by
+  `tools/extract_spell_ai.ps1`.
+- 74 that read the board, the pools, the life, the status effects or the items
+  are hand-written in `lib/spell_ai_manual.ml`, each with its Lua alongside.
+- `SCHG` calls `EvaluateRows`, a Lua helper whose body has not been transcribed.
+  Guessing it would put a fabricated scoring function in the middle of the AI's
+  decision.
+- `SFBA` calls `GetRandomGrid_Type` and then `SET_INPUT_DATA`, searching the board
+  for a random skull and writing the cell back as the spell's target.
+
+**What the return value means.** These functions return a *number*, not a
+boolean: `Std_AISpellcastingChance` returns 0 or 1, and three hooks return
+negatives (`SMBU` -50, `SSBL` and `SSTL` -10). In Lua 0 is truthy, so the engine
+cannot be using ordinary truthiness - if it were, `Std_AISpellcastingChance`
+returning 0 would still read as true and every one of the 130 hooks would always
+fire, which would make the entire system pointless. The comparison has to be
+numeric, and `> 0` is the only reading consistent with those three negatives being
+intended as vetoes. `Spell.ai_spellcasting_chance` implements that, so a negative
+modifier is a veto and a positive one raises the percentile the spell needs rather
+than making it more likely to happen sooner.
+
+This also means the extractor's first pattern had a blind spot worth recording:
+it required a non-negative literal, so `SCHV`, `SCLE` and `SSTL` (all -15 or -10)
+were invisible to it, and `SSNK`'s bare `return 1` did not match either. It now
+accepts a sign and a constant body, which is where four of the fifty extra hooks
+came from.
 
 An unported hook is treated as **never cast**, not as always cast. An absent hook
 means the script defines none, which is a yes; an unported one means we know it
@@ -431,8 +469,8 @@ no turn-cost logic in the picker.
 | `Lua_IS_SPELL_CASTABLE` | `Spell.is_castable` |
 | `Lua_HANDLE_SPELL_COST` | `Spell.pay_cost` |
 | `FUN_004466E0` resistance | `Spell.resist` |
-| mana yield, Â§3 | `Spell.mana_yield` |
-| extra turn roll, Â§4 | `Spell.maybe_extra_turn` |
+| mana yield, §3 | `Spell.mana_yield` |
+| extra turn roll, §4 | `Spell.maybe_extra_turn` |
 | `BattleAI_PickSpell` | `Spell.pick_ai_spell` |
 
 `mana_yield` returns the float the original works in, because the extra turn

@@ -65,6 +65,11 @@ type descriptor = {
 type ai_context = {
   ctx_caster : combatant;
   ctx_enemy : combatant;
+  (** [GET_NUM_ENEMIES] plus repeated [GET_ENEMY]. [ctx_enemy] is element 0 of
+      this and is kept separately because 49 of the 52 hooks that read an enemy
+      only ever read the first one. SSWP is the exception: it sums Air mana over
+      the whole enemy side. *)
+  ctx_enemies : combatant list;
   ctx_board : Board.board;
   (** [EVALUATE_BOARD]: the score of the best move available. *)
   ctx_evaluation : int;
@@ -73,6 +78,10 @@ type ai_context = {
   (** Injected randomness for hooks that need it. *)
   ctx_roll : int -> int;
   ctx_items : Item.loadout option;
+  (** The enemy side's loadout, for SDUP, which compares the two sides' four
+      slots. Separate from [ctx_items] because the loadout lives on the battle
+      rather than on the combatant. *)
+  ctx_enemy_items : Item.loadout option;
 }
 type spell = {
   id : string;
@@ -395,12 +404,60 @@ let gredskull = count_gems GRedSkull
 let ggold = count_gems GGold
 let gstar = count_gems GStar
 
+(** [GET_MANA_<ELEMENT>(idx)]: the pool for one element on one combatant.
+
+    Note the two orderings this codebase keeps straight: [Combat.element] is
+    earth, fire, air, water, which is the order the character struct and the
+    spells use, and it is the reverse of the board's gem ids for the last two.
+    This function takes the character element, so it is the former. *)
+let mana_of (c : combatant) (e : element) : int =
+  match e with
+  | Earth -> c.mana.earth
+  | Fire -> c.mana.fire
+  | Air -> c.mana.air
+  | Water -> c.mana.water
+
+(** [GET_LIFE(idx)] and [GET_MAX_LIFE(idx)], which the damage-gated hooks compare
+    against fixed offsets. Lua divides with `/` on integers and truncates, so the
+    "half life" and "quarter life" tests are integer division, not ratios. *)
+let life_of (c : combatant) = c.life
+
+let max_life_of (c : combatant) = c.max_life
+
+(** [HAS_STATUS_EFFECT(idx, STATUS_EFFECT_X)].
+
+    The 17 effects in [Assets/StatusEffects] are the only ones a hook can test,
+    so the constants reduce to their file names. The [STATUS_EFFECT_] prefix in
+    the scripts does not map to them by stripping the prefix: the game appends a
+    participle to most of them, so [HASTE] is the file [Hasted] and
+    [WALLOFFIRE] is [WallOfFired]. Spelling those out here rather than deriving
+    the name keeps the mismatch from being silently wrong.
+
+    [DOOMED] appears in the scripts but has no descriptor in
+    [Assets/StatusEffects], so it is an engine-side effect and no hook here
+    tests it. *)
+let has_status (c : combatant) (name : string) : bool =
+  List.exists (fun (id, _) -> id = name) c.effects
+
+(** [GET_NUM_STATUS_EFFECTS(idx)]: SCOU reads this directly rather than testing a
+    named effect. *)
+let num_status_effects (c : combatant) : int = List.length c.effects
+
 (** [GET_ITEM(n)]: the item id in slot [n] of the caster's loadout, or [""] when
     there is no loadout in scope or the slot is empty. The empty case is [Some
     ""] rather than [None] because the original returns a string and the scripts
     test it against the empty string. *)
 let ctx_get_item (ctx : ai_context) (n : int) : string =
   Option.value (Item.loadout_for ctx.ctx_items n) ~default:""
+
+(** [GET_MAX_MANA_<ELEMENT>(idx)], used by the hooks that reason about a pool
+    being "full" rather than merely large. *)
+let max_mana_of (c : combatant) (e : element) : int =
+  match e with
+  | Earth -> c.max_mana.earth
+  | Fire -> c.max_mana.fire
+  | Air -> c.max_mana.air
+  | Water -> c.max_mana.water
 
 (** The game's colour names for the elements, which is how the spell
     descriptions refer to them. Earth is green, Fire red, Air yellow, Water

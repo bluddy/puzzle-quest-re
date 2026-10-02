@@ -395,12 +395,15 @@ let () =
 
 let () =
   (* A raised ceiling lets the same match bank more, which is the whole point of
-     items that add to max mana. *)
+     items that add to max mana. The default is 20, chosen so every threshold the
+     spell scripts test against is reachable; see [Combat.default_mana_limit]. *)
   let c = make_combatant 0 "hero" in
-  ignore (credit_mana c Fire 10);
-  check "capped at ten to begin with" (mana_at_limit c Fire);
+  (* Crediting more than the ceiling allows gives back only the room there was. *)
+  check_eq "crediting 25 into a cap of 20 banks only 20" (credit_mana c Fire 25) 20;
+  check "so the pool is full" (mana_at_limit c Fire);
+  check_eq "and holds exactly the ceiling" (mana_of Fire c.mana) 20;
   set_mana_limit c Fire 25;
-  check_eq "raising it to 25 allows fifteen more" (credit_mana c Fire 15) 15;
+  check_eq "raising it to 25 allows five more" (credit_mana c Fire 5) 5;
   check_eq "and the pool is full again" (mana_of Fire c.mana) 25
 
 let () =

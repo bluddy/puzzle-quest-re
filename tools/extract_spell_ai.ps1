@@ -33,11 +33,20 @@ $todo = New-Object System.Collections.Generic.List[string]
 
 foreach ($id in ($bodies.Keys | Sort-Object)) {
   $flat = ($bodies[$id] -replace '\s+', ' ').Trim()
-  if ($flat -match '^return Std_AISpellcastingChance\((\d+)\);$') {
+  if ($flat -match '^return Std_AISpellcastingChance\((-?\d+)\);$') {
     $n = $Matches[1]
-    $rows.Add(('  ("{0}", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:{1} ctx);' -f $id, $n))
+    $rows.Add(('  ("{0}", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:({1}) ctx);' -f $id, $n))
     $done.Add(($id + ' (chance ' + $n + ')'))
-  } else {
+  }
+  elseif ($flat -match '^return (-?\d+);$') {
+    # A bare constant body: SSNK returns 1 and so is always a candidate. The
+    # sign matters, because these hooks return a number and the engine treats
+    # anything <= 0 as a veto. See Spell.ai_spellcasting_chance.
+    $n = [int]$Matches[1]
+    $rows.Add(('  ("{0}", fun _ctx -> {1});' -f $id, $(if ($n -gt 0) { 'true' } else { 'false' })))
+    $done.Add(($id + ' (constant ' + $n + ')'))
+  }
+  else {
     $todo.Add($id)
   }
 }
@@ -48,9 +57,16 @@ $hdr = @(
   '    Each spell''s own [ShouldAICastSpell], ported from its Lua script in'
   '    [Assets/Spells/*.lua].'
   ''
-  '    Only the mechanical shape is generated here:'
+  '    Only the mechanical shapes are generated here:'
   ''
   '        return Std_AISpellcastingChance(N);'
+  '        return N;'
+  ''
+  '    where N is an integer literal, negative included. The sign is not cosmetic:'
+  '    these hooks return a number rather than a boolean, and the engine treats'
+  '    anything at or below zero as a veto, so a negative constant is an'
+  '    unconditional "no". That is why -15 (SCHV, SCLE, SSTL) is generated rather'
+  '    than skipped.'
   ''
   '    Anything else is left unported and reported by the script, because those'
   '    bodies read the board, the caster''s mana, or its items and need'
@@ -91,6 +107,12 @@ $manual = @(
   'SBNA','SBNE','SBNF','SBNW','SBRL','SCLI','STHR','SLIS','SCLV','SFBT','SROF'
   ,'SNWR','SDDI','SFRZ','SFSK','SSCV','SDIV','STHX','SHBT','SWBU','SCTH','SDRR'
   ,'SSWM','SESK','SWTD','SIST','SSGZ','SCON'
+  ,'SBAV','SFLV','SDST','SFBO','SFSH','SSOB','SSOS','SCBO','SCTO','STRM','SBST'
+  ,'SSWA','SFSP','SMBU','SSSW','SSBM','SSHO','SEGZ','SGEM','SDGZ','SRGN','SCOU'
+  ,'SCHL','SENR','SHAS','SHID','SHWL','SSPT','SWOF','SSBL'
+  ,'SRBI','SRFC','SCHM','SBUR','SSTO','SBRA','SSOA','SPET','SWEB','SSPF','STAU'
+  ,'SSWP','SVAM','SZAP','STHU'
+  ,'SDUP'
 )
 $manualSet = New-Object System.Collections.Generic.HashSet[string]
 foreach ($m in $manual) { [void]$manualSet.Add($m) }

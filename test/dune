@@ -1,3 +1,4 @@
 (tests
- (names test_board test_ai test_score test_combat test_spell test_battle test_item)
+ (names test_board test_ai test_score test_combat test_spell test_spell_hooks
+         test_battle test_item)
  (libraries puzzle_quest_lib))

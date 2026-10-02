@@ -3,9 +3,16 @@
     Each spell's own [ShouldAICastSpell], ported from its Lua script in
     [Assets/Spells/*.lua].
 
-    Only the mechanical shape is generated here:
+    Only the mechanical shapes are generated here:
 
         return Std_AISpellcastingChance(N);
+        return N;
+
+    where N is an integer literal, negative included. The sign is not cosmetic:
+    these hooks return a number rather than a boolean, and the engine treats
+    anything at or below zero as a veto, so a negative constant is an
+    unconditional "no". That is why -15 (SCHV, SCLE, SSTL) is generated rather
+    than skipped.
 
     Anything else is left unported and reported by the script, because those
     bodies read the board, the caster's mana, or its items and need
@@ -19,55 +26,59 @@
     body is transcribed in [Spell.ai_spellcasting_chance]. *)
 
 let should_ai_cast_hook : (string * (Spell.ai_context -> bool)) list = [
-  ("SBAC", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SBLU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SBRF", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:50 ctx);
-  ("SBRI", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:50 ctx);
-  ("SBRP", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:50 ctx);
-  ("SBRZ", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:50 ctx);
-  ("SBSG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:15 ctx);
-  ("SCAU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SCHA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SCHE", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SCHF", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SCHW", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SCLM", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SCMA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:10 ctx);
-  ("SDBO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:15 ctx);
-  ("SDBR", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SENT", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SEPO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SEVA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SFAV", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SFBM", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:10 ctx);
-  ("SFCA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:20 ctx);
-  ("SFOD", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SFOF", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SGOW", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SHGO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:30 ctx);
-  ("SHOP", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SHSI", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SKLO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SLCO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:20 ctx);
-  ("SLIG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SMST", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:20 ctx);
-  ("SPAU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SPRO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SREV", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:50 ctx);
-  ("SRNC", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SRND", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:10 ctx);
-  ("SSAN", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:5 ctx);
-  ("SSBD", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SSPA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SSTU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:10 ctx);
-  ("SSUT", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("STWH", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:10 ctx);
-  ("SVIG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SWHI", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SWLO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SWMG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
-  ("SWOP", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:15 ctx);
-  ("SWOT", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:0 ctx);
+  ("SBAC", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SBLU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SBRF", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(50) ctx);
+  ("SBRI", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(50) ctx);
+  ("SBRP", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(50) ctx);
+  ("SBRZ", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(50) ctx);
+  ("SBSG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(15) ctx);
+  ("SCAU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SCHA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SCHE", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SCHF", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SCHV", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(-15) ctx);
+  ("SCHW", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SCLE", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(-15) ctx);
+  ("SCLM", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SCMA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(10) ctx);
+  ("SDBO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(15) ctx);
+  ("SDBR", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SENT", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SEPO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SEVA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SFAV", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SFBM", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(10) ctx);
+  ("SFCA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(20) ctx);
+  ("SFOD", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SFOF", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SGOW", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SHGO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(30) ctx);
+  ("SHOP", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SHSI", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SKLO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SLCO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(20) ctx);
+  ("SLIG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SMST", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(20) ctx);
+  ("SPAU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SPRO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SREV", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(50) ctx);
+  ("SRNC", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SRND", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(10) ctx);
+  ("SSAN", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(5) ctx);
+  ("SSBD", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SSNK", fun _ctx -> true);
+  ("SSPA", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SSTL", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(-10) ctx);
+  ("SSTU", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(10) ctx);
+  ("SSUT", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("STWH", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(10) ctx);
+  ("SVIG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SWHI", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SWLO", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SWMG", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
+  ("SWOP", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(15) ctx);
+  ("SWOT", fun ctx -> Spell.ai_spellcasting_chance_i ~modifier:(0) ctx);
 ]
 
 (** The ported hook for [id], if it has one yet.
