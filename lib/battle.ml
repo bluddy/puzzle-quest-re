@@ -275,22 +275,52 @@ let play_move (b : battle) (defender : combatant) : unit =
       b.board <- reshuffle ~rng:b.rng b.board;
       emit b Refilled
 
+(** Builds the context the AI spell hooks are evaluated against.
+
+    [EVALUATE_BOARD] and [PERCENTILE_CHANCE_SYNC] are read once here rather than
+    per spell: [Std_AISpellcastingChance] consults both, neither changes within a
+    turn, and evaluating the board once per candidate would both cost more and
+    consume the board's rng differently depending on the spell list.
+
+    [PERCENTILE_CHANCE_SYNC] returns 0..99, which is what the Lua compares
+    against, so the range here has to stay 100 to match. *)
+let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.ai_context =
+  let evaluation =
+    let e =
+      evaluate_board ~weights:b.rules.ai_weights ~rng:b.rng ~difficulty:b.rules.difficulty
+        ~hero:{ level = b.rules.hero_level; level_cap = b.rules.hero_level_cap }
+        (ai_view b)
+    in
+    if e.has_valid_move then e.best_score else 0
+  in
+  Spell.
+    {
+      ctx_caster = actor;
+      ctx_enemy = defender;
+      ctx_board = b.board;
+      ctx_evaluation = evaluation;
+      ctx_percentile = b.rng 100;
+      ctx_roll = b.rng;
+    }
+
 (** One turn for the acting side: at most one spell, then a swap only if the
     spell handed the turn back.
 
-    This is the part that is easy to get wrong. Casting usually {e consumes} the
-    turn, so a spell that ends it means no swap that turn either. An earlier
-    version always swapped, which is right for the 13 spells that keep the turn
-    and wrong for the other 116.
+    Two things are easy to get wrong here.
 
-    Whether the turn is kept belongs to the spell, not to the caster's intent: the
-    original's spell picker has no opinion about it at all, it just takes the
-    first affordable spell and lets the spell's own rule decide. So nothing here
-    consults the AI. *)
+    Casting usually {e consumes} the turn, so a spell that ends it means no swap
+    that turn either. An earlier version always swapped, which is right for the
+    13 spells that keep the turn and wrong for the other 116.
+
+    And the spell choice is not "first affordable". Every spell carries its own
+    [ShouldAICastSpell], which reads the board, the caster's mana, and the
+    percentiles, and the first spell that votes yes wins. The caller does not
+    get a say beyond the difficulty skip inside [Spell.pick_ai_spell]. *)
 let take_action (b : battle) (actor : combatant) (defender : combatant)
     (spells : spell list) : unit =
   let still_turn =
-    match pick_spell ~difficulty:b.rules.difficulty ~roll:b.rng actor spells with
+    match pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
+            (ai_context b actor defender) spells with
     | None ->
         (* Nothing cast, so the turn is the caster's to use. *)
         emit b (SpellHeld actor.name);

@@ -84,10 +84,8 @@ let usage () =
   Printf.eprintf "                    cheapest spell and the two choosers look identical.\n";
   Printf.eprintf "  --trace           Print every event (default: summary only)\n";
   Printf.eprintf "  --board           Print the final board\n";
-  Printf.eprintf "  --spell-ai P      Spell chooser: faithful (the original's) or ranked\n";
-  Printf.eprintf "                    (default: %s)\n" (Spell.string_of_spell_policy (Spell.get_spell_policy ()));
-  Printf.eprintf "  --spells N        Give the foe N spells of mixed quality, so the\n";
-  Printf.eprintf "                    choosers can be compared (default 0)\n";
+  Printf.eprintf "  --spells N        Give the foe N spells from the game's own table,\n";
+  Printf.eprintf "                    so its per-spell AI logic can be watched (default 0)\n";
   exit 1
 
 (** Spells handed to the foe so the two choosers can be compared.
@@ -151,14 +149,6 @@ let () =
     | "--board" :: rest ->
         show_final := true;
         parse rest
-    | "--spell-ai" :: p :: rest ->
-        (match p with
-        | "faithful" -> Spell.set_spell_policy Spell.Faithful
-        | "ranked" -> Spell.set_spell_policy Spell.Ranked
-        | _ ->
-            Printf.eprintf "pq_battle: --spell-ai must be 'faithful' or 'ranked'\n\n";
-            usage ());
-        parse rest
     | "--spells" :: n :: rest ->
         spell_count := int_of_string n;
         parse rest
@@ -196,8 +186,7 @@ let () =
     create ~rng ~rules ~enemy_spells:foe_spells
       (seed_skulls (fresh_board rng) rng) hero foe
   in
-  Printf.printf "seed %d  difficulty %d  cap %d turns  spell-ai %s\n\n" !seed !difficulty
-    !max_turns (Spell.string_of_spell_policy (Spell.get_spell_policy ()));
+  Printf.printf "seed %d  difficulty %d  cap %d turns\n\n" !seed !difficulty !max_turns;
   show_combatant "hero" hero;
   show_combatant "foe" foe;
   print_newline ();

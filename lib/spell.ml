@@ -11,6 +11,17 @@
 
 open Combat
 
+(** The colour names the game's scripts use for the elements. [GEM_YELLOW] and
+    friends appear throughout the spell scripts. *)
+type gem_kind = GYellow | GBlue | GRed | GGreen | GSkull | GRedSkull | GGold | GPurple | GAny
+
+let mana_of_gem = function
+  | GYellow -> Some Air
+  | GBlue -> Some Water
+  | GRed -> Some Fire
+  | GGreen -> Some Earth
+  | _ -> None
+
 (** Whether casting a spell ends your turn.
 
     The overwhelming majority of spells end it, which means the caster does
@@ -47,6 +58,26 @@ type descriptor = {
   turn_cost : turn_cost;
 }
 
+(** What a spell's [ShouldAICastSpell] is evaluated against.
+
+    Every one of the 130 battle spells defines the hook, so this is not a corner
+    case ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it is how the original AI chooses. [ctx_evaluation] and
+    [ctx_percentile] are precomputed once per turn rather than per spell, because
+    [Std_AISpellcastingChance] reads both and they do not change within a turn.
+
+    [ctx_board] is the live board, in [Board]'s 0-based rows. Several hooks sweep
+    it directly. *)
+type ai_context = {
+  ctx_caster : combatant;
+  ctx_enemy : combatant;
+  ctx_board : Board.board;
+  (** [EVALUATE_BOARD]: the score of the best move available. *)
+  ctx_evaluation : int;
+  (** [PERCENTILE_CHANCE_SYNC]: a 0..99 roll, one per turn. *)
+  ctx_percentile : int;
+  (** Injected randomness for hooks that need it. *)
+  ctx_roll : int -> int;
+}
 type spell = {
   id : string;
   name : string;
@@ -62,10 +93,15 @@ type spell = {
   learn_keys : int;
   input_type : int;  (** 0 none, 1 column, 2 row, 3 grid *)
   mutable use_count : int;
-  (* Defaults to [EndsTurn], which is right for 97 of the 129 spells. Only the
-     exceptions need to be set; see [lib/spell_turns.ml] for the full table and
-     [Spell_turns.turn_cost_of] to look one up by id. *)
+(* Defaults to [EndsTurn], which is right for 97 of the 129 spells. Only the
+     exceptions need to be set; see [lib/spell_data.ml] for the full table. *)
   turn_cost : turn_cost;
+  (* The spell's own AI hooks, ported from its Lua script. Both are [None] only
+     for a bare spell built in a test: all 130 game spells define both. *)
+  should_ai_cast : (ai_context -> bool) option;
+  is_cast_legal : (ai_context -> bool) option;
+  (* Set when [CastSpell] is ported; see [lib/spell_effects.ml]. *)
+  cast_spell : (ai_context -> unit) option;
 }
 
 let total_cost (s : spell) =
@@ -73,7 +109,8 @@ let total_cost (s : spell) =
 
 let make_spell ?(cost_earth = 0) ?(cost_fire = 0) ?(cost_air = 0) ?(cost_water = 0)
     ?(cooldown = 0) ?(learn_score = 0) ?(learn_masks = 0) ?(learn_keys = 0)
-    ?(input_type = 0) ?(use_count = 0) ?(turn_cost = EndsTurn) id name =
+    ?(input_type = 0) ?(use_count = 0) ?(turn_cost = EndsTurn) ?should_ai_cast
+    ?is_cast_legal ?cast_spell id name =
   {
     id;
     name;
@@ -88,6 +125,9 @@ let make_spell ?(cost_earth = 0) ?(cost_fire = 0) ?(cost_air = 0) ?(cost_water =
     input_type;
     use_count;
     turn_cost;
+    should_ai_cast;
+    is_cast_legal;
+    cast_spell;
   }
 
 (** [Lua_IS_SPELL_CASTABLE]. A plain per-pool comparison. Note the original
@@ -228,190 +268,71 @@ let apply_match_gain ?(enabled = true) ?(roll = Random.int) ?(pending = false) t
   end
   else false
 
+
+(** [Std_AISpellcastingChance] from [Assets/Scripts/StandardUtilityScripts.lua].
+
+    Not "a modifier percent". The body is:
+
+    ```lua
+    function Std_AISpellcastingChance(modifier)
+        local evaluation = EVALUATE_BOARD();
+        local chance = PERCENTILE_CHANCE_SYNC();
+        if (chance > 50 + modifier) then return 0; end
+        if (evaluation > 30) then return 0; end
+        return 1;
+    end
+    ```
+
+    So it casts when the percentile is at or under 50 plus the modifier, and
+    only when the board has no good move lined up. That second clause is the real
+    answer to why the enemy sometimes plays a move instead of casting: a board
+    worth more than 30 points is worth more than whatever the spell does.
+
+    37 of the 130 spells call this with a modifier of 0, so they are cast on at
+    most half the turns that reach them, and never when the board is good. *)
+let ai_spellcasting_chance ~modifier (ctx : ai_context) : bool =
+  if ctx.ctx_percentile > 50 + modifier then false else ctx.ctx_evaluation <= 30
+
+(** A spell's [ShouldAICastSpell]. [None] means "the script does not define one",
+    which for the 130 battle spells never happens but which a bare spell built in
+    a test will hit; such a spell is treated as wanting to be cast, since the
+    hook's return of 0 is what suppresses a spell, not its absence. *)
+let should_ai_cast (s : spell) (ctx : ai_context) : bool =
+  match s.should_ai_cast with Some f -> f ctx | None -> true
+
+(** A spell's [IsCastSpellLegal]: whether it may be cast at all, as opposed to
+    whether the AI would like to. Separate from affordability, which
+    [can_cast] covers. *)
+let is_cast_legal (s : spell) (ctx : ai_context) : bool =
+  match s.is_cast_legal with Some f -> f ctx | None -> true
+
 (** [BattleAI_PickSpell] (0x00440FB0).
 
-    Reproduces the original's behaviour faithfully, which is: a
-    difficulty-gated random skip, then an affordability filter, then the
-    {e first} affordable spell. There is no ranking of any kind.
+    The decompilation reads as a thin driver: a difficulty-gated skip, then walk
+    the enemy's spell list, and take the first candidate that passes. What was
+    missing is that {e every} spell defines its own [ShouldAICastSpell], and that
+    is where the intelligence lives: 107 of the 130 call
+    [Std_AISpellcastingChance], 20 consult [EVALUATE_BOARD], 37 count gems on
+    the board. So the original's spell choice is per-spell evaluation, not
+    list order.
 
-    That is the same gap as the move chooser, and it is the thing a harder AI
-    has to fix. The ranking is deliberately not written yet so that the
-    current behaviour stays testable and any improvement shows up as a visible
-    diff rather than a silent behaviour change. *)
-let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) (c : combatant)
+    The skip is a percentile roll against a difficulty-scaled threshold. The
+    per-spell hook is consulted in list order and the first that says yes wins,
+    which is why spell order still matters even though the spells now get a
+    vote. *)
+let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) (ctx : ai_context)
     (spells : spell list) : spell option =
-  (* 50% skip on easy, 25% on normal, none at hard. *)
-  let skip_chance = if difficulty = 0 then 50 else if difficulty = 1 then 25 else 0 in
-  let skipped = skip_chance > 0 && roll 100 < skip_chance in
-  if skipped then None
-  (* [can_cast] rather than [is_castable]: a spell on cooldown is as
-     unavailable as one the caster cannot pay for, and the original's
-     first-affordable-wins then skips straight past it to the next spell. *)
-  else List.find_opt (can_cast ~spells_disallowed:false c) spells
-
-(* ------------------------------------------------------------------ *)
-(* The ranked chooser                                                    *)
-(* ------------------------------------------------------------------ *)
-
-(** Weights for [score_spell]. Each term is scaled to roughly 0..1000 so the
-    weights are readable as relative importance rather than as magic numbers.
-
-    Note what is {e not} here: spell effect strength. The 130 spell scripts have
-    not been ported yet, so there is no damage number or heal amount to compare
-    spells by. Until there is, these are meta signals read off the spell
-    descriptor, which is still a strict improvement on list order, but it is not
-    a claim that the chooser knows which spell is strongest. See
-    [score_spell] for what each term means and what it is a proxy for. *)
-type spell_weights = {
-  w_potency : int;  (** how advanced the spell is, from its learn score *)
-  w_economy : int;  (** how cheaply it is cast, relative to repeatability *)
-  w_rationing : int;  (** how rare each cast is, from its cooldown *)
-  w_affinity : int;  (** how well the caster's skills pay for it *)
-  w_headroom : int;  (** penalty for emptying the caster's pools *)
-}
-
-let default_spell_weights =
-  {
-    w_potency = 100;
-    w_economy = 40;
-    w_rationing = 25;
-    w_affinity = 60;
-    w_headroom = 50;
-  }
-
-(** The learn score the original's own spells top out at. Used to normalise, so
-    the weight above reads as a proportion of the ceiling rather than as an
-    absolute. *)
-let learn_score_ceiling = 1000
-
-(** How well suited the caster's training is to this spell's cost.
-
-    A spell is paid for out of one or more elemental pools, and the pools it
-    draws on are exactly the ones the character earns. A fire spell is cheap for
-    a fire specialist and ruinous for one with no fire at all, and the descriptor
-    can tell us the first case from the second without knowing what the spell
-    {e does}.
-
-    Returns 0 for a spell with no cost at all, which would otherwise divide by
-    zero and dominate everything. *)
-let affinity_of (c : combatant) (s : spell) : float =
-  let costs = [ (Earth, s.cost_earth); (Fire, s.cost_fire); (Air, s.cost_air); (Water, s.cost_water) ] in
-  let paid = List.filter (fun (_, n) -> n > 0) costs in
-  match paid with
-  | [] -> 0.0
-  | _ ->
-      (* The weakest pool the spell needs is what gates it, so that is the one to
-         score: a spell cheap in a pool the caster has nothing in is not cheap. *)
-      let worst =
-        List.fold_left
-          (fun acc (e, n) -> min acc (float_of_int (skill_in e c.skills) /. float_of_int n))
-          infinity paid
-      in
-      if worst = infinity then 0.0
-      else
-        (* 10x a caster's skill fully covers a 1-point cost. Beyond that the
-           spell is affordable on skill alone and the term stops mattering. *)
-        min 1.0 (worst /. 10.0)
-
-(** Fraction of the caster's total mana the spell would consume. Used to
-    discourage spending a whole pool on one cast when a cheaper spell would leave
-    headroom for the next turn. *)
-let spend_fraction (c : combatant) (s : spell) : float =
-  let have = total_mana c.mana in
-  if have <= 0 then 1.0
-  else min 1.0 (float_of_int (total_cost s) /. float_of_int have)
-
-(** Scores one castable spell. Higher is better.
-
-    Every term is a proxy for effect strength rather than effect strength
-    itself, because the spell scripts are not ported. The reasoning behind each:
-
-    - {b potency}: [learn_score] is the score a hero needs to have learned the
-      spell. The game gates its strongest effects behind high scores, so it is
-      the best available stand-in for "this spell is powerful". A 990-score spell
-      beats a 350-score one under any weighting that gets the ordering right.
-    - {b economy}: a cheap spell can be cast many times a battle. Only a modest
-      weight, because a cheap spell is cheap for a reason.
-    - {b rationing}: a spell on a long cooldown is cast rarely, so each cast has
-      to be worth more. This is what stops the chooser from spending every turn
-      on the cheapest spell available.
-    - {b affinity}: the caster's skill in the elements the spell draws on.
-    - {b headroom}: a penalty for the fraction of the pool spent. This is what
-      makes the chooser save a big spell for a turn it is worth using on.
-
-    Deterministic: no rng, and ties keep the first candidate, matching the
-    original's strict [<] comparison in [pick_ai_spell]. *)
-let score_spell ?(weights = default_spell_weights) (c : combatant) (s : spell) : int =
-  let potency =
-    (* Normalised against the ceiling, then to 0..1000. *)
-    min learn_score_ceiling (max 0 s.learn_score) * 1000 / learn_score_ceiling
-  in
-  let cost = total_cost s in
-  (* A free spell is maximally repeatable. 25 mana is treated as the practical
-     ceiling for a single cast; beyond that the term has saturated anyway. *)
-  let economy = if cost <= 0 then 1000 else 1000 - min 1000 (cost * 1000 / 25) in
-  (* Same 25-turn reference, scaled down since rationing matters less. *)
-  let rationing = if s.cooldown <= 0 then 0 else min 1000 (s.cooldown * 1000 / 10) in
-  let affinity = int_of_float (affinity_of c s *. 1000.0) in
-  (* A full-spend is the worst case, so this is a penalty of up to 1000. *)
-  let headroom = 1000 - int_of_float (spend_fraction c s *. 1000.0) in
-  (weights.w_potency * potency
-   + weights.w_economy * economy
-   + weights.w_rationing * rationing
-   + weights.w_affinity * affinity
-   + weights.w_headroom * headroom)
-  / (weights.w_potency + weights.w_economy + weights.w_rationing
-    + weights.w_affinity + weights.w_headroom)
-
-(** The replacement for [pick_ai_spell]: scores every castable spell and takes the
-    best, rather than the first affordable one.
-
-    The difficulty skip is kept. It is a recovered behaviour, it is orthogonal to
-    ranking, and dropping it would confound the comparison between the two
-    choosers with a change in cast frequency. *)
-let pick_ranked_spell ?(weights = default_spell_weights) ?(difficulty = 1)
-    ?(roll = Random.int) (c : combatant) (spells : spell list) : spell option =
   let skip_chance = if difficulty = 0 then 50 else if difficulty = 1 then 25 else 0 in
   if skip_chance > 0 && roll 100 < skip_chance then None
   else
-    let best = ref None and best_score = ref min_int in
-    List.iter
-      (fun s ->
-        if can_cast ~spells_disallowed:false c s then begin
-          let sc = score_spell ~weights c s in
-          if !best_score < sc then begin
-            best_score := sc;
-            best := Some s
-          end
-        end)
-      spells;
-    !best
-
-(** Which chooser the AI uses. A global rather than a per-battle field, because
-    this is a policy switch for the enhanced build: set it once at startup and
-    every battle follows. Keeping it out of [Battle.rules] would also mean the
-    faithful port had a knob on it, which is the thing most worth keeping clean.
-
-    Defaults to [Faithful], so the recovered behaviour is what runs unless
-    something asks otherwise. *)
-type spell_policy =
-  | Faithful  (** the original's first-affordable-wins *)
-  | Ranked  (** [pick_ranked_spell] *)
-
-let spell_policy : spell_policy ref = ref Faithful
-
-let set_spell_policy (p : spell_policy) : unit = spell_policy := p
-let get_spell_policy () : spell_policy = !spell_policy
-
-(** The entry point the battle loop calls. Dispatches on the global, so the loop
-    itself has no knowledge of the two policies. *)
-let pick_spell ?weights ?(difficulty = 1) ?(roll = Random.int) (c : combatant)
-    (spells : spell list) : spell option =
-  match !spell_policy with
-  | Faithful -> pick_ai_spell ~difficulty ~roll c spells
-  | Ranked -> pick_ranked_spell ?weights ~difficulty ~roll c spells
-
-let string_of_spell_policy = function Faithful -> "faithful" | Ranked -> "ranked"
+    List.find_opt
+      (fun (s : spell) ->
+        (* Order matters: the original checks what it can pay for first, then
+           the spell's own legality, then its preference. *)
+        can_cast ~spells_disallowed:false ctx.ctx_caster s
+        && is_cast_legal s ctx
+        && should_ai_cast s ctx)
+      spells
 
 (** The game's colour names for the elements, which is how the spell
     descriptions refer to them. Earth is green, Fire red, Air yellow, Water

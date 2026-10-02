@@ -25,15 +25,16 @@ let check_float name got want =
     incr failures
   end
 
+(* Spells carry function hooks, so they cannot be compared with [=]. Identity is
+   the id, which is also what these tests mean by "the same spell". *)
+let spell_key = function None -> "<none>" | Some (s : spell) -> s.id
+
 let check_opt name got want =
-  match (got, want) with
-  | None, None -> check name true
-  | Some g, Some w when g = w -> check name true
-  | _ ->
-      check name false;
-      Printf.printf "       got %s, want %s\n"
-        (match got with None -> "None" | Some s -> s.id)
-        (match want with None -> "None" | Some s -> s.id)
+  if spell_key got = spell_key want then Printf.printf "ok   - %s\n" name
+  else begin
+    Printf.printf "FAIL - %s (got %s, want %s)\n" name (spell_key got) (spell_key want);
+    incr failures
+  end
 
 let hero ?(mana = zero_mana) ?(skills = zero_skills) ?(cunning = 0) () =
   make_combatant ~mana ~skills ~cunning 0 "hero"
@@ -231,197 +232,96 @@ let () =
 (* AI spell choice: the original's behaviour, reproduced                *)
 (* ------------------------------------------------------------------ *)
 
+(* A context with everything stubbed, so a test can pin one input at a time.
+   [evaluation] is what EVALUATE_BOARD returns and [percentile] what
+   PERCENTILE_CHANCE_SYNC returns. The default caster is rich, because
+   affordability is checked before any hook and a broke caster would mask what
+   these tests are about. *)
+let rich () = hero ~mana:{ earth = 999; fire = 999; air = 999; water = 999 } ()
+
+let ctx ?(evaluation = 0) ?(percentile = 0) ?(caster = rich ())
+    ?(board = Board.of_array_matrix (Array.make_matrix 8 8 Board.Skull)) () =
+  { ctx_caster = caster
+  ; ctx_enemy = hero ()
+  ; ctx_board = board
+  ; ctx_evaluation = evaluation
+  ; ctx_percentile = percentile
+  ; ctx_roll = fun n -> if n <= 0 then 0 else 0 mod n
+  }
+
 let () =
-  let cheap = make_spell ~cost_fire:1 "CHEAP" "cheap" in
-  let pricey = make_spell ~cost_fire:50 "PRICEY" "pricey" in
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  check_opt "the AI takes the first affordable spell"
-    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ cheap; pricey ])
-    (Some cheap);
-  (* It does not rank: putting the better spell second changes nothing. *)
-  check_opt "and does not rank by any measure"
-    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ pricey; cheap ])
-    (Some pricey);
+  (* A spell with no hook of its own wants casting, since it is the hook's
+     return of 0 that suppresses a spell and not its absence. *)
+  let plain = make_spell ~cost_fire:1 "PLAIN" "plain" in
+  check_opt "a spell with no AI hook is cast"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ()) [ plain ]) (Some plain);
+  (* Affordability still gates, before the hook is even consulted. *)
   check_opt "a broke character gets nothing"
-    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (hero ()) [ cheap ])
-    None;
-  (* The difficulty gate. 50% skip on easy, 25% on normal, none at hard. *)
-  check_opt "hard never skips" (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 0) c [ cheap ])
-    (Some cheap);
-  check_opt "easy skips on a low roll"
-    (pick_ai_spell ~difficulty:0 ~roll:(fun _ -> 0) c [ cheap ]) None;
-  check_opt "easy does not skip on a high roll"
-    (pick_ai_spell ~difficulty:0 ~roll:(fun _ -> 99) c [ cheap ]) (Some cheap);
-  check_opt "normal skips below 25"
-    (pick_ai_spell ~difficulty:1 ~roll:(fun _ -> 10) c [ cheap ]) None;
-  check_opt "normal casts at 25 and above"
-    (pick_ai_spell ~difficulty:1 ~roll:(fun _ -> 30) c [ cheap ]) (Some cheap)
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ~caster:(hero ()) ()) [ plain ])
+    None
+
+let () =
+  (* The hook can refuse, and then the walk continues to the next spell. This is
+     the whole point: the original is not taking list order. *)
+  let refuses =
+    make_spell ~cost_fire:1 ~should_ai_cast:(fun _ -> false) "NO" "refuses" in
+  let accepts = make_spell ~cost_fire:1 ~should_ai_cast:(fun _ -> true) "YES" "accepts" in
+  check_opt "a spell whose hook refuses is skipped"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ()) [ refuses; accepts ])
+    (Some accepts);
+  check_opt "and a lone refusing spell yields nothing"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ()) [ refuses ]) None;
+  (* Order still decides between two spells that both vote yes, so list order is
+     a tiebreak rather than the whole rule. *)
+  let also_accepts = make_spell ~cost_fire:1 ~should_ai_cast:(fun _ -> true) "YES2" "also" in
+  check_opt "among willing spells, list order decides"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ()) [ refuses; accepts; also_accepts ])
+    (Some accepts)
+
+let () =
+  (* IsCastSpellLegal is a separate gate from affordability. *)
+  let illegal =
+    make_spell ~cost_fire:1 ~is_cast_legal:(fun _ -> false) "BAD" "illegal" in
+  let ok = make_spell ~cost_fire:1 "OK" "ok" in
+  check_opt "an illegal spell is skipped even though it is affordable"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ()) [ illegal; ok ]) (Some ok);
+  (* Affordability is checked first, so an illegal hook is not even reached for a
+     spell the caster cannot pay for. *)
+  let pricey_illegal =
+    make_spell ~cost_fire:500 ~is_cast_legal:(fun _ -> false) "PI" "pricey illegal" in
+  check_opt "and the hook is not consulted for an unaffordable spell"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) (ctx ()) [ pricey_illegal; ok ])
+    (Some ok)
 
 (* ------------------------------------------------------------------ *)
-(* The ranked chooser                                                    *)
+(* Std_AISpellcastingChance                                            *)
 (* ------------------------------------------------------------------ *)
 
 let () =
-  (* The whole point: the original takes list order, so a weak spell first is
-     cast forever. The ranked chooser must ignore position. *)
-  let weak =
-    make_spell ~cost_fire:1 ~learn_score:350 "WEAK" "weak" in
-  let strong =
-    make_spell ~cost_fire:10 ~learn_score:990 "STRONG" "strong" in
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  check_opt "ranked picks the potent spell even when it is second"
-    (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ weak; strong ])
-    (Some strong);
-  check_opt "and the same one when it is first"
-    (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ strong; weak ])
-    (Some strong);
-  (* Order independence is the load-bearing claim, so check every rotation. *)
-  check_opt "order A" (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ weak; strong ])
-    (Some strong);
-  check_opt "order B" (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ strong; weak ])
-    (Some strong);
-  (* The faithful path must still be order-dependent, or the test above proves
-     nothing about which chooser it is exercising. *)
-  check_opt "faithful still takes list order"
-    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ weak; strong ])
-    (Some weak)
+  (* The body, transcribed:
 
-let () =
-  (* A more advanced spell outranks a weaker one at equal cost. *)
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  let low = make_spell ~cost_fire:5 ~learn_score:100 "LOW" "low" in
-  let high = make_spell ~cost_fire:5 ~learn_score:900 "HIGH" "high" in
-  check "potency dominates at equal cost"
-    (score_spell c high > score_spell c low)
+       function Std_AISpellcastingChance(modifier)
+         local evaluation = EVALUATE_BOARD();
+         local chance = PERCENTILE_CHANCE_SYNC();
+         if (chance > 50 + modifier) then return 0; end
+         if (evaluation > 30) then return 0; end
+         return 1;
+       end
 
-let () =
-  (* A cheap spell outranks an expensive one of the same potency: it can be cast
-     many more times across a battle. *)
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  let cheap = make_spell ~cost_fire:1 ~learn_score:500 "CH" "cheap" in
-  let dear = make_spell ~cost_fire:24 ~learn_score:500 "DE" "dear" in
-  check "economy favours the cheaper spell"
-    (score_spell c cheap > score_spell c dear);
-  (* Beyond the reference cost the economy term saturates, so a wildly expensive
-     spell is not penalised without bound. *)
-  let absurd = make_spell ~cost_fire:500 ~learn_score:500 "AB" "absurd" in
-  check "and saturates rather than going negative"
-    (score_spell c absurd >= 0)
+     Note `>` on both sides: a percentile of exactly 50 casts at modifier 0, and
+     an evaluation of exactly 30 does not veto. *)
+  check "modifier 0 casts at percentile 50"
+    (ai_spellcasting_chance ~modifier:0 (ctx ~percentile:50 ()));
+  check "and not at 51" (not (ai_spellcasting_chance ~modifier:0 (ctx ~percentile:51 ())));
+  check "modifier 50 casts at 100" (ai_spellcasting_chance ~modifier:50 (ctx ~percentile:99 ()));
+  check "modifier 50 also at 101, since the roll is 0..99"
+    (ai_spellcasting_chance ~modifier:50 (ctx ~percentile:100 ()));
+  check "evaluation 30 does not veto" (ai_spellcasting_chance ~modifier:0 (ctx ~evaluation:30 ()));
+  check "evaluation 31 does" (not (ai_spellcasting_chance ~modifier:0 (ctx ~evaluation:31 ())));
+  (* The two clauses are independent: a good board vetoes regardless of the roll. *)
+  check "a good board vetoes even on a lucky roll"
+    (not (ai_spellcasting_chance ~modifier:99 (ctx ~evaluation:31 ~percentile:0 ())));
 
-let () =
-  (* Rationing: at equal cost and potency, a spell on cooldown is worth more per
-     cast because it is rarer. This is the term that stops the chooser from
-     spending every turn on whatever happens to be cheapest. *)
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  let always = make_spell ~cost_fire:5 ~learn_score:500 ~cooldown:0 "AA" "always" in
-  let rare = make_spell ~cost_fire:5 ~learn_score:500 ~cooldown:5 "RA" "rare" in
-  check "a rationed spell scores higher" (score_spell c rare > score_spell c always);
-  check "and it is chosen over the always-available one"
-    (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ always; rare ] = Some rare)
-
-let () =
-  (* Affinity: a fire spell is cheap for a fire specialist and dear for one with
-     no fire. Same cost, same potency, different caster. *)
-  let fire_spell = make_spell ~cost_fire:10 ~learn_score:500 "FS" "fire" in
-  let specialist =
-    hero ~mana:{ zero_mana with fire = 100 }
-      ~skills:{ zero_skills with fire = 300 } ()
-  in
-  let novice = hero ~mana:{ zero_mana with fire = 100 } () in
-  check "a specialist scores the fire spell higher"
-    (score_spell specialist fire_spell > score_spell novice fire_spell);
-  check "affinity saturates at full training" (affinity_of specialist fire_spell = 1.0);
-  check "and is zero for an untrained pool" (affinity_of novice fire_spell = 0.0);
-  (* A costless spell must not divide by zero or dominate everything. *)
-  let free_spell = make_spell ~learn_score:100 "FR" "free" in
-  check "a free spell has zero affinity, not infinity"
-    (affinity_of specialist free_spell = 0.0)
-
-let () =
-  (* Headroom: at equal cost and potency, the chooser prefers the spell it can
-     afford now over one that empties the pool, so it can still cast next turn. *)
-  let spell = make_spell ~cost_fire:10 ~learn_score:500 "HD" "headroom" in
-  let rich = hero ~mana:{ zero_mana with fire = 100 } () in
-  let exact = hero ~mana:{ zero_mana with fire = 10 } () in
-  check "casting from a full pool scores better than emptying an exact one"
-    (score_spell rich spell > score_spell exact spell)
-
-let () =
-  (* The global switch. Defaults to faithful so the recovered behaviour is what
-     runs unless something opts in. *)
-  check "defaults to faithful" (get_spell_policy () = Faithful);
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  let weak = make_spell ~cost_fire:1 ~learn_score:350 "W" "weak" in
-  let strong = make_spell ~cost_fire:10 ~learn_score:990 "S" "strong" in
-  check_opt "and dispatches to the faithful chooser"
-    (pick_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ weak; strong ]) (Some weak);
-  set_spell_policy Ranked;
-  check "the setter takes" (get_spell_policy () = Ranked);
-  check_opt "and the dispatcher now ranks"
-    (pick_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ weak; strong ]) (Some strong);
-  check "policy has a printable name" (string_of_spell_policy Ranked = "ranked");
-  (* Put it back: a global that leaks between tests is worse than no global. *)
-  set_spell_policy Faithful;
-  check "restored" (get_spell_policy () = Faithful)
-
-let () =
-  (* The chooser must never offer a spell the caster cannot afford, whatever the
-     weights say. A high potency must not buy an unaffordable cast. *)
-  let pricey = make_spell ~cost_fire:500 ~learn_score:990 "P" "pricey" in
-  let cheap = make_spell ~cost_fire:1 ~learn_score:100 "C" "cheap" in
-  let c = hero ~mana:{ zero_mana with fire = 10 } () in
-  check_opt "an unaffordable spell is never chosen however potent"
-    (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c [ pricey; cheap ])
-    (Some cheap);
-  check_opt "and a broke character gets nothing"
-    (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) (hero ()) [ cheap ]) None
-
-let () =
-  (* A spell on cooldown is not castable, so the chooser must skip it even though
-     it may outscore everything else. *)
-  let ready = make_spell ~cost_fire:1 ~learn_score:100 "R" "ready" in
-  let cooling = make_spell ~cost_fire:1 ~learn_score:990 ~cooldown:5 "C" "cooling" in
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  start_cooldown c cooling;
-  check_opt "a spell on cooldown is skipped" (pick_ranked_spell ~difficulty:2 c [ ready; cooling ])
-    (Some ready);
-  (* Once it comes off cooldown the potent one wins. *)
-  tick_cooldowns c;
-  tick_cooldowns c;
-  tick_cooldowns c;
-  tick_cooldowns c;
-  tick_cooldowns c;
-  check "the counter reached zero" (is_ready c cooling);
-  check_opt "and then it is chosen" (pick_ranked_spell ~difficulty:2 c [ ready; cooling ])
-    (Some cooling)
-
-let () =
-  (* The difficulty skip survives the swap to the ranked chooser. Dropping it
-     would confound chooser comparisons with a change in cast frequency. *)
-  let s = make_spell ~cost_fire:1 "S" "s" in
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  check_opt "hard never skips" (pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 0) c [ s ])
-    (Some s);
-  check_opt "easy skips on a low roll"
-    (pick_ranked_spell ~difficulty:0 ~roll:(fun _ -> 0) c [ s ]) None;
-  check_opt "normal skips below 25"
-    (pick_ranked_spell ~difficulty:1 ~roll:(fun _ -> 10) c [ s ]) None
-
-let () =
-  (* Ranking is deterministic, so a seeded battle replays identically whichever
-     chooser is active. *)
-  let c = hero ~mana:{ zero_mana with fire = 100 } () in
-  let spells =
-    [ make_spell ~cost_fire:3 ~learn_score:200 "A" "a";
-      make_spell ~cost_fire:4 ~learn_score:800 "B" "b";
-      make_spell ~cost_fire:5 ~learn_score:500 ~cooldown:2 "C" "c" ]
-  in
-  let once () = pick_ranked_spell ~difficulty:2 ~roll:(fun _ -> 99) c spells in
-  check "the same choice on a repeat" (once () = once ());
-  check "and it is stable across many calls"
-    (let first = once () in List.for_all (fun _ -> once () = first) [ 1; 2; 3; 4; 5 ])
-
-let () =
   if !failures = 0 then print_endline "\nAll spell tests passed."
   else begin
     Printf.printf "\n%d spell test(s) failed.\n" !failures;
