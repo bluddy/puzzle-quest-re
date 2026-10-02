@@ -158,7 +158,7 @@ let () =
   in
   parse (List.tl args);
   let rng = lcg !seed in
-  let skill n = { earth = n; fire = n; air = n; water = n } in
+  let skill n = { earth = n; fire = n; air = n; water = n; battle = n; morale = n; cunning = n } in
   let hero =
     make_combatant ~cunning:5 ~max_life:!hero_life ~life:!hero_life
       ~skills:(skill !hero_skill) 0 "hero"

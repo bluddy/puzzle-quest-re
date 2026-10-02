@@ -37,27 +37,83 @@ let add_mana e amount m =
 
 let total_mana m = m.earth + m.fire + m.air + m.water
 
-(** Skill per element, a separate thing from the mana balance.
+(** The seven character skills, not just the four elemental ones.
 
-    The save file stores all four: [save_file.ml] reads them as
-    {earth, fire, water, air} from the hero's attribute block. They drive the
-    mana yield and therefore the extra turn roll, so a character with a full pool
-    but no training banks mana at the untrained rate. *)
-type skills = { earth : int; fire : int; air : int; water : int }
+    The mana economy only cares about the first four, but the save file stores all
+    seven and so do item restrictions: 28 of the 160 items require a Battle,
+    Morale, or Cunning level rather than an elemental one. Modelling only the
+    elements would have silently made those 28 items unrestrictable. *)
+type skill =
+  | SEarth
+  | SFire
+  | SAir
+  | SWater
+  | SBattle
+  | SMorale
+  | SCunning
 
-let zero_skills = { earth = 0; fire = 0; air = 0; water = 0 }
+type skills = {
+  earth : int;
+  fire : int;
+  air : int;
+  water : int;
+  battle : int;
+  morale : int;
+  cunning : int;
+}
 
-let skill_in (e : element) (s : skills) : int =
-  match e with Earth -> s.earth | Fire -> s.fire | Air -> s.air | Water -> s.water
+let zero_skills =
+  { earth = 0; fire = 0; air = 0; water = 0; battle = 0; morale = 0; cunning = 0 }
 
-let add_skill (e : element) (amount : int) (s : skills) : skills =
-  match e with
-  | Earth -> { s with earth = s.earth + amount }
-  | Fire -> { s with fire = s.fire + amount }
-  | Air -> { s with air = s.air + amount }
-  | Water -> { s with water = s.water + amount }
+let skill_in (s : skill) (k : skills) : int =
+  match s with
+  | SEarth -> k.earth
+  | SFire -> k.fire
+  | SAir -> k.air
+  | SWater -> k.water
+  | SBattle -> k.battle
+  | SMorale -> k.morale
+  | SCunning -> k.cunning
 
-let total_skills s = s.earth + s.fire + s.air + s.water
+let add_skill (s : skill) (amount : int) (k : skills) : skills =
+  match s with
+  | SEarth -> { k with earth = k.earth + amount }
+  | SFire -> { k with fire = k.fire + amount }
+  | SAir -> { k with air = k.air + amount }
+  | SWater -> { k with water = k.water + amount }
+  | SBattle -> { k with battle = k.battle + amount }
+  | SMorale -> { k with morale = k.morale + amount }
+  | SCunning -> { k with cunning = k.cunning + amount }
+
+let total_skills k =
+  k.earth + k.fire + k.air + k.water + k.battle + k.morale + k.cunning
+
+(** The element a skill name refers to, for the paths that only ever deal in the
+    four elemental ones: mana yield, and the spell AI's affinity term. *)
+let element_of_skill = function
+  | SEarth -> Some Earth
+  | SFire -> Some Fire
+  | SAir -> Some Air
+  | SWater -> Some Water
+  | _ -> None
+
+(** The skill name an element maps to, which is the direction the mana yield and
+    the spell AI's affinity term need: they have an [element] in hand and want
+    its skill value. *)
+let skill_of_element = function
+  | Earth -> SEarth
+  | Fire -> SFire
+  | Air -> SAir
+  | Water -> SWater
+
+let skill_name = function
+  | SEarth -> "earth"
+  | SFire -> "fire"
+  | SAir -> "air"
+  | SWater -> "water"
+  | SBattle -> "battle"
+  | SMorale -> "morale"
+  | SCunning -> "cunning"
 
 (** A combatant. Only the fields the turn manager and status effects read are
     modelled. [cunning] is the initiative stat at skill slot 5; [is_dead] is

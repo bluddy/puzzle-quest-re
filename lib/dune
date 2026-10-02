@@ -2,6 +2,9 @@
  (name puzzle_quest_lib)
  (modules
   board
+  item
+  item_data
+  item_hooks
   spell_data
   spell_ai
   spell_ai_manual

@@ -94,7 +94,21 @@ type battle = {
   hero_spells : spell list;
   enemy_spells : spell list;
   effects : effect_def list;
+  (* Equipped items, per side. These live on the battle rather than on the
+     combatants because [Item] depends on [Combat], so a loadout cannot be named
+     from inside [Combat] without a cycle. The battle is also the only thing that
+     knows which side is which.
+
+     Two fields rather than a map keyed by combatant id, matching the existing
+     hero/enemy shape. That is correct for the one-on-one case and is the thing
+     to revisit first if co-op rosters ever arrive. *)
+  hero_items : Item.loadout;
+  enemy_items : Item.loadout;
 }
+
+(** The loadout belonging to whichever side [c] is on. *)
+let loadout_of (b : battle) (c : combatant) : Item.loadout =
+  if c.id = b.hero.id then b.hero_items else b.enemy_items
 
 let emit (b : battle) (e : event) = b.log <- e :: b.log
 let log_of (b : battle) = List.rev b.log
@@ -144,7 +158,7 @@ let element_index (e : element) : int =
     [rules.hero_skill_cap] because the original clamps at 999 before computing
     the yield. *)
 let skill_of (c : combatant) (b : battle) (e : element) : int =
-  min b.rules.hero_skill_cap (skill_in e c.skills)
+  min b.rules.hero_skill_cap ((skill_in (skill_of_element e) c.skills))
 
 (** Credits mana and rolls for the extra turn, once per matched run.
 
@@ -253,13 +267,55 @@ let play_move (b : battle) (defender : combatant) : unit =
       emit b (Swap (sx, sy, c.cand_direction));
       let dealt = resolve_cascades b defender in
       if dealt > 0 then begin
-        (* Both hook chains run: the attacker's GIVE_DAMAGE first, then the
-           defender's RECEIVE_DAMAGE. Order matters, since a pair of effects
-           that amplify and reduce cancel out differently depending on which
-           sees the other's number first. The original's receive hook is the
-           outer one, since it is the defender's armour. *)
-        let outgoing = give_damage (attacker_of b defender) b.effects dealt in
-        let taken = receive_damage defender b.effects outgoing in
+        (* Two chains run, and within each the attacker's side is the inner one.
+
+           The order matters and is not arbitrary. For a given combatant the
+           original runs GIVE_DAMAGE before RECEIVE_DAMAGE, so an item that
+           amplifies what it deals and an item that reduces what it takes compose
+           as amplify-then-reduce rather than the other way round. Across the two
+           combatants it runs the attacker's chain first, so the defender's
+           receive hooks see the already-amplified number. *)
+let attacker = attacker_of b defender in
+        let ictx =
+          Item.
+            {
+              ic_board = Some b.board;
+              ic_percentile = b.rng 100;
+              ic_roll = b.rng;
+              ic_attacker = Some attacker;
+              ic_defender = Some defender;
+              ic_hero = b.hero;
+              ic_enemy = b.enemy;
+              ic_max_mana = None;
+            }
+        in
+        (* Items first, then status effects, each as its own chain.
+
+           The {e relative} order of an item hook against a status-effect hook is
+           not recovered: the original dispatches both through the same
+           name-based callback table, and nothing in the binary or the scripts
+           fixes whether a character's worn item runs before or after the status
+           effects on it. Items are placed first here on the assumption that
+           equipment is the more persistent modifier, and this comment is the
+           record of that being a choice rather than a recovery.
+
+           What {e is} recovered is the order across the two combatants: the
+           attacker's chain runs before the defender's, so a defender's
+           reduction sees the already-amplified number. *)
+        let outgoing =
+          give_damage attacker b.effects
+            (Item.fold_give_damage (loadout_of b attacker) ictx ~damage:dealt
+               ~source:attacker.id ~target:defender.id
+               ~f:(fun (i : Item.item) n -> Item.give_damage i ictx ~damage:n
+                     ~source:attacker.id ~target:defender.id))
+        in
+        let taken =
+          receive_damage defender b.effects
+            (Item.fold_receive_damage (loadout_of b defender) ictx ~damage:outgoing
+               ~source:attacker.id ~target:defender.id
+               ~f:(fun (i : Item.item) n -> Item.receive_damage_hook i ictx ~damage:n
+                     ~source:attacker.id ~target:defender.id))
+        in
         defender.life <- max 0 (defender.life - taken);
         (* The defeat sweep keys off the flag, not the life total, so it has to
            be raised here or nobody is ever reported dead. *)
@@ -387,8 +443,8 @@ let run (b : battle) : battle =
   b
 
 let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
-    ?(enemy_spells = []) ?(effects = []) (board : board) (hero : combatant)
-    (enemy : combatant) : battle =
+    ?(enemy_spells = []) ?(effects = []) ?hero_items ?enemy_items
+    (board : board) (hero : combatant) (enemy : combatant) : battle =
   if hero.id = enemy.id then invalid_arg "Battle.create: combatants need distinct ids";
   {
     rules;
@@ -406,7 +462,16 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
     hero_spells;
     enemy_spells;
     effects;
+    hero_items = (match hero_items with Some l -> l | None -> Item.new_loadout ());
+    enemy_items = (match enemy_items with Some l -> l | None -> Item.new_loadout ());
   }
+
+(** Puts [i] on [c]'s side, if [c] may wear it. Returns the item it displaced, or
+    [None]. Used at battle setup rather than mid-fight, so there is no turn cost
+    to model. *)
+let give_item (b : battle) (c : combatant) ~(level : int) (i : Item.item) :
+    Item.item option =
+  if Item.can_equip c ~level i then Item.equip (loadout_of b c) i else None
 
 let element_name = function
   | Earth -> "earth"
