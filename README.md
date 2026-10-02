@@ -41,9 +41,10 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - Ported to OCaml in [lib/combat.ml](lib/combat.ml) with tests in [test/test_combat.ml](test/test_combat.ml).
   - Recovered the 37-hook scripting table, which is the basis for dropping Lua.
 - [x] **Option F: Spells and Mana** ([docs/SPELLS.md](docs/SPELLS.md)):
-  - Parsed all 130 spell XML files: costs, cooldowns, learn requirements, input types.
+  - Parsed all 129 battle spell descriptors from `Assets/Spells/*.xml`: costs, cooldowns, learn requirements, input types. Regenerable with `tools/extract_spell_data.ps1`.
   - Recovered mana yield — `(skill + 100) * run_multiplier * 0.01`, skill capped at 999.
   - **The stat-based extra turn**: chance is `gained / 100`, rolled per element per match, which is why extra turns become common late game. Found by playtesting observation and confirmed at `0x0047D4F0`.
+  - **Casting usually ends the turn**, so the caster does not also swap. The rule is stated per spell in each spell's DETL line; 97 of 129 end it, 13 keep it, 10 end it after an effect, and 9 are conditional on the caster's mana.
   - The AI's spell choice is a difficulty-gated skip plus an affordability filter, first affordable wins, with no ranking at all.
   - Ported to OCaml in [lib/spell.ml](lib/spell.ml) with tests in [test/test_spell.ml](test/test_spell.ml).
 - [x] **Option G: Headless Battle Loop** ([lib/battle.ml](lib/battle.ml)):
@@ -54,11 +55,11 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - Both damage-hook chains run: the attacker's `GIVE_DAMAGE`, then the defender's `RECEIVE_DAMAGE`.
   - Matching, Red Skull explosions, 5-run wildcards, gold, and XP all come from `Board.resolve_matches`; the board reports its own run groupings so there is one matcher rather than two.
   - Skills are modelled per element and drive mana yield, rather than being read off the mana balance.
-  - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, cooldowns, damage hooks, gold/XP/Heroic Effort, death, and the stalemate cap.
-- [x] **Ranked AI Spell Chooser** ([docs/SPELLS.md](docs/SPELLS.md)):
-  - The original's `BattleAI_PickSpell` takes the *first* affordable spell with no scoring, so an enemy with twenty spells casts the cheapest one forever.
-  - `Spell.pick_ranked_spell` scores every castable spell and takes the best, selected through the global `Spell.spell_policy` (default `Faithful`, so the recovered behaviour is what runs unless asked otherwise).
-  - Five weighted terms — potency (`learn_score`), economy, rationing (`cooldown`), affinity (caster's skills), headroom. Scored on descriptor properties, **not** effect strength, which needs the ported effect bodies.
+  - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, cooldowns, the turn-ending rule, damage hooks, gold/XP/Heroic Effort, death, and the stalemate cap.
+
+Enhancement ideas are kept out of the port and tracked in
+[`ENHANCEMENTS.md`](docs/ENHANCEMENTS.md), including the ranked AI spell
+chooser, which is implemented but off by default.
 
 ---
 
@@ -128,10 +129,13 @@ The same seed always produces the same fight, so a trace is reproducible.
 
 ### Compare the Two Spell Choosers
 ```powershell
-# Same seed, same fight, only the AI's spell policy differs
+# Same seed, same fight, only the AI's spell policy differs.
+# `faithful` is the default and is the original's behaviour; `ranked` is an
+# enhancement, off by default. See docs/ENHANCEMENTS.md.
 dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400
 dune exec bin/pq_battle.exe -- --seed 5 --turns 120 --spells 4 --difficulty 2 --foe-skill 400 --spell-ai ranked
 ```
-`faithful` (the default) takes the first affordable spell and so casts only
-`SCRAP`. `ranked` spreads across the roster. Give the foe skill, or it earns too
-little mana to afford anything but the cheapest and the two look identical.
+`--spells N` hands the foe N real spells from the game's own table, so you can
+see which it reaches for and whether the cast ended its turn. Give the foe skill
+(`--foe-skill`), or it earns too little mana to afford anything but the cheapest
+spell.

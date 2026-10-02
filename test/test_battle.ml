@@ -314,14 +314,37 @@ let () =
       (fighter ~mana:{ zero_mana with fire = 500 } 1 "foe")
   in
   let done_b = run b in
-  let casts = List.filter_map (function SpellCast (_, id) -> Some id | _ -> None) (log_of done_b) in
+  let events = log_of done_b in
+  let casts = List.filter_map (function SpellCast (_, id) -> Some id | _ -> None) events in
   check "a cooldown spell is still cast" (casts <> []);
   (* 40 turns at a 3-turn cooldown, counting the caster's own turns only, is at
      most 14 casts. Without the cooldown it would be every one of the foe's 20. *)
   check "and far fewer times than the fight has turns" (List.length casts <= 15);
   check "but not zero" (List.length casts > 0);
-  check "the counter reaches zero again"
-    (cooldown_left done_b.enemy s = 0)
+  (* The load-bearing claim is the {e gap}, measured in the foe's own turns.
+     Asserting the counter reaches zero by the end of the battle would be a
+     fragile statement about where the fight happened to stop. *)
+  let foe_turn_of_each_cast =
+    let turn = ref 0 in
+    List.filter_map
+      (fun e ->
+        match e with
+        | TurnStart (_, Enemy, _) ->
+            incr turn;
+            None
+        | SpellCast (_, _) -> Some !turn
+        | _ -> None)
+      events
+  in
+  let gaps =
+    let rec go acc = function
+      | a :: (b :: _ as rest) -> go ((b - a) :: acc) rest
+      | _ -> acc
+    in
+    go [] foe_turn_of_each_cast
+  in
+  check "no two casts are closer than the cooldown" (List.for_all (fun g -> g >= 3) gaps);
+  check "and there was more than one cast to measure" (List.length gaps > 0)
 
 let () =
   (* A spell with no Data cooldown is never gated. *)
@@ -530,6 +553,127 @@ let () =
     (skill_of unskilled b Fire = 0);
   check "skill is read from the skill field" (skill_of trained b Fire = 500);
   check "the cap clamps it at 999" (skill_of trained { b with rules = { b.rules with hero_skill_cap = 20 } } Fire = 20)
+
+(* ------------------------------------------------------------------ *)
+(* Casting ends the turn                                               *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* The rule under test: an ordinary spell ends the turn, so the caster does
+     not also swap. This is the common case and the battle loop previously had
+     it exactly backwards. *)
+  let s = make_spell ~cost_fire:1 "SORD" "ordinary" in
+  let b =
+    create ~rng:(lcg 67) ~rules:{ default_rules with difficulty = 2 }
+      ~enemy_spells:[ s ] (playable_board ())
+      (fighter ~life:500 0 "hero")
+      (fighter ~mana:{ zero_mana with fire = 500 } ~life:500 1 "foe")
+  in
+  let done_b = run b in
+  let events = log_of done_b in
+  check "the spell was cast" (List.exists (fun e -> match e with SpellCast _ -> true | _ -> false) events);
+  (* Walk the log: a foe turn that cast an ordinary spell must contain no swap. *)
+  let foa_turns_with_a_swap =
+    let in_foe = ref false and bad = ref 0 and good = ref 0 in
+    List.iter
+      (fun e ->
+        match e with
+        | TurnStart (_, Enemy, _) ->
+            in_foe := true;
+            good := 0
+        | TurnStart (_, Hero, _) -> in_foe := false
+        | SpellCast (_, _) when !in_foe -> incr good
+        | Swap _ when !in_foe -> incr bad
+        | _ -> ())
+      events;
+    (!bad, !good)
+  in
+  let bad, casting_turns = foa_turns_with_a_swap in
+  check "at least one turn cast the spell" (casting_turns > 0);
+  check "and none of those turns also swapped" (bad = 0)
+
+let () =
+  (* A spell that keeps the turn does hand it back, so the caster also swaps. *)
+  let s = make_spell ~cost_fire:1 ~turn_cost:KeepsTurn "SKEEP" "keeps" in
+  let b =
+    create ~rng:(lcg 71) ~rules:{ default_rules with difficulty = 2 }
+      ~enemy_spells:[ s ] (playable_board ())
+      (fighter ~life:500 0 "hero")
+      (fighter ~mana:{ zero_mana with fire = 500 } ~life:500 1 "foe")
+  in
+  let done_b = run b in
+  let events = log_of done_b in
+  let both =
+    let in_foe = ref false and hits = ref 0 in
+    let cast = ref false and swapped = ref false in
+    List.iter
+      (fun e ->
+        match e with
+        | TurnStart (_, Enemy, _) ->
+            if !cast && !swapped then incr hits;
+            in_foe := true;
+            cast := false;
+            swapped := false
+        | TurnStart (_, Hero, _) ->
+            in_foe := false;
+            if !cast && !swapped then incr hits;
+            cast := false;
+            swapped := false
+        | SpellCast _ when !in_foe -> cast := true
+        | Swap _ when !in_foe -> swapped := true
+        | _ -> ())
+      events;
+    if !cast && !swapped then incr hits;
+    !hits
+  in
+  check "a turn-keeping spell casts and then swaps" (both > 0)
+
+let () =
+  (* The conditional form tests the caster's mana at the moment of the cast. *)
+  let spell = make_spell ~cost_fire:2 ~turn_cost:(KeepsTurnIfMana (Fire, 15)) "SCOND" "cond" in
+  check "below the threshold the turn ends" (not (keeps_turn (fighter ~mana:zero_mana 0 "a") spell));
+  check "at the threshold it is kept" (keeps_turn (fighter ~mana:{ zero_mana with fire = 15 } 0 "a") spell);
+  check "above it too" (keeps_turn (fighter ~mana:{ zero_mana with fire = 99 } 0 "a") spell);
+  (* The threshold is on the named element only: a full pool elsewhere does not
+     help. This is the failure mode a transposition would cause, and the element
+     ordering differs between the spell description and the board. *)
+  check "another element's mana does not satisfy it"
+    (not (keeps_turn (fighter ~mana:{ zero_mana with earth = 99; air = 99; water = 99 } 0 "a") spell))
+
+let () =
+  (* The generated table. Spot-checking against the descriptions in
+     English/StandardSpellsText.xml, which is where the values come from. *)
+  let turn_cost_of id =
+    match Spell_data.descriptor_of id with
+    | Some (d : Spell.descriptor) -> d.turn_cost
+    | None -> Spell.EndsTurn
+  in
+  check "SBAC keeps the turn if fire mana is 15+"
+    (turn_cost_of "SBAC" = Spell.KeepsTurnIfMana (Fire, 15));
+  check "SCHA keeps the turn outright" (turn_cost_of "SCHA" = Spell.KeepsTurn);
+  check "SBRL ends the turn after the effect"
+    (turn_cost_of "SBRL" = Spell.EndsTurnAfterEffect);
+  check "an ordinary spell ends the turn" (turn_cost_of "SBAV" = Spell.EndsTurn);
+  check "an unknown id defaults to ending the turn" (turn_cost_of "NOPE" = Spell.EndsTurn);
+  check "the table covers the 129 battle spells"
+    (List.length Spell_data.spell_descriptors = 129);
+  let ends_turn =
+    List.length
+      (List.filter
+         (fun (d : Spell.descriptor) -> string_of_turn_cost d.turn_cost = "EndsTurn")
+         Spell_data.spell_descriptors)
+  in
+  let keeps =
+    List.length
+      (List.filter
+         (fun (d : Spell.descriptor) -> string_of_turn_cost d.turn_cost = "KeepsTurn")
+         Spell_data.spell_descriptors)
+  in
+  (* The counts the extraction reported, so a change in the spell data shows up
+     here rather than as a silent behaviour change. *)
+  check "97 spells end the turn by default" (ends_turn = 97);
+  check "13 spells keep the turn outright" (keeps = 13);
+  check "so the common case really is ending it" (ends_turn > keeps * 5)
 
 (* ------------------------------------------------------------------ *)
 (* Damage and death                                                     *)

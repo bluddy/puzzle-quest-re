@@ -90,16 +90,25 @@ let usage () =
   Printf.eprintf "                    choosers can be compared (default 0)\n";
   exit 1
 
-(** A stand-in roster with the descriptor properties the chooser actually reads:
-    cost, learn score, and cooldown. The effect bodies are not ported, so these
-    are not the real spells, but they are enough to show the two choosers
-    diverging: the faithful one always takes [SCRAP], the ranked one climbs the
-    learn scores as mana allows. *)
+(** Spells handed to the foe so the two choosers can be compared.
+
+    Real ids from the game's own table, in the game's own order, which the
+    original's first-affordable picker walks. What is missing is the effect
+    bodies, so casting one does nothing here; that is enough to compare the
+    choosers, which both read only the descriptor, and not enough to say which
+    spell is stronger.
+
+    SBAV, SBNA, SBAC and SBRA are the four the extraction flagged as cheapest
+    first, and SBAC additionally keeps the turn if the caster has 15+ fire, so
+    the roster exercises both turn rules. *)
+let demo_spell_ids = [ "SBAV"; "SBNA"; "SBAC"; "SBRA" ]
+
 let demo_spells =
-  [ Spell.make_spell ~cost_fire:1 ~learn_score:100 ~cooldown:0 "SCRAP" "scrap spell";
-    Spell.make_spell ~cost_fire:2 ~learn_score:350 ~cooldown:0 "DULL" "dull spell";
-    Spell.make_spell ~cost_fire:4 ~learn_score:600 ~cooldown:2 "SOLID" "solid spell";
-    Spell.make_spell ~cost_fire:8 ~learn_score:990 ~cooldown:4 "GREAT" "great spell" ]
+  List.filter_map
+    (fun id -> Spell_data.descriptor_of id)
+    demo_spell_ids
+  |> List.map (fun (d : Spell.descriptor) -> Spell.spell_of_descriptor d ~name:d.id ())
+  |> List.map (fun (s : Spell.spell) -> s)
 
 let () =
   let seed = ref 1 in
@@ -222,17 +231,15 @@ let () =
   if foe_spells <> [] then begin
     let casts =
       List.filter_map
-        (function SpellCast (who, id) -> Some (who, id) | _ -> None) events
+        (function SpellCast (_, id) -> Some id | _ -> None) events
     in
-    let by_id id = List.length (List.filter (fun (_, i) -> i = id) casts) in
     print_newline ();
-    Printf.printf "  spells cast   %d by the foe: " (by_id "SCRAP" + by_id "DULL" + by_id "SOLID" + by_id "GREAT");
     List.iter
-      (fun s ->
-        let n = by_id s.Spell.id in
-        if n > 0 then Printf.printf "%s %d  " s.Spell.id n)
-      demo_spells;
-    print_newline ()
+      (fun (s : Spell.spell) ->
+        let n = List.length (List.filter (fun i -> i = s.Spell.id) casts) in
+        Printf.printf "  %-6s cost %-3d  %-22s cast %d\n" s.Spell.id
+          (Spell.total_cost s) (Spell.string_of_turn_cost s.Spell.turn_cost) n)
+      foe_spells
   end;
   (match done_b.winner with
   | Some Draw -> print_endline "  (mutual destruction)"

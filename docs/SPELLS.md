@@ -6,7 +6,7 @@ Recovered from `game/Puzzle Quest.unpacked.exe`, cross-referenced against
 **This document answers a question from playtesting.** A player observed that
 matching a colour with a high skill in that element makes a free extra turn more
 likely, and suspected the probability is a ratio against a maximum, rising as
-the character grows. That is correct, and the mechanism is at `0x0047D4F0`. §4
+the character grows. That is correct, and the mechanism is at `0x0047D4F0`. Â§4
 has the exact formula.
 
 ---
@@ -56,14 +56,14 @@ Across all 130 spells:
 
 | Total mana | Spells |
 | :--- | :--- |
-| 5–13 | 37 |
-| 14–16 | 32 |
-| 18–26 | 22 |
-| 30–45 | 28 |
-| 50–80 | 11 |
+| 5â€“13 | 37 |
+| 14â€“16 | 32 |
+| 18â€“26 | 22 |
+| 30â€“45 | 28 |
+| 50â€“80 | 11 |
 
 Per-element maxima are tight: air 30, earth 30, fire 32, water 30. Cooldowns
-run 0–5, with 2 and 3 most common. Learn scores span 250 to 2000.
+run 0â€“5, with 2 and 3 most common. Learn scores span 250 to 2000.
 
 ---
 
@@ -109,8 +109,8 @@ time, or a cooldown check.
 
 ### Resistance
 
-`FUN_004466E0` returns a 0–4 resistance code for the target, mapping to sound
-effects 7–10 and `L"snd_resistspell"`. A resisted cast still pays its cost
+`FUN_004466E0` returns a 0â€“4 resistance code for the target, mapping to sound
+effects 7â€“10 and `L"snd_resistspell"`. A resisted cast still pays its cost
 (`FUN_0043FE30` checks the latch, not the resistance result), which matches the
 game: resistance reduces the effect, it does not refund.
 
@@ -153,7 +153,7 @@ The constants are `100.0f` at `0x005217B4` and `0.01f` at `0x0051E4C8`. The
 `+ 100` floor means a character with zero skill still banks one mana per matched
 gem, and the `0.01` is just a scale factor so the multiply reads as a
 percentage. The multiplier is 1.0 for a 3-run, 2.0 for a 4-run and 3.0 for a
-5-run — the same tiers the AI's move scoring rewards.
+5-run â€” the same tiers the AI's move scoring rewards.
 
 ---
 
@@ -177,7 +177,7 @@ if (board->[0x391] != 0) {                    // extra turns enabled
 ```
 
 So the probability is **`gained / 100`**, and `gained` is the mana banked by that
-match in that element. With the §3 formula substituted:
+match in that element. With the Â§3 formula substituted:
 
 ```
 chance = (skill + 100) * multiplier * 0.01 / 100
@@ -191,7 +191,7 @@ The consequences match what the player remembered:
   narrow one.
 - **Extra turns become common late game** because skill saturates at 999. At
   skill 999 a single-element 3-run gives `(999+100)*1*0.01 = 10.99` mana, so a
-  roll below 10 succeeds — roughly one turn in ten per element per match. Four
+  roll below 10 succeeds â€” roughly one turn in ten per element per match. Four
   elements in one match makes it near-certain.
 - **The early game is stingy.** At skill 0 a 3-run banks 1 mana, so a 3-match
   has a 1% chance per element.
@@ -201,10 +201,10 @@ floored: a `gained` of 10.99 counts as 10.
 
 Two guards. `board->[0x391]` is a mode flag, so puzzle and research modes never
 grant these. And the `m_extraTurn` check means at most one is banked per
-pending state — a second success is dropped rather than stacking.
+pending state â€” a second success is dropped rather than stacking.
 
 This is a completely separate mechanism from the 4-of-a-kind extra turn in
-[`COMBAT_FLOW.md`](COMBAT_FLOW.md) §1. Both write to the same
+[`COMBAT_FLOW.md`](COMBAT_FLOW.md) Â§1. Both write to the same
 `m_turnsLeft` bank, so they stack: a 5-of-a-kind from a high-skill character can
 bank two turns. But the triggers are independent, and only the match-size one is
 deterministic.
@@ -240,56 +240,8 @@ survivable candidate writes the index to `CBattleManager + 0x44` and clears
   one.
 
 That last point is the same gap as the move chooser. The enemy has spells, and
-picks one by coin flip filtered by whether it can pay. A harder AI would rank
-them, and now that spells are in OCaml alongside the move scorer, that ranking
-is a small amount of work rather than a research project.
-
-### What the ranked chooser replaces it with
-
-`Spell.pick_ranked_spell` scores every castable spell and takes the best. It is
-selected through a **global**, `Spell.spell_policy`, defaulting to `Faithful`:
-
-```ocaml
-Spell.set_spell_policy Spell.Ranked;   (* once, at startup *)
-```
-
-It is a global rather than a field of `Battle.rules` on purpose: this is a
-policy switch for the enhanced build, set once and obeyed by every battle, and
-keeping it off the faithful port means the recovered behaviour stays a clean
-thing to test against. `Spell.pick_spell` is the entry point the battle loop
-calls; it dispatches and the loop knows nothing about the two policies.
-
-Five weighted terms, each scaled to roughly 0..1000 so the weights read as
-relative importance. **None of them is effect strength** — the 130 spell scripts
-are not ported, so there is no damage number to compare spells by. These are
-descriptor properties:
-
-| Term | Source | Proxy for |
-| :--- | :--- | :--- |
-| potency | `learn_score` | how advanced the spell is; the game gates its strongest effects behind high scores |
-| economy | `total_cost` | how often it can be cast across a battle |
-| rationing | `cooldown` | how rare each cast is, so each has to be worth more |
-| affinity | caster's `skills` in the elements the cost draws on | whether this caster can pay for it sustainably |
-| headroom | fraction of the pool spent | saving a big spell for a turn worth using it on |
-
-So it is a strict improvement on list order, but it is not a claim that the
-chooser knows which spell is strongest. That arrives when the effect bodies do,
-and at that point potency becomes a real measurement rather than the best
-available proxy.
-
-The difficulty skip is kept in both. It is a recovered behaviour, it is
-orthogonal to ranking, and dropping it would confound chooser comparisons with a
-change in cast frequency.
-
-Observed difference, same seed, 120-turn fight, foe at 400 skill in every element:
-
-```
-faithful:  42 casts, all SCRAP
-ranked:    17 casts: SCRAP 5  DULL 3  SOLID 7  GREAT 2
-```
-
-The ranked chooser casts *fewer* times, because the better spells cost more of
-the same pool. That is the intended trade, not a regression.
+picks one by coin flip filtered by whether it can pay. A ranked replacement is
+written and lives in `docs/ENHANCEMENTS.md`; it is not part of the port.
 
 Note the interaction: `FUN_004406F0` temporarily sets difficulty to 2 to get a
 deterministic board evaluation, and `BattleAI_PickSpell` reads the same field.
@@ -298,7 +250,53 @@ unless the caller restores it. `FUN_0047E500` does restore it.
 
 ---
 
-## 6. OCaml port
+## 6. Does casting end your turn?
+
+Almost always **yes**. This is the rule most likely to be got wrong, because
+it is not a field in the spell XML and the natural assumption is that casting
+and swapping are separate things you both do in a turn.
+
+The game states the rule per spell, in the spell's own DETL line in
+`English/StandardSpellsText.xml`. `tools/extract_spell_data.ps1` parses those
+lines into `lib/spell_data.ml`. Transcribed, not inferred. Over the 129 battle
+spells (SARC excluded, it is the spell-research mini-game descriptor):
+
+| Turn rule | Count | Source text |
+| :--- | ---: | :--- |
+| `EndsTurn` | 97 | no turn clause at all â€” the default |
+| `KeepsTurn` | 13 | "Your turn does not end" |
+| `EndsTurnAfterEffect` | 10 | "the turn ends", after a gem-destruction effect |
+| `KeepsTurnIfMana` | 9 | "Your turn does not end if _COLOUR_ Mana is N+" |
+
+The conditional form, all nine of them:
+
+| Spell | Condition |
+| :--- | :--- |
+| `SBAC`, `SBRA` | fire mana >= 15 |
+| `SMBU` | fire mana >= 8 |
+| `SSGZ` | earth mana >= 15 |
+| `SCHL`, `SSOA` | air mana >= 15 |
+| `SSWP` | air mana >= 14 |
+| `SCLM`, `SCOU` | water mana >= 10 |
+
+Two things worth flagging. The colour names map to elements as **Earth green,
+Fire red, Air yellow, Water blue**, which is the reverse of the board's gem-id
+order â€” that is where an Air/Water transposition would come from. And the
+threshold is tested against the *caster's* mana at the moment of the cast, before
+the cost is paid.
+
+So a spell that ends the turn means the caster does not also make a swap. The
+battle loop's `take_action` consults `Spell.keeps_turn` and skips the swap when
+the turn is consumed. An earlier version always swapped, which is right for the
+13 turn-keeping spells and wrong for the other 116.
+
+The AI has no opinion on any of this. `BattleAI_PickSpell` takes the first
+affordable spell and lets the spell's own rule decide, so there is deliberately
+no turn-cost logic in the picker.
+
+---
+
+## 7. OCaml port
 
 `lib/spell.ml`, tests in `test/test_spell.ml`.
 
@@ -308,8 +306,8 @@ unless the caller restores it. `FUN_0047E500` does restore it.
 | `Lua_IS_SPELL_CASTABLE` | `Spell.is_castable` |
 | `Lua_HANDLE_SPELL_COST` | `Spell.pay_cost` |
 | `FUN_004466E0` resistance | `Spell.resist` |
-| mana yield, §3 | `Spell.mana_yield` |
-| extra turn roll, §4 | `Spell.maybe_extra_turn` |
+| mana yield, Â§3 | `Spell.mana_yield` |
+| extra turn roll, Â§4 | `Spell.maybe_extra_turn` |
 | `BattleAI_PickSpell` | `Spell.pick_ai_spell` |
 
 `mana_yield` returns the float the original works in, because the extra turn
@@ -324,16 +322,16 @@ behaviour stays testable and the improvement stays a visible diff.
 
 ---
 
-## 7. Confidence
+## 8. Confidence
 
 | Claim | Confidence |
 | :--- | :--- |
-| Spell struct layout and the earth/fire/air/water order | High — `FUN_00474D20` |
-| Affordability is a per-pool comparison | High — `Lua_IS_SPELL_CASTABLE` |
-| A resisted cast still pays its cost | High — `FUN_0043FE30` checks the latch, not the resistance |
-| Mana yield is `(skill + 100) * multiplier * 0.01`, capped at 999 | High — constants read at `0x5217B4` and `0x51E4C8` |
-| **Extra turn chance is `gained / 100`, per element, per match** | **High** — the roll and the truncation are both explicit at `0x47D4F0` |
-| Run-size multiplier is 1 / 2 / 3 for 3 / 4 / 5-of-a-kind | High — same tiers the AI scores |
-| The AI picks the first affordable spell, unranked | High — `FUN_00440FB0` |
-| The extra `+0x0C` term in `IS_SPELL_CASTABLE` | Low — unresolved, possibly a second read of the disallowed flag |
-| The rescale factor near `0x51E39C` | Low — present in the call path, purpose unidentified |
+| Spell struct layout and the earth/fire/air/water order | High â€” `FUN_00474D20` |
+| Affordability is a per-pool comparison | High â€” `Lua_IS_SPELL_CASTABLE` |
+| A resisted cast still pays its cost | High â€” `FUN_0043FE30` checks the latch, not the resistance |
+| Mana yield is `(skill + 100) * multiplier * 0.01`, capped at 999 | High â€” constants read at `0x5217B4` and `0x51E4C8` |
+| **Extra turn chance is `gained / 100`, per element, per match** | **High** â€” the roll and the truncation are both explicit at `0x47D4F0` |
+| Run-size multiplier is 1 / 2 / 3 for 3 / 4 / 5-of-a-kind | High â€” same tiers the AI scores |
+| The AI picks the first affordable spell, unranked | High â€” `FUN_00440FB0` |
+| The extra `+0x0C` term in `IS_SPELL_CASTABLE` | Low â€” unresolved, possibly a second read of the disallowed flag |
+| The rescale factor near `0x51E39C` | Low â€” present in the call path, purpose unidentified |

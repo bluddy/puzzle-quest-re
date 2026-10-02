@@ -11,6 +11,42 @@
 
 open Combat
 
+(** Whether casting a spell ends your turn.
+
+    The overwhelming majority of spells end it, which means the caster does
+    {e not} also make a swap that turn. Only a minority hand the turn back. This
+    is not an inference: the game states the rule in each spell's own
+    description, and [lib/spell_data.ml] is that text transcribed. *)
+type turn_cost =
+  | EndsTurn  (** the default: no turn clause in the description *)
+  | KeepsTurn  (** "Your turn does not end" *)
+  | KeepsTurnIfMana of element * int
+      (** "Your turn does not end if Red Mana is 15+" *)
+  | EndsTurnAfterEffect
+      (** "the turn ends", called out after a gem-destruction effect *)
+
+(** A spell as the game's assets describe it: the four costs, the cooldown, the
+    learn requirements, the input type, and the turn rule. [lib/spell_data.ml]
+    holds all 129 of these, parsed from [Assets/Spells/*.xml] and
+    [English/StandardSpellsText.xml].
+
+    [Spell.spell] is the runtime object with mutable state and identity; a
+    descriptor is the static data a spell is built from. [spell_of_descriptor]
+    turns one into the other. *)
+type descriptor = {
+  id : string;
+  cost_earth : int;
+  cost_fire : int;
+  cost_air : int;
+  cost_water : int;
+  cooldown : int;
+  learn_score : int;
+  learn_masks : int;
+  learn_keys : int;
+  input_type : int;  (** 0 none, 1 column, 2 row, 3 grid *)
+  turn_cost : turn_cost;
+}
+
 type spell = {
   id : string;
   name : string;
@@ -26,6 +62,10 @@ type spell = {
   learn_keys : int;
   input_type : int;  (** 0 none, 1 column, 2 row, 3 grid *)
   mutable use_count : int;
+  (* Defaults to [EndsTurn], which is right for 97 of the 129 spells. Only the
+     exceptions need to be set; see [lib/spell_turns.ml] for the full table and
+     [Spell_turns.turn_cost_of] to look one up by id. *)
+  turn_cost : turn_cost;
 }
 
 let total_cost (s : spell) =
@@ -33,7 +73,7 @@ let total_cost (s : spell) =
 
 let make_spell ?(cost_earth = 0) ?(cost_fire = 0) ?(cost_air = 0) ?(cost_water = 0)
     ?(cooldown = 0) ?(learn_score = 0) ?(learn_masks = 0) ?(learn_keys = 0)
-    ?(input_type = 0) ?(use_count = 0) id name =
+    ?(input_type = 0) ?(use_count = 0) ?(turn_cost = EndsTurn) id name =
   {
     id;
     name;
@@ -47,6 +87,7 @@ let make_spell ?(cost_earth = 0) ?(cost_fire = 0) ?(cost_air = 0) ?(cost_water =
     learn_keys;
     input_type;
     use_count;
+    turn_cost;
   }
 
 (** [Lua_IS_SPELL_CASTABLE]. A plain per-pool comparison. Note the original
@@ -71,6 +112,18 @@ let pay_cost (c : combatant) (s : spell) : unit =
       air = c.mana.air - s.cost_air;
       water = c.mana.water - s.cost_water;
     }
+
+(** Whether [c] keeps playing after casting [s], and so also gets to make a swap
+    that turn.
+
+    The conditional case is evaluated against the caster's mana at the moment of
+    the cast, which is the same instant the game's description refers to. Note
+    this is the {e caster's} mana, not the enemy's. *)
+let keeps_turn (c : combatant) (s : spell) : bool =
+  match s.turn_cost with
+  | EndsTurn | EndsTurnAfterEffect -> false
+  | KeepsTurn -> true
+  | KeepsTurnIfMana (e, threshold) -> mana_of e c.mana >= threshold
 
 (** Cooldowns, from the [Data cooldown] attribute the spell XMLs carry.
 
@@ -359,3 +412,28 @@ let pick_spell ?weights ?(difficulty = 1) ?(roll = Random.int) (c : combatant)
   | Ranked -> pick_ranked_spell ?weights ~difficulty ~roll c spells
 
 let string_of_spell_policy = function Faithful -> "faithful" | Ranked -> "ranked"
+
+(** The game's colour names for the elements, which is how the spell
+    descriptions refer to them. Earth is green, Fire red, Air yellow, Water
+    blue. Note this is the {e reverse} of the board's gem-id order, and the
+    descriptions are also where the transposed Air/Water bug would come from. *)
+let string_of_element = function
+  | Earth -> "green"
+  | Fire -> "red"
+  | Air -> "yellow"
+  | Water -> "blue"
+
+let string_of_turn_cost = function
+  | EndsTurn -> "EndsTurn"
+  | KeepsTurn -> "KeepsTurn"
+  | EndsTurnAfterEffect -> "EndsTurnAfterEffect"
+  | KeepsTurnIfMana (e, n) -> Printf.sprintf "KeepsTurnIfMana(%s,%d)" (string_of_element e) n
+
+(** Builds a runtime spell from a descriptor. The name is passed separately
+    because it comes from the localisation table's [NAME] tag rather than the
+    descriptor; [tools/extract_spell_data.ps1] does not extract it. *)
+let spell_of_descriptor (d : descriptor) ?(name = "") () : spell =
+  make_spell ~cost_earth:d.cost_earth ~cost_fire:d.cost_fire ~cost_air:d.cost_air
+    ~cost_water:d.cost_water ~cooldown:d.cooldown ~learn_score:d.learn_score
+    ~learn_masks:d.learn_masks ~learn_keys:d.learn_keys ~input_type:d.input_type
+    ~turn_cost:d.turn_cost d.id name

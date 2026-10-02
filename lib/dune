@@ -1,2 +1,12 @@
 (library
- (name puzzle_quest_lib))
+ (name puzzle_quest_lib)
+ (modules
+  board
+  spell_data
+  spell
+  combat
+  ai
+  score
+  battle
+  crypto
+  save_file))
