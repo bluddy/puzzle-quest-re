@@ -238,14 +238,14 @@ let hook_scon ctx =
     return Std_AISpellcastingChance(GET_MANA_EARTH(idxCaster)-10);
     ``` *)
 let hook_sbav ctx =
-  ai_spellcasting_chance_i ~modifier:(mana_of ctx.ctx_caster Combat.Earth - 10) ctx
+  ai_spellcasting_chance_i ~modifier:(Combat.mana ctx.ctx_caster Combat.Earth - 10) ctx
 
 let hook_sflv ctx =
-  ai_spellcasting_chance_i ~modifier:(mana_of ctx.ctx_caster Combat.Fire - 10) ctx
+  ai_spellcasting_chance_i ~modifier:(Combat.mana ctx.ctx_caster Combat.Fire - 10) ctx
 
 (** SDST, SFBO, SFSH: twice the caster's Fire pool. Three spells, one body. *)
 let hook_sdst ctx =
-  ai_spellcasting_chance_i ~modifier:(2 * mana_of ctx.ctx_caster Combat.Fire) ctx
+  ai_spellcasting_chance_i ~modifier:(2 * Combat.mana ctx.ctx_caster Combat.Fire) ctx
 
 let hook_sfbo = hook_sdst
 let hook_sfsh = hook_sdst
@@ -253,17 +253,17 @@ let hook_sfsh = hook_sdst
 (** SSOB: three times Earth, the largest of the "more mana, more likely" hooks.
     SSOS: twice Air. *)
 let hook_ssob ctx =
-  ai_spellcasting_chance_i ~modifier:(3 * mana_of ctx.ctx_caster Combat.Earth) ctx
+  ai_spellcasting_chance_i ~modifier:(3 * Combat.mana ctx.ctx_caster Combat.Earth) ctx
 
 let hook_ssos ctx =
-  ai_spellcasting_chance_i ~modifier:(2 * mana_of ctx.ctx_caster Combat.Air) ctx
+  ai_spellcasting_chance_i ~modifier:(2 * Combat.mana ctx.ctx_caster Combat.Air) ctx
 
 (** SCBO: the mean of all four pools, vetoed below eight, then twice the mean.
     The Lua averages as `(a+b+c+d)/4`, which truncates, so a total of 33 gives
     8 rather than 8.25. *)
 let hook_scbo ctx =
   let c = ctx.ctx_caster in
-  let total = mana_of c Combat.Earth + mana_of c Combat.Fire + mana_of c Combat.Air + mana_of c Combat.Water in
+  let total = Combat.mana c Combat.Earth + Combat.mana c Combat.Fire + Combat.mana c Combat.Air + Combat.mana c Combat.Water in
   let avg = total / 4 in
   if avg < 8 then false else ai_spellcasting_chance_i ~modifier:(avg * 2) ctx
 
@@ -273,13 +273,13 @@ let hook_scbo ctx =
     return Std_AISpellcastingChance(0);
     ``` *)
 let hook_scto ctx =
-  if mana_of ctx.ctx_caster Combat.Earth > 10 then false
+  if Combat.mana ctx.ctx_caster Combat.Earth > 10 then false
   else ai_spellcasting_chance_i ~modifier:0 ctx
 
 (** STRM: a hard floor of ten, then a modifier that starts at -20 and rises by
     two per mana, crossing zero at exactly twenty. *)
 let hook_strm ctx =
-  let m = mana_of ctx.ctx_caster Combat.Earth in
+  let m = Combat.mana ctx.ctx_caster Combat.Earth in
   if m < 10 then false
   else ai_spellcasting_chance_i ~modifier:(-40 + (2 * m)) ctx
 
@@ -287,22 +287,22 @@ let hook_strm ctx =
     discontinuity. Over five it triples; at five or under it subtracts ten, so the
     modifier jumps from -10 to 18 between 5 and 6. *)
 let hook_sbst ctx =
-  let bonus = mana_of ctx.ctx_enemy Earth in
+  let bonus = Combat.mana ctx.ctx_enemy Earth in
   let bonus = if bonus > 5 then bonus * 3 else bonus - 10 in
   ai_spellcasting_chance_i ~modifier:bonus ctx
 
 (** SSWA: the enemy's Earth pool is a hard floor of seven and then also the
     modifier, so a large enemy pool makes it near-certain. *)
 let hook_sswa ctx =
-  let green = mana_of ctx.ctx_enemy Earth in
+  let green = Combat.mana ctx.ctx_enemy Earth in
   if green < 7 then false else ai_spellcasting_chance_i ~modifier:green ctx
 
 (** SFSP: both sides gate on fixed numbers, then the modifier combines the
     caster's damage taken with the enemy's Fire pool. Note the `- 30`, which can
     drive the modifier well below zero at the boundary the veto just admitted. *)
 let hook_sfsp ctx =
-  let my_damage = max_life_of ctx.ctx_caster - life_of ctx.ctx_caster in
-  let red_mana = mana_of ctx.ctx_enemy Fire in
+  let my_damage = Combat.max_life ctx.ctx_caster - Combat.life ctx.ctx_caster in
+  let red_mana = Combat.mana ctx.ctx_enemy Fire in
   if my_damage < 20 || red_mana < 8 then false
   else ai_spellcasting_chance_i ~modifier:(my_damage + (5 * red_mana) - 30) ctx
 
@@ -312,7 +312,7 @@ let hook_sfsp ctx =
     a veto. *)
 let hook_smbu ctx =
   let e = ctx.ctx_enemy in
-  let total = mana_of e Combat.Earth + mana_of e Combat.Fire + mana_of e Combat.Air + mana_of e Combat.Water in
+  let total = Combat.mana e Combat.Earth + Combat.mana e Combat.Fire + Combat.mana e Combat.Air + Combat.mana e Combat.Water in
   if total <= 10 then false
   else ai_spellcasting_chance_i ~modifier:((total - 10) * 2) ctx
 
@@ -320,7 +320,7 @@ let hook_smbu ctx =
     and vetoing when the caster is {e ahead}. Casting when behind is the point of
     the spell. *)
 let hook_sssw ctx =
-  let total c = mana_of c Combat.Earth + mana_of c Combat.Fire + mana_of c Combat.Air + mana_of c Combat.Water in
+  let total c = Combat.mana c Combat.Earth + Combat.mana c Combat.Fire + Combat.mana c Combat.Air + Combat.mana c Combat.Water in
   let mine = total ctx.ctx_caster in
   let theirs = total ctx.ctx_enemy in
   if mine > theirs then false
@@ -333,10 +333,10 @@ let hook_ssbm ctx =
   let e = ctx.ctx_enemy in
   let c = ctx.ctx_caster in
   let modifier = ref 0 in
-  if mana_of e Combat.Air > 10 then modifier := !modifier + 10;
-  if mana_of e Combat.Air < 5 then modifier := !modifier - 10;
-  if mana_of c Combat.Water < 4 then modifier := !modifier - 10;
-  if mana_of c Combat.Water > 20 then modifier := !modifier - 10;
+  if Combat.mana e Combat.Air > 10 then modifier := !modifier + 10;
+  if Combat.mana e Combat.Air < 5 then modifier := !modifier - 10;
+  if Combat.mana c Combat.Water < 4 then modifier := !modifier - 10;
+  if Combat.mana c Combat.Water > 20 then modifier := !modifier - 10;
   ai_spellcasting_chance_i ~modifier:!modifier ctx
 
 (** SSHO: three flat bonuses of ten for the enemy sitting above five in any of
@@ -344,38 +344,38 @@ let hook_ssbm ctx =
 let hook_ssho ctx =
   let e = ctx.ctx_enemy in
   let modifier = ref 0 in
-  if mana_of e Combat.Fire > 5 then modifier := !modifier + 10;
-  if mana_of e Combat.Air > 5 then modifier := !modifier + 10;
-  if mana_of e Combat.Water > 5 then modifier := !modifier + 10;
+  if Combat.mana e Combat.Fire > 5 then modifier := !modifier + 10;
+  if Combat.mana e Combat.Air > 5 then modifier := !modifier + 10;
+  if Combat.mana e Combat.Water > 5 then modifier := !modifier + 10;
   ai_spellcasting_chance_i ~modifier:!modifier ctx
 
 (** SEGZ and SGEM: the same "how hurt am I" idea with different thresholds and
     different shapes. SEGZ grades the modifier; SGEM only vetoes and then asks
     with a modifier of zero. *)
 let hook_segz ctx =
-  let diff = max_life_of ctx.ctx_caster - life_of ctx.ctx_caster in
+  let diff = Combat.max_life ctx.ctx_caster - Combat.life ctx.ctx_caster in
   let bonus = if diff < 10 then -20 else if diff > 30 then 50 else 0 in
   ai_spellcasting_chance_i ~modifier:bonus ctx
 
 let hook_sgem ctx =
-  if life_of ctx.ctx_caster >= max_life_of ctx.ctx_caster - 5 then false
+  if Combat.life ctx.ctx_caster >= Combat.max_life ctx.ctx_caster - 5 then false
   else ai_spellcasting_chance_i ~modifier:0 ctx
 
 (** SDGZ: the enemy's missing life is the modifier, so a nearly dead enemy makes
     the spell more attractive. It is deliberately not vetoed at zero. *)
 let hook_sdgz ctx =
-  ai_spellcasting_chance_i ~modifier:(life_of ctx.ctx_enemy - 20) ctx
+  ai_spellcasting_chance_i ~modifier:(Combat.life ctx.ctx_enemy - 20) ctx
 
 (** SRGN: the only hook that is a bare comparison with no helper call, returning
     1 or 0 directly. Four points of damage is the whole test. *)
 let hook_srgn ctx =
-  max_life_of ctx.ctx_caster - life_of ctx.ctx_caster >= 4
+  Combat.max_life ctx.ctx_caster - Combat.life ctx.ctx_caster >= 4
 
 (** SCOU: one flat -50 if the caster is carrying anything at all. This reads
     [GET_NUM_STATUS_EFFECTS], so it counts stacks of all kinds rather than
     testing a named effect. *)
 let hook_scou ctx =
-  let bonus = if num_status_effects ctx.ctx_caster > 0 then -50 else 0 in
+  let bonus = if Combat.num_status_effects ctx.ctx_caster > 0 then -50 else 0 in
   ai_spellcasting_chance_i ~modifier:bonus ctx
 
 (** The status-effect gates.
@@ -395,7 +395,7 @@ let hook_scou ctx =
     different: they veto or discount when the {e enemy} has it, because those
     spells answer an enemy's status rather than cause it. *)
 let veto_if_caster_has ~(name : string) (ctx : ai_context) : bool =
-  if has_status ctx.ctx_caster name then false
+  if Combat.has_status ctx.ctx_caster name then false
   else ai_spellcasting_chance_i ~modifier:0 ctx
 
 let hook_schl = veto_if_caster_has ~name:"Challenged"
@@ -410,24 +410,24 @@ let hook_shas = veto_if_caster_has ~name:"Hasted"
     SSPT is the same idea with a smaller penalty: Blinding a Blinded enemy costs
     15 off the {e modifier}, which lowers the threshold from 50 to 35. *)
 let hook_shwl ctx =
-  let chance = if has_status ctx.ctx_enemy "Fear" then ctx.ctx_percentile - 40 else ctx.ctx_percentile in
+  let chance = if Combat.has_status ctx.ctx_enemy "Fear" then ctx.ctx_percentile - 40 else ctx.ctx_percentile in
   chance >= 50 && ctx.ctx_evaluation <= 30
 
 let hook_sspt ctx =
-  ai_spellcasting_chance_i ~modifier:(if has_status ctx.ctx_enemy "Blinded" then -15 else 0) ctx
+  ai_spellcasting_chance_i ~modifier:(if Combat.has_status ctx.ctx_enemy "Blinded" then -15 else 0) ctx
 
 (** SWOF: vetoes on the caster already having the wall, then grades the caster's
     own Fire pool at a single step: 20 above fourteen, nothing at or below it. *)
 let hook_swof ctx =
-  if has_status ctx.ctx_caster "WallOfFired" then false
+  if Combat.has_status ctx.ctx_caster "WallOfFired" then false
   else ai_spellcasting_chance_i
-           ~modifier:(if mana_of ctx.ctx_caster Combat.Fire > 14 then 20 else 0) ctx
+           ~modifier:(if Combat.mana ctx.ctx_caster Combat.Fire > 14 then 20 else 0) ctx
 
 (** SSBL: the odd one out among the status gates. It returns -10 outright when
     the caster has Singing Blades, rather than vetoing with 0, and otherwise asks
     with a positive modifier of 25. *)
 let hook_ssbl ctx =
-  if has_status ctx.ctx_caster "SingingBladesed" then false
+  if Combat.has_status ctx.ctx_caster "SingingBladesed" then false
   else ai_spellcasting_chance_i ~modifier:25 ctx
 
 (** SCTO's siblings SSTL, SCHV and SCLE are pure constant modifiers and used to be
@@ -467,7 +467,7 @@ let hook_srbi ctx = evaluate_gate ~adjust:(fun _ p -> p) ~specific:(fun _ _ -> t
     evaluation and the percentile, so they are the evaluate family with a veto
     bolted on rather than one of the modifier-zero gates. *)
 let veto_first_then_gate ~(name : string) (ctx : ai_context) : bool =
-  if has_status ctx.ctx_caster name then false
+  if Combat.has_status ctx.ctx_caster name then false
   else evaluate_gate ~adjust:(fun _ p -> p) ~specific:(fun _ _ -> true) ctx
 
 let hook_senr = veto_first_then_gate ~name:"Enraged"
@@ -481,11 +481,11 @@ let hook_shid = veto_first_then_gate ~name:"Hidden"
 let gems_and_damage ~(gem : gem_kind) (ctx : ai_context) : bool =
   let n = count_gems gem ctx in
   if n <= 4 then false
-  else if life_of ctx.ctx_caster >= max_life_of ctx.ctx_caster - 8 then false
+  else if Combat.life ctx.ctx_caster >= Combat.max_life ctx.ctx_caster - 8 then false
   else
     let bonus =
-      if life_of ctx.ctx_caster < max_life_of ctx.ctx_caster / 2 then 25 else 0
-      + if life_of ctx.ctx_caster < max_life_of ctx.ctx_caster / 4 then 25 else 0
+      if Combat.life ctx.ctx_caster < Combat.max_life ctx.ctx_caster / 2 then 25 else 0
+      + if Combat.life ctx.ctx_caster < Combat.max_life ctx.ctx_caster / 4 then 25 else 0
     in
     evaluate_gate ~adjust:(fun _ p -> p + n + bonus) ~specific:(fun _ _ -> true) ctx
 
@@ -498,11 +498,11 @@ let hook_srfc = gems_and_damage ~gem:GGold
 let hook_schm ctx =
   let n = (count_gems GSkull ctx) + (count_gems GRedSkull ctx) in
   if n <= 4 then false
-  else if life_of ctx.ctx_caster >= max_life_of ctx.ctx_caster - 8 then false
+  else if Combat.life ctx.ctx_caster >= Combat.max_life ctx.ctx_caster - 8 then false
   else
     let bonus =
-      if life_of ctx.ctx_caster < max_life_of ctx.ctx_caster / 2 then 25 else 0
-      + if life_of ctx.ctx_caster < max_life_of ctx.ctx_caster / 4 then 25 else 0
+      if Combat.life ctx.ctx_caster < Combat.max_life ctx.ctx_caster / 2 then 25 else 0
+      + if Combat.life ctx.ctx_caster < Combat.max_life ctx.ctx_caster / 4 then 25 else 0
     in
     evaluate_gate ~adjust:(fun _ p -> p + n + bonus) ~specific:(fun _ _ -> true) ctx
 
@@ -528,7 +528,7 @@ let hook_sbra ctx =
   let chance =
     ctx.ctx_percentile
     + n
-    + if mana_of ctx.ctx_caster Combat.Fire >= 15 then -30 else 30
+    + if Combat.mana ctx.ctx_caster Combat.Fire >= 15 then -30 else 30
   in
   if chance < 50 then false
   else if ctx.ctx_evaluation > 30 then false
@@ -547,7 +547,7 @@ let hook_ssoa ctx =
     integers truncates, so the fraction is lost before it is added. *)
 let mana_thirds ~(elem : Combat.element) (ctx : ai_context) : bool =
   evaluate_gate
-    ~adjust:(fun c p -> p + (mana_of c.ctx_caster elem / 3))
+    ~adjust:(fun c p -> p + (Combat.mana c.ctx_caster elem / 3))
     ~specific:(fun _ _ -> true) ctx
 
 let hook_spet = mana_thirds ~elem:Combat.Earth
@@ -563,7 +563,7 @@ let hook_sspf ctx = ctx.ctx_percentile >= 15
     scoring exactly 30 passes here. *)
 let hook_stau ctx =
   let e = ctx.ctx_enemy in
-  let total = mana_of e Combat.Earth + mana_of e Combat.Fire + mana_of e Combat.Air + mana_of e Combat.Water in
+  let total = Combat.mana e Combat.Earth + Combat.mana e Combat.Fire + Combat.mana e Combat.Air + Combat.mana e Combat.Water in
   let chance = ctx.ctx_percentile in
   if chance < 50 then false
   else if ctx.ctx_evaluation >= 30 then false
@@ -576,7 +576,7 @@ let hook_stau ctx =
     kept because the original has it. *)
 let hook_sswp ctx =
   let amt_air =
-    List.fold_left (fun acc e -> acc + mana_of e Combat.Air) 0 ctx.ctx_enemies
+    List.fold_left (fun acc e -> acc + Combat.mana e Combat.Air) 0 ctx.ctx_enemies
   in
   if amt_air < 6 then false
   else if ctx.ctx_percentile < 50 - amt_air then false
@@ -589,7 +589,7 @@ let hook_sswp ctx =
     respectively, and then require the board to be worth 28 or 32. *)
 let evaluation_bias ~(divisor : int) ~(low : int) ~(high : int) ~(chance_cut : int)
     (ctx : ai_context) : bool =
-  let fire = mana_of ctx.ctx_caster Combat.Fire in
+  let fire = Combat.mana ctx.ctx_caster Combat.Fire in
   let evaluation = ctx.ctx_evaluation - (fire / divisor) in
   if evaluation < low && ctx.ctx_percentile < chance_cut then true
   else if evaluation < high && ctx.ctx_percentile < 33 then true

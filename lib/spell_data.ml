@@ -441,7 +441,21 @@ let load_spell_table () : Spell.spell list =
         | Some f -> f
         | None -> fun (_ : Spell.ai_context) -> false
       in
-      Spell.spell_of_descriptor d ?should_ai_cast:(Some hook) ())
+      Spell.spell_of_descriptor d ?should_ai_cast:(Some hook)
+        ?cast_spell:(Spell_effects.effect_of d.id) ())
+    spell_descriptors
+
+(** Spells whose [CastSpell] body has been ported. The complement is the real
+    remaining gap in the spell system: a spell there pays its mana and possibly
+    ends the turn, and then does nothing. *)
+let spells_with_effect =
+  List.filter
+    (fun (d : Spell.descriptor) -> Spell_effects.effect_of d.id <> None)
+    spell_descriptors
+
+let spells_without_effect =
+  List.filter
+    (fun (d : Spell.descriptor) -> Spell_effects.effect_of d.id = None)
     spell_descriptors
 
 (** Spells whose AI hook has been ported. *)

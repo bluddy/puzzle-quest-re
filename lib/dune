@@ -7,9 +7,10 @@
   item_hooks
   spell_data
   spell_ai
-  spell_ai_manual
-  spell
-  combat
+   spell_ai_manual
+   spell
+   spell_effects
+   combat
   ai
   score
   battle

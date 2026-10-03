@@ -613,3 +613,60 @@ let set_mana_limit (c : combatant) (e : element) (limit : int) : unit =
 let mana_at_limit (c : combatant) (e : element) : bool =
   mana_of e c.mana >= mana_of e c.max_mana
 
+(** Combatant accessors, shared by the spell layer.
+
+    These live here rather than in [Spell] because they are operations on a
+    combatant, and three modules want them: the spell AI hooks, the spell effect
+    bodies, and the battle loop. They used to sit in [Spell], which meant a file
+    opening both modules had two different functions called [mana_of] with their
+    arguments in opposite orders, and the disambiguation had to be written out at
+    every call site. *)
+
+(** [GET_MANA_<E>(idx)]: the pool for one element. *)
+let mana (c : combatant) (e : element) : int = mana_of e c.mana
+
+(** [GET_MAX_MANA_<E>(idx)]: the ceiling for one element. *)
+let max_mana (c : combatant) (e : element) : int = mana_of e c.max_mana
+
+(** [SET_MANA_<E>(idx, value)]: store the pool, {e clamped to the ceiling}.
+
+    The clamp is recovered, not defensive. [Engine_SET_MANA_AIR_445c00] reads
+    [character + 0x84 + element * 4] and compares it against the incoming value,
+    writing the smaller of the two to [character + 0x74 + element * 4]. A spell can
+    therefore ask for more than the pool holds and get the ceiling instead, which
+    several of them do. *)
+let set_mana (c : combatant) (e : element) (value : int) : unit =
+  let ceiling = mana_of e c.max_mana in
+  let v = if value < ceiling then value else ceiling in
+  c.mana <- (match e with
+    | Earth -> { c.mana with earth = v }
+    | Fire -> { c.mana with fire = v }
+    | Air -> { c.mana with air = v }
+    | Water -> { c.mana with water = v })
+
+(** [ADD_MANA_<E>(idx, n)] in its saturating form: the pool never goes below zero. *)
+let spend_mana (c : combatant) (e : element) (amount : int) : unit =
+  let current = mana_of e c.mana in
+  let v = if amount >= current then 0 else current - amount in
+  set_mana c e v
+
+(** [GET_LIFE(idx)] and [GET_MAX_LIFE(idx)]. Lua divides these with [/] on
+    integers and truncates, which the damage-gated hooks rely on. *)
+let life (c : combatant) : int = c.life
+
+let max_life (c : combatant) : int = c.max_life
+
+(** [HAS_STATUS_EFFECT(idx, STATUS_EFFECT_X)].
+
+    The 17 effects in [Assets/StatusEffects] are the only ones a hook can test, so
+    the constants reduce to their file names. The [STATUS_EFFECT_] prefix does not
+    map onto them by stripping the prefix: the game appends a participle to most,
+    so [HASTE] is the file [Hasted] and [WALLOFFIRE] is [WallOfFired]. Those are
+    spelled out by the callers rather than derived, because deriving them is
+    silently wrong for exactly the cases that matter. *)
+let has_status (c : combatant) (name : string) : bool =
+  List.exists (fun (id, _) -> id = name) c.effects
+
+(** [GET_NUM_STATUS_EFFECTS(idx)]: counts stacks of all kinds, which is what SCOU
+    reads rather than testing a named effect. *)
+let num_status_effects (c : combatant) : int = List.length c.effects

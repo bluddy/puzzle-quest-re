@@ -504,3 +504,9 @@ let print_board (b : board) : unit =
     done;
     Printf.printf "\n  +---+---+---+---+---+---+---+---+\n"
   done
+
+(** Structural equality on gems, for the sweeps in [Spell_effects] that compare a
+    cell against a kind. Written out rather than using [Stdlib.( = )] because the
+    gem type carries an empty case that is not a variant of its own, and because
+    naming the comparison keeps the sweeps readable. *)
+let equal_gem (a : gem) (b : gem) : bool = a = b

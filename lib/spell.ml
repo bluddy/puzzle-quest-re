@@ -83,6 +83,47 @@ type ai_context = {
       rather than on the combatant. *)
   ctx_enemy_items : Item.loadout option;
 }
+
+(** What a [CastSpell] body gets to work with.
+
+    Separate from [ai_context] on purpose. The AI hook only ever reads - it asks
+    whether a spell is worth casting - whereas the effect body writes: it moves
+    mana, deals damage, edits the board, and grants turns. Sharing one record
+    would mean every read-only hook carried mutable handles it has no business
+    touching, and the compiler would not object.
+
+    The three differences that matter in practice:
+
+    - [fx_board] is a {e reference}, not a board. [SET_GEM], [DESTROY_GEM] and
+      [ADD_EFFECT_TO_GRID] mutate the board in place, and [Board] is an immutable
+      value with a functional [Board.set_gem]. Handing the effect a copy would
+      silently discard every board edit; the reference writes through to the
+      battle's own cell.
+    - [fx_roll] is the battle's single random source, so an effect that rolls
+      ([SFBA] searching for a skull, several skills using [GET_RANDOM_SYNC])
+      draws from the same stream as everything else and keeps replays
+      deterministic.
+    - [fx_gold] and [fx_xp] are references because they belong to the battle, not
+      to either combatant, and [ADD_GOLD] and [ADD_XP] write them.
+
+    [fx_input] is the cell the spell was aimed at, for the spells whose
+    [input_type] is not 0. It is [None] when the spell needs no target. *)
+type effect_context = {
+  fx_caster : combatant;
+  fx_enemies : combatant list;
+  fx_board : Board.board ref;
+  fx_roll : int -> int;
+  fx_gold : int ref;
+  fx_xp : int ref;
+  fx_input : Board.position option;
+  fx_items : Item.loadout option;
+  fx_enemy_items : Item.loadout option;
+  (** [SetMultiplierEffects(on)]: the board's extra-turn, wildcard and
+      damage-multiplier chances. Every body that sweeps the grid brackets the sweep
+      with this so the gems it removes cannot also pay out a bonus. *)
+  fx_multipliers : bool ref;
+}
+
 type spell = {
   id : string;
   name : string;
@@ -106,7 +147,7 @@ type spell = {
   should_ai_cast : (ai_context -> bool) option;
   is_cast_legal : (ai_context -> bool) option;
   (* Set when [CastSpell] is ported; see [lib/spell_effects.ml]. *)
-  cast_spell : (ai_context -> unit) option;
+  cast_spell : (effect_context -> unit) option;
 }
 
 let total_cost (s : spell) =
@@ -404,45 +445,6 @@ let gredskull = count_gems GRedSkull
 let ggold = count_gems GGold
 let gstar = count_gems GStar
 
-(** [GET_MANA_<ELEMENT>(idx)]: the pool for one element on one combatant.
-
-    Note the two orderings this codebase keeps straight: [Combat.element] is
-    earth, fire, air, water, which is the order the character struct and the
-    spells use, and it is the reverse of the board's gem ids for the last two.
-    This function takes the character element, so it is the former. *)
-let mana_of (c : combatant) (e : element) : int =
-  match e with
-  | Earth -> c.mana.earth
-  | Fire -> c.mana.fire
-  | Air -> c.mana.air
-  | Water -> c.mana.water
-
-(** [GET_LIFE(idx)] and [GET_MAX_LIFE(idx)], which the damage-gated hooks compare
-    against fixed offsets. Lua divides with `/` on integers and truncates, so the
-    "half life" and "quarter life" tests are integer division, not ratios. *)
-let life_of (c : combatant) = c.life
-
-let max_life_of (c : combatant) = c.max_life
-
-(** [HAS_STATUS_EFFECT(idx, STATUS_EFFECT_X)].
-
-    The 17 effects in [Assets/StatusEffects] are the only ones a hook can test,
-    so the constants reduce to their file names. The [STATUS_EFFECT_] prefix in
-    the scripts does not map to them by stripping the prefix: the game appends a
-    participle to most of them, so [HASTE] is the file [Hasted] and
-    [WALLOFFIRE] is [WallOfFired]. Spelling those out here rather than deriving
-    the name keeps the mismatch from being silently wrong.
-
-    [DOOMED] appears in the scripts but has no descriptor in
-    [Assets/StatusEffects], so it is an engine-side effect and no hook here
-    tests it. *)
-let has_status (c : combatant) (name : string) : bool =
-  List.exists (fun (id, _) -> id = name) c.effects
-
-(** [GET_NUM_STATUS_EFFECTS(idx)]: SCOU reads this directly rather than testing a
-    named effect. *)
-let num_status_effects (c : combatant) : int = List.length c.effects
-
 (** [GET_ITEM(n)]: the item id in slot [n] of the caster's loadout, or [""] when
     there is no loadout in scope or the slot is empty. The empty case is [Some
     ""] rather than [None] because the original returns a string and the scripts
@@ -450,14 +452,6 @@ let num_status_effects (c : combatant) : int = List.length c.effects
 let ctx_get_item (ctx : ai_context) (n : int) : string =
   Option.value (Item.loadout_for ctx.ctx_items n) ~default:""
 
-(** [GET_MAX_MANA_<ELEMENT>(idx)], used by the hooks that reason about a pool
-    being "full" rather than merely large. *)
-let max_mana_of (c : combatant) (e : element) : int =
-  match e with
-  | Earth -> c.max_mana.earth
-  | Fire -> c.max_mana.fire
-  | Air -> c.max_mana.air
-  | Water -> c.max_mana.water
 
 (** The game's colour names for the elements, which is how the spell
     descriptions refer to them. Earth is green, Fire red, Air yellow, Water
@@ -484,3 +478,5 @@ let spell_of_descriptor (d : descriptor) ?(name = "") ?should_ai_cast ?is_cast_l
     ~cost_water:d.cost_water ~cooldown:d.cooldown ~learn_score:d.learn_score
     ~learn_masks:d.learn_masks ~learn_keys:d.learn_keys ~input_type:d.input_type
     ~turn_cost:d.turn_cost ?should_ai_cast ?is_cast_legal ?cast_spell d.id name
+
+

@@ -365,6 +365,25 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.a
       ctx_enemy_items = Some (loadout_of b defender);
     }
 
+(** The context a [CastSpell] body runs against.
+
+    [fx_board] is a reference to the battle's own cell rather than a copy, which
+    is what lets a spell's board edits survive the call. [fx_gold] and [fx_xp] are
+    likewise shared, because they belong to the battle rather than to either
+    combatant. *)
+let effect_context (b : battle) (actor : combatant) (defender : combatant) : Spell.effect_context =
+  { Spell.fx_caster = actor
+  ; Spell.fx_enemies = [ defender ]
+  ; Spell.fx_board = ref b.board
+  ; Spell.fx_roll = b.rng
+  ; Spell.fx_gold = ref b.gold
+  ; Spell.fx_xp = ref b.xp
+  ; Spell.fx_input = None
+  ; Spell.fx_items = Some (loadout_of b actor)
+  ; Spell.fx_enemy_items = Some (loadout_of b defender)
+  ; Spell.fx_multipliers = ref true
+  }
+
 (** One turn for the acting side: at most one spell, then a swap only if the
     spell handed the turn back.
 
@@ -395,6 +414,20 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
         start_cooldown actor s;
         s.use_count <- s.use_count + 1;
         emit b (SpellCast (actor.name, s.id));
+        (* The effect runs after the cost is paid and before the turn ends, which
+           is what [EndsTurnAfterEffect] exists to describe. A spell with no
+           ported body simply does nothing, which is the honest state of the
+           remaining ones rather than a silent "no effect" claim. *)
+        (match s.Spell.cast_spell with
+        | Some f ->
+            let fx = effect_context b actor defender in
+            f fx;
+            (* A board sweep empties cells; the board has to resolve them before
+               the next move or the grid is left short of gems. *)
+            b.board <- Board.apply_gravity b.board;
+            b.board <- Board.refill_board ~rng:b.rng b.board;
+            if actor.is_dead then emit b (Death actor.name)
+        | None -> ());
         keeps
   in
   if still_turn then play_move b defender
