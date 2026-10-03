@@ -54,7 +54,7 @@ type rules = {
   hero_level : int;
   hero_level_cap : int;
   max_turns : int;  (** stalemate guard *)
-  extra_turns_enabled : bool;  (** board flag at +0x391 *)
+  extra_turns_enabled : bool;  (** initial value of the +0x391 board flag *)
   size_patterns : bool;  (** 4- and 5-of-a-kind grant a turn *)
   hero_skill_cap : int;  (** skill ceiling, drives the extra turn roll *)
   (* Cascade depth at which Heroic Effort fires. The recovered value is 5, from
@@ -91,6 +91,10 @@ type battle = {
   mutable winner : outcome option;
   mutable log : event list;  (** reversed *)
   rng : int -> int;
+  (** The three board bonus flags, mutable and shared with the spell effect
+      context. [rules.extra_turns_enabled] seeds the first of them; the other two
+      start on. See [Spell.multiplier_flags] for the recovered offsets. *)
+  multipliers : Spell.multiplier_flags;
   hero_spells : spell list;
   enemy_spells : spell list;
   effects : effect_def list;
@@ -174,7 +178,7 @@ let credit_run (b : battle) (attacker : combatant) (e : element) (n : int) : uni
   emit b (ManaGained (attacker.name, element_index e, banked));
   if
     extra_turn_roll ~gained ~pending:b.tm.extra_turn_pending
-      ~enabled:b.rules.extra_turns_enabled ~roll:b.rng
+      ~enabled:b.multipliers.Spell.extra_turn_chance ~roll:b.rng
   then begin
     b.tm.extra_turn_pending <- false;
     grant_extra_turn b.tm attacker.id;
@@ -195,7 +199,7 @@ let resolve_cascades (b : battle) (defender : combatant) : int =
   let gold = ref 0 and xp = ref 0 in
   let going = ref true in
   while !going do
-    match resolve_matches b.board with
+    match resolve_matches ~wildcards_enabled:b.multipliers.Spell.wildcard_chance b.board with
     | None -> going := false
     | Some (cleared, res) ->
         incr step;
@@ -371,7 +375,8 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.a
     is what lets a spell's board edits survive the call. [fx_gold] and [fx_xp] are
     likewise shared, because they belong to the battle rather than to either
     combatant. *)
-let effect_context (b : battle) (actor : combatant) (defender : combatant) : Spell.effect_context =
+let effect_context (b : battle) (actor : combatant) (defender : combatant)
+    (s : Spell.spell) : Spell.effect_context =
   { Spell.fx_caster = actor
   ; Spell.fx_enemies = [ defender ]
   ; Spell.fx_board = ref b.board
@@ -381,7 +386,8 @@ let effect_context (b : battle) (actor : combatant) (defender : combatant) : Spe
   ; Spell.fx_input = None
   ; Spell.fx_items = Some (loadout_of b actor)
   ; Spell.fx_enemy_items = Some (loadout_of b defender)
-  ; Spell.fx_multipliers = ref true
+  ; Spell.fx_flags = b.multipliers
+  ; Spell.fx_spell = Some s
   }
 
 (** One turn for the acting side: at most one spell, then a swap only if the
@@ -407,20 +413,24 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
         emit b (SpellHeld actor.name);
         true
     | Some s ->
-        (* The mana check runs before the cost is paid: the conditional spells
-           test the pool the caster has, not the pool left afterwards. *)
+        (* The AI hook has already run, so every mana-gated decision - including the
+           conditional turn rules - saw the pool the caster has rather than the
+           pool left afterwards. The {e charge} happens at the end; see
+           [Spell_effects.handle_spell_cost] for why. *)
         let keeps = keeps_turn actor s in
-        pay_cost actor s;
         start_cooldown actor s;
         s.use_count <- s.use_count + 1;
+        s.Spell.cost_charged <- false;
         emit b (SpellCast (actor.name, s.id));
-        (* The effect runs after the cost is paid and before the turn ends, which
-           is what [EndsTurnAfterEffect] exists to describe. A spell with no
-           ported body simply does nothing, which is the honest state of the
-           remaining ones rather than a silent "no effect" claim. *)
+        (* The effect runs before the charge. That is the normal case and it makes
+           no difference, but ten spells open with "Charge the mana first" and
+           subtract their own costs via [HANDLE_SPELL_COST], which sets
+           [cost_charged] and suppresses the charge below. Paying first would
+           charge those twice - [SIST] costs 60 mana, and 120 is not a number the
+           game could intend. *)
         (match s.Spell.cast_spell with
         | Some f ->
-            let fx = effect_context b actor defender in
+            let fx = effect_context b actor defender s in
             f fx;
             (* A board sweep empties cells; the board has to resolve them before
                the next move or the grid is left short of gems. *)
@@ -428,6 +438,9 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
             b.board <- Board.refill_board ~rng:b.rng b.board;
             if actor.is_dead then emit b (Death actor.name)
         | None -> ());
+        (* Charged last, and only if the body did not charge itself. See
+           [Spell_effects.handle_spell_cost]. *)
+        if not s.Spell.cost_charged then pay_cost actor s;
         keeps
   in
   if still_turn then play_move b defender
@@ -498,6 +511,11 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
     winner = None;
     log = [];
     rng;
+    multipliers =
+      { Spell.wildcard_chance = true
+      ; extra_turn_chance = rules.extra_turns_enabled
+      ; damage_multiplier = true
+      };
     hero_spells;
     enemy_spells;
     effects;

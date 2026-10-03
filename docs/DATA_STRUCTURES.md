@@ -111,9 +111,26 @@ public:
 ---
 
 ## 4. Battle Rules & Game Mode Configuration Flags
-Recovered from Lua configuration bridge functions:
-* `Lua_SET_45_PATTERN_ENABLED`: Toggles matching patterns of 4-in-a-row and 5-in-a-row.
-* `Lua_SET_DAMAGE_MULTIPLIER_ENABLED`: Toggles skull damage scaling.
-* `Lua_SET_EXTRATURN_CHANCE_ENABLED`: Toggles 4-of-a-kind granting an extra turn.
-* `Lua_SET_ILLEGAL_MOVE_DAMAGE_ENABLED`: Toggles whether illegal moves deal damage to the player.
-* `Lua_SET_WILDCARD_CHANCE_ENABLED`: Toggles wildcard generation upon matching 5+.
+
+Each of these writes one byte on the battle manager, recovered from the Lua bridge
+in `docs/decompiled/`:
+
+| native | offset | what it gates |
+| --- | --- | --- |
+| `Lua_SET_WILDCARD_CHANCE_ENABLED` | `+0x390` | a 5-or-more run creating a wildcard |
+| `Lua_SET_EXTRATURN_CHANCE_ENABLED` | `+0x391` | the **stat-based** extra turn roll |
+| `Lua_SET_DAMAGE_MULTIPLIER_ENABLED` | `+0x392` | skull damage scaling |
+| `Lua_SET_45_PATTERN_ENABLED` | `+0x395` | 4-in-a-row and 5-in-a-row matching patterns |
+| `Lua_SET_ILLEGAL_MOVE_DAMAGE_ENABLED` | - | whether an illegal move damages the player |
+
+**Correction.** This section previously said `SET_EXTRATURN_CHANCE_ENABLED`
+toggles "4-of-a-kind granting an extra turn". That is the description of
+`SET_45_PATTERN_ENABLED`, which is a different byte at a different offset.
+`FUN_0047D4F0` reads `+0x391` in the *stat-based* roll - `if (board->[0x391] != 0)`
+wrapping the percentile comparison - so `+0x391` is the flag on the mana-gain
+extra turn, and `+0x395` is the 4-and-5 pattern one. The two extra-turn mechanisms
+are separate; see `COMBAT_FLOW.md` §1 and `SPELLS.md` §4.
+
+`SetMultiplierEffects` in `Assets/Scripts/GridUtilities.lua` sets `+0x390`,
+`+0x391` and `+0x392` together, which is how the board-sweeping spells suppress
+bonuses while they sweep. It does not touch `+0x395`.

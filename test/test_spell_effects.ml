@@ -35,31 +35,41 @@ let caster ?(mana = zero_mana) ?(life = 100) () =
 
 let foe ?(life = 100) () = make_combatant ~life ~max_life:100 1 "foe"
 
-let fx ~caster ~foe (board : board ref) =
+let fx ?(spell = None) ?(roll = fun n -> if n <= 0 then 0 else 0 mod n) ~caster ~foe (board : board ref) =
   { Spell.fx_caster = caster
   ; Spell.fx_enemies = [ foe ]
   ; Spell.fx_board = board
-  ; Spell.fx_roll = (fun n -> if n <= 0 then 0 else 0 mod n)
+  ; Spell.fx_roll = roll
   ; Spell.fx_gold = ref 0
   ; Spell.fx_xp = ref 0
   ; Spell.fx_input = None
   ; Spell.fx_items = None
   ; Spell.fx_enemy_items = None
-  ; Spell.fx_multipliers = ref true
+  ; Spell.fx_flags = Spell.default_multiplier_flags
+  ; Spell.fx_spell = spell
   }
 
 (** Runs a ported effect by id. Fails loudly rather than silently skipping: a
-    typo in an id should stop the suite, not quietly pass. *)
-let rec run id ~caster:c ~foe:f (b : board ref) : unit =
-  ignore (run_ctx id ~caster:c ~foe:f b)
+    typo in an id should stop the suite, not quietly pass.
 
-and run_ctx id ~caster:c ~foe:f (b : board ref) =
+    [?spell] supplies the descriptor for the bodies that charge themselves, since
+    [HANDLE_SPELL_COST] reads the caster's own costs off it. *)
+let rec run ?(spell = None) id ~caster:c ~foe:f (b : board ref) : unit =
+  ignore (run_ctx ~spell id ~caster:c ~foe:f b)
+
+and run_ctx ?(spell = None) id ~caster:c ~foe:f (b : board ref) =
   match Spell_effects.effect_of id with
   | None -> failwith ("no ported effect for " ^ id)
   | Some g ->
-      let ctx = fx ~caster:c ~foe:f b in
+      let ctx = fx ~spell ~caster:c ~foe:f b in
       g ctx;
       ctx
+
+(** A spell with the given costs, for the self-charging bodies. The values match
+    SBSG's descriptor in [lib/spell_data.ml]: 4 Earth and 4 Air, nothing else. *)
+let spell_costing ~earth ~fire ~air ~water id =
+  Spell.make_spell ~cost_earth:earth ~cost_fire:fire ~cost_air:air ~cost_water:water
+    id id
 
 (** A board holding exactly [n] gems of one kind, the rest a kind none of the
     bodies under test reads. Counting runs across the whole board rather than per
@@ -255,12 +265,105 @@ let () =
   let c2 = caster () and f2 = foe () in
   let b2 = ref (board_with Spell.GRed 3) in
   let ctx = run_ctx "SROF" ~caster:c2 ~foe:f2 b2 in
-  check "SROF leaves the multiplier flag on" !(ctx.Spell.fx_multipliers);
+  check "SROF leaves the multiplier flag on" (ctx.Spell.fx_flags.wildcard_chance && ctx.Spell.fx_flags.extra_turn_chance && ctx.Spell.fx_flags.damage_multiplier);
 
   (* A heal cannot exceed max life even when the board is generous. *)
   let c3 = caster ~life:98 () and f3 = foe () in
   run "SCAU" ~caster:c3 ~foe:f3 (ref (board_with Spell.GRed 10));
   check "SCAU does not heal past max life" (c3.life = 100)
+(* HANDLE_SPELL_COST: the spells that pay for themselves *)
+
+let () =
+  (* SBSG costs 4 Earth and 4 Air. The effect charges exactly that, so the pools
+     drop by the cost and [cost_charged] goes true, which is what stops
+     [Battle.take_action] charging the caster a second time. *)
+  let s = spell_costing ~earth:4 ~fire:0 ~air:4 ~water:0 "SBSG" in
+  let c = caster ~mana:{ Combat.earth = 10; fire = 0; air = 10; water = 0 } () in
+  let f = foe () in
+  let b = ref (board_with Spell.GGreen 0) in
+  run ~spell:(Some s) "SBSG" ~caster:c ~foe:f b;
+  check "SBSG charges its own 4 Earth" (Combat.mana c Combat.Earth = 6);
+  check "and its own 4 Air" (Combat.mana c Combat.Air = 6);
+  check "and leaves Fire and Water alone"
+    (Combat.mana c Combat.Fire = 0 && Combat.mana c Combat.Water = 0);
+  check "and marks the spell charged" s.cost_charged;
+
+  (* The subtraction floors at zero rather than going into debt, which is the
+     recovered behaviour of the u & ((int)u < 1) - 1 idiom at 0x40d080. *)
+  let s2 = spell_costing ~earth:30 ~fire:0 ~air:0 ~water:0 "X" in
+  let c2 = caster ~mana:{ Combat.earth = 5; fire = 0; air = 0; water = 0 } () in
+  let ctx = fx ~spell:(Some s2) ~caster:c2 ~foe:(foe ()) (ref (board_with Spell.GGreen 0)) in
+  Spell_effects.handle_spell_cost ctx;
+  check "a pool smaller than the cost floors at zero, not negative"
+    (Combat.mana c2 Combat.Earth = 0);
+
+  (* Without a descriptor there is nothing to charge, which is the case a bare
+     effect context in a test is in. *)
+  let c3 = caster ~mana:{ Combat.earth = 9; fire = 0; air = 0; water = 0 } () in
+  let ctx3 = fx ~caster:c3 ~foe:(foe ()) (ref (board_with Spell.GGreen 0)) in
+  Spell_effects.handle_spell_cost ctx3;
+  check "with no spell in context nothing is charged" (Combat.mana c3 Combat.Earth = 9)
+
+(* The self-charging bodies each bracket their sweep, so the flag is back on when
+   they finish. Leaving it off would suppress bonuses for the rest of the fight. *)
+let () =
+  let check_bracket id =
+    let s = spell_costing ~earth:4 ~fire:0 ~air:4 ~water:0 id in
+    let c = caster ~mana:{ Combat.earth = 10; fire = 0; air = 10; water = 0 } () in
+    let ctx = run_ctx ~spell:(Some s) id ~caster:c ~foe:(foe ()) (ref (board_with Spell.GGreen 4)) in
+    (s.cost_charged, ctx.Spell.fx_flags.wildcard_chance, ctx.Spell.fx_flags.extra_turn_chance)
+  in
+  let charged, wild, turn = check_bracket "SIST" in
+  check "SIST charges itself" charged;
+  check "SIST restores the wildcard flag" wild;
+  check "SIST restores the extra-turn flag" turn
+
+(* SIST explodes every Earth gem, and an explosion is a 3x3 sweep, so a cluster of
+   Earth gems takes their neighbours with it. *)
+let () =
+  let s = spell_costing ~earth:30 ~fire:0 ~air:0 ~water:0 "SIST" in
+  let c = caster ~mana:{ Combat.earth = 40; fire = 0; air = 0; water = 0 } () in
+  let f = foe () in
+  let cells = Array.make_matrix 8 8 (Mana Fire) in
+  (* a 2x2 block of Earth, so the 3x3 sweeps overlap *)
+  for i = 0 to 1 do
+    cells.(i).(0) <- Mana Earth;
+    cells.(i).(1) <- Mana Earth
+  done;
+  let b = ref (Board.of_array_matrix cells) in
+  run ~spell:(Some s) "SIST" ~caster:c ~foe:f b;
+  check "SIST removes the Earth gems it exploded" (count_of !b (Mana Earth) = 0);
+  (* Four overlapping 3x3 sweeps centred on a 2x2 block of Earth cover exactly the
+     3x3 region around that block, so five of the surrounding Fire go with the four
+     Earth - not eight, because the sweeps overlap rather than tile. The board
+     started with 60 Fire, so 55 remain. *)
+  check "SIST also removes the Fire gems caught in the blast"
+    (count_of !b (Mana Fire) = 55);
+  check "SIST charged the 30 Earth" (Combat.mana c Combat.Earth = 10)
+
+(* SHGO pays out according to the gem it took, and the amounts are not symmetric:
+   a red skull is worth five times a plain one. The random cell comes from
+   fx_roll, pinned to 0 here so SHGO always takes the top-left cell. *)
+let take gem =
+  let s = spell_costing ~earth:0 ~fire:0 ~air:0 ~water:0 "SHGO" in
+  let c = caster () in
+  let f = foe () in
+  let cells = Array.make_matrix 8 8 (Mana Earth) in
+  cells.(0).(0) <- gem;
+  let b = ref (Board.of_array_matrix cells) in
+  let ctx = fx ~spell:(Some s) ~roll:(fun _ -> 0) ~caster:c ~foe:f b in
+  Spell_effects.effect_shgo ctx;
+  (c, f, b)
+
+let () =
+  let c1, _, b1 = take (Mana Air) in
+  check "SHGO pays 20 Air for an Air gem" (Combat.mana c1 Combat.Air = 20);
+  check "SHGO empties the cell it took" (count_of !b1 (Mana Air) = 0);
+  let _, f3, _ = take RedSkull in
+  check "SHGO deals 100 to a red skull, five times the flat 20" (f3.life = 0);
+  let _, f4, _ = take Skull in
+  check "SHGO deals 20 to a plain skull" (f4.life = 80)
+
 
 let () =
   if !failures = 0 then print_endline "All spell effect tests passed."
@@ -268,3 +371,7 @@ let () =
     Printf.printf "%d spell effect test(s) failed.\n" !failures;
     exit 1
   end
+
+(* ------------------------------------------------------------------ *)
+(* ------------------------------------------------------------------ *)
+

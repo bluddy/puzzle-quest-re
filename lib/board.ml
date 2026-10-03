@@ -235,8 +235,15 @@ let is_mana_burn (b : board) : bool =
   find_all_legal_moves b = []
 
 (** Resolve matches: clears matched gems, calculates rewards, spawns wildcards.
-    Returns (new_board, match_result) or None if no matches. *)
-let resolve_matches (b : board) : (board * match_result) option =
+    Returns (new_board, match_result) or None if no matches.
+
+    [~wildcards_enabled] gates wildcard creation, and it is the board's [+0x390] flag
+    ([SET_WILDCARD_CHANCE_ENABLED]). It defaults to on because a caller with no
+    battle behind it - a test, or a bare board - wants the ordinary behaviour; the
+    battle passes the live flag so a spell that has switched it off for a sweep
+    cannot have the gems it is sweeping hand out a wildcard. The gems still clear
+    either way: the flag gates the {e bonus}, not the match. *)
+let resolve_matches ?(wildcards_enabled = true) (b : board) : (board * match_result) option =
   let raw_matches = find_matches b in
   if raw_matches = [] then None
   else
@@ -257,7 +264,7 @@ let resolve_matches (b : board) : (board * match_result) option =
         let count = List.length coords in
         if count >= 4 then extra_turn := true;
 
-        if count >= 5 then begin
+        if count >= 5 && wildcards_enabled then begin
           let mid_pos = List.nth coords (count / 2) in
           let multiplier = min 8 count in
           wildcards := (mid_pos, multiplier) :: !wildcards

@@ -254,18 +254,35 @@ let change_all_gems (fx : effect_context) (from_want : Board.gem) (to_want : Boa
     done
   done
 
-(** [SetMultiplierEffects(on)]: the three board flags at `+0x391` and friends.
+(** [SetMultiplierEffects(on)]: the three board flags at `+0x390`, `+0x391` and
+    `+0x392`, set together.
 
-    Every body that sweeps the grid brackets the sweep with this, turning the
-    extra-turn, wildcard and damage-multiplier chances off so the gems the script
-    removes cannot also produce a bonus. That is a real mechanic, not
-    presentation, so it is modelled as a flag on the context; it is set here so the
-    bracketing shape survives the port even though the bonuses themselves are the
-    board's business.
+    ```lua
+    function SetMultiplierEffects(on)
+        if (on) then
+            SET_EXTRATURN_CHANCE_ENABLED(1);
+            SET_WILDCARD_CHANCE_ENABLED(1);
+            SET_DAMAGE_MULTIPLIER_ENABLED(1);
+        else
+            SET_EXTRATURN_CHANCE_ENABLED(0);
+            SET_WILDCARD_CHANCE_ENABLED(0);
+            SET_DAMAGE_MULTIPLIER_ENABLED(0);
+        end
+    end
+    ```
 
-    The flag is recorded rather than consumed. Wiring it into the match resolution
-    is the remaining work for those spells. *)
-let set_multiplier_effects (fx : effect_context) (on : bool) : unit = fx.fx_multipliers := on
+    Every body that sweeps the grid brackets the sweep with this, so the gems it
+    removes cannot also produce a bonus. Note it is all-or-nothing: there is no
+    shape in these scripts that switches one flag and leaves the others alone.
+
+    Two of the three now have consumers - [extra_turn_chance] gates the
+    stat-based roll in [Battle.credit_run] and [wildcard_chance] gates wildcard
+    creation in [Board.resolve_matches]. [damage_multiplier] does not, because the
+    port has no skull damage scaling to gate; see [Spell.multiplier_flags]. *)
+let set_multiplier_effects (fx : effect_context) (on : bool) : unit =
+  fx.fx_flags.wildcard_chance <- on;
+  fx.fx_flags.extra_turn_chance <- on;
+  fx.fx_flags.damage_multiplier <- on
 
 (** Status effects and the [Std_*] wrappers.
 
@@ -342,6 +359,126 @@ let gem_fire = Board.Mana Fire
 let gem_air = Board.Mana Air
 let gem_water = Board.Mana Water
 
+(** [HANDLE_SPELL_COST]: the spells that pay for themselves.
+
+    Ten spell bodies open with a comment reading "Charge the mana first" and then
+    call [HANDLE_SPELL_COST(idxCaster)] with a single argument. That is not a
+    per-element cost - it is the spell paying for itself.
+
+    Recovered from [Lua_HANDLE_SPELL_COST] and [Engine_HANDLE_SPELL_COST_40d080]:
+
+    ```c
+    // Lua_HANDLE_SPELL_COST(casterIdx)
+    spell = current_spell_singleton();
+    if (spell != NULL) {
+        resolve_caster(casterIdx);                 // misnamed in the decompilation
+        HANDLE_SPELL_COST_40d080(0, spell_cost_earth(spell));
+        HANDLE_SPELL_COST_40d080(1, spell_cost_fire(spell));
+        HANDLE_SPELL_COST_40d080(2, spell_cost_air(spell));
+        HANDLE_SPELL_COST_40d080(3, spell_cost_water(spell));
+    }
+    current_spell_singleton()->[0x14] = 1;
+    ```
+
+    and the inner routine is
+
+    ```c
+    // HANDLE_SPELL_COST_40d080(charIdx, element, amount)
+    u = mana[charIdx][element] - amount;
+    mana[charIdx][element] = u & ((int)u < 1) - 1;   // max(0, u)
+    ```
+
+    So it subtracts the spell's {e own} four element costs - read from the
+    descriptor at `+0x2c`, `+0x2e`, `+0x30` and `+0x32`, which
+    [Engine_IS_SPELL_CASTABLE_474cb0] independently confirms by applying a 1.5x
+    multiplier to exactly those four shorts - and each pool floors at zero rather
+    than going negative.
+
+    **The flag is the interesting part.** It is set on the spell descriptor at
+    `+0x14` {e after} the subtraction, so it can only mean "already paid, do not
+    charge again". That puts the engine''s own cost step {e after} [CastSpell]
+    runs, which is why [Battle.take_action] pays at the end rather than the
+    beginning for these. Getting the order wrong charges the caster twice: [SIST]
+    costs 60 mana in total, and 120 would be absurd, so the double reading can be
+    dismissed on the numbers alone even before the flag.
+
+    Note [pay_cost] is still what charges a normal spell. This only suppresses it. *)
+
+let handle_spell_cost (fx : effect_context) : unit =
+  match fx.fx_spell with
+  | None -> ()
+  | Some s ->
+      spend_mana fx.fx_caster Earth s.cost_earth;
+      spend_mana fx.fx_caster Fire s.cost_fire;
+      spend_mana fx.fx_caster Air s.cost_air;
+      spend_mana fx.fx_caster Water s.cost_water;
+      s.cost_charged <- true
+
+(** Random cells and explosions.
+
+    The last two of [GridUtilities.lua], plus [GetRandomGrid] from
+    [GetRandomGrid.lua].
+
+    [ExplodeGem] is a 3x3 sweep centred on a cell, not a single gem:
+
+    ```lua
+    function ExplodeGem(gemx,gemy)
+        for y = gemy-1,gemy+1 do
+            for x = gemx-1,gemx+1 do
+                if (y >= 1 and y <= 8 and x >= 1 and x <= 8 and GET_GEM(x,y) ~= GEM_EMPTY) then
+                    DESTROY_GEM(x,y);
+                end
+            end
+        end
+    end
+    ```
+
+    So it removes the centre cell too, and it reads the board as it goes - which
+    matters only if [DESTROY_GEM] moved a gem into a cell the loop had yet to
+    reach, and it does not, since gravity is the board''s business. The bounds are
+    0..7 here for the row-shift reason given above.
+
+    [ExplodeAllGems] calls [ExplodeGem] on every cell of a kind, so overlapping
+    3x3 sweeps are the norm and a cell can be reached several times. The [~= 0]
+    guard means the second visit does nothing. *)
+let explode_gem (fx : effect_context) (cx : int) (cy : int) : unit =
+  for y = cy - 1 to cy + 1 do
+    for x = cx - 1 to cx + 1 do
+      if x >= 0 && x < 8 && y >= 0 && y < 8 then begin
+        let p = { Board.x; y } in
+        if not (Board.equal_gem (Board.get_gem !(fx.fx_board) p) Board.Empty) then
+          fx.fx_board := Board.set_gem p Board.Empty !(fx.fx_board)
+      end
+    done
+  done
+
+let explode_all_gems (fx : effect_context) (want : Board.gem) : unit =
+  let b = !(fx.fx_board) in
+  for y = 0 to b.Board.height - 1 do
+    for x = 0 to b.Board.width - 1 do
+      if Board.equal_gem (Board.get_gem b { Board.x; y }) want then
+        explode_gem fx x y
+    done
+  done
+
+(** [GetRandomGrid]: a uniformly random cell.
+
+    ```lua
+    function GetRandomGrid()
+        local x = GET_RANDOM_SYNC(1,8);
+        local y = GET_RANDOM_SYNC(1,8);
+        return x,y;
+    end
+    ```
+
+    Two draws from the battle''s single stream, so a spell that picks a cell
+    consumes two rolls and every later roll in the battle shifts with it. That is
+    why this goes through [fx_roll] rather than a fresh [Random.State]: a replay
+    seeded once has to reproduce the cell as well as the outcome.
+
+    The Lua asks for 1..8 and [Board] numbers the same cells 0..7, so the draw is
+    over 8 and used directly. *)
+let random_grid (fx : effect_context) : int * int = (fx.fx_roll 8, fx.fx_roll 8)
 (** The ported CastSpell bodies.
 
     Each is the Lua transcribed statement for statement, with the presentation
@@ -433,6 +570,115 @@ let effect_shop fx = receive_status fx.fx_caster "HandOfPowered" 6
     string "EFBO", which is the status effect file name without its suffix. *)
 let effect_sfbm fx = inflict_status fx "FireBombed" 12
 
+(** SIST: charge itself, then explode every Earth gem on the board. The sweep is
+    bracketed by [SetMultiplierEffects] so the explosions cannot also pay a
+    bonus.
+    ```lua
+    HANDLE_SPELL_COST(idxCaster);
+    SetMultiplierEffects(false);
+    ExplodeAllGems(GEM_GREEN, "GreenSparkle");
+    SetMultiplierEffects(true);
+    ``` *)
+let effect_sist fx =
+  handle_spell_cost fx;
+  set_multiplier_effects fx false;
+  explode_all_gems fx gem_earth;
+  set_multiplier_effects fx true
+
+(** STHR: charge itself, then destroy the one cell it was aimed at. *)
+let effect_sthr fx =
+  handle_spell_cost fx;
+  set_multiplier_effects fx false;
+  (match fx.fx_input with
+  | Some p -> fx.fx_board := Board.set_gem p Board.Empty !(fx.fx_board)
+  | None -> ());
+  set_multiplier_effects fx true
+
+(** SSPA: charge itself, then destroy the eight cells around the aimed cell,
+    leaving the centre alone.
+    ```lua
+    for y = gridy-1,gridy+1 do
+        for x = gridx-1,gridx+1 do
+            if (in bounds) then
+                if (x ~= gridx or y ~= gridy) then DESTROY_GEM(x,y); end
+            end
+        end
+    end
+    ```
+    The bounds test sits {e outside} the not-the-centre test, so a cell just off
+    the edge is skipped rather than clamped - the two orders agree here, but the
+    original's shape is kept. *)
+let effect_sspa fx =
+  handle_spell_cost fx;
+  set_multiplier_effects fx false;
+  (match fx.fx_input with
+  | None -> ()
+  | Some c ->
+      let b = !(fx.fx_board) in
+      for y = c.Board.y - 1 to c.Board.y + 1 do
+        for x = c.Board.x - 1 to c.Board.x + 1 do
+          let in_bounds = x >= 0 && x < b.Board.width && y >= 0 && y < b.Board.height in
+          let is_centre = x = c.Board.x && y = c.Board.y in
+          if in_bounds && not is_centre then
+            fx.fx_board := Board.set_gem { Board.x; y } Board.Empty !(fx.fx_board)
+        done
+      done);
+  set_multiplier_effects fx true
+
+(** SBSG: charge itself, then detonate a random cell. A 3x3 blast, so the effect
+    is "pick a cell at random and explode it", not "remove one gem". *)
+let effect_sbsg fx =
+  handle_spell_cost fx;
+  let x, y = random_grid fx in
+  set_multiplier_effects fx false;
+  explode_gem fx x y;
+  set_multiplier_effects fx true
+
+(** SHGO: charge itself, then take one random cell and pay out according to what
+    was in it. The reward table is a flat switch on the gem kind, and the amounts
+    are not symmetric: four elemental pools and gold and xp all give the flat 20,
+    while a skull deals 20 and a red skull deals five times that.
+
+    The cell is destroyed either way, so a gem with no case - none, since the
+    switch is total over the kinds that can appear - would still be removed.
+    ```lua
+    local amt = 20;
+    local x,y = GetRandomGrid();
+    local myGem = GET_GEM(x,y);
+    DESTROY_GEM(x,y);
+    if (myGem == GEM_AIR)   then ADD_MANA_AIR(idxCaster,amt);
+    elseif (myGem == GEM_EARTH) then ADD_MANA_EARTH(idxCaster,amt);
+    elseif (myGem == GEM_FIRE)  then ADD_MANA_FIRE(idxCaster,amt);
+    elseif (myGem == GEM_WATER) then ADD_MANA_WATER(idxCaster,amt);
+    elseif (myGem == GEM_GOLD)  then ADD_GOLD(idxCaster,amt);
+    elseif (myGem == GEM_STAR)  then ADD_XP(idxCaster,amt);
+    elseif (myGem == GEM_SKULL) then Std_InflictDamage(amt,idxCaster);
+    elseif (myGem == GEM_REDSKULL) then Std_InflictDamage(amt*5,idxCaster);
+    end
+    ```
+    Note the mana credit goes through [ADD_MANA], so it respects the ceiling: a
+    full pool simply absorbs it. *)
+let effect_shgo fx =
+  handle_spell_cost fx;
+  let amt = 20 in
+  let x, y = random_grid fx in
+  let b = !(fx.fx_board) in
+  let taken = Board.get_gem b { Board.x; y } in
+  set_multiplier_effects fx false;
+  fx.fx_board := Board.set_gem { Board.x; y } Board.Empty !(fx.fx_board);
+  let c = fx.fx_caster in
+  (match taken with
+  | Board.Mana Air -> add_mana c Air amt
+  | Board.Mana Earth -> add_mana c Earth amt
+  | Board.Mana Fire -> add_mana c Fire amt
+  | Board.Mana Water -> add_mana c Water amt
+  | Board.Gold -> add_gold fx amt
+  | Board.Experience -> add_xp fx amt
+  | Board.Skull -> inflict_damage fx amt
+  | Board.RedSkull -> inflict_damage fx (amt * 5)
+  | Board.Wildcard _ | Board.Empty -> ());
+  set_multiplier_effects fx true
+
 (** The ported body for [id], if it has one yet.
 
     An absent entry means the body has not been transcribed. [Battle] treats that
@@ -457,9 +703,17 @@ let effect_of (id : string) : (effect_context -> unit) option =
   | "SWHI" -> Some effect_swhi
   | "SWOF" -> Some effect_swof
   | "SWOT" -> Some effect_swot
+  (* The spells that pay for themselves. *)
+  | "SBSG" -> Some effect_sbsg
+  | "SIST" -> Some effect_sist
+  | "SSPA" -> Some effect_sspa
+  | "STHR" -> Some effect_sthr
+  | "SHGO" -> Some effect_shgo
   | _ -> None
 
 (** The ids this file covers, for the coverage test and for the report. *)
 let effect_of_spell_ids =
   [ "SCAU"; "SCLV"; "SDDI"; "SDIV"; "SDRR"; "SEPO"; "SFBM"; "SFBT"; "SFSK"
-  ; "SHID"; "SHOP"; "SROF"; "SSCV"; "STHX"; "SWHI"; "SWOF"; "SWOT" ]
+  ; "SHID"; "SHOP"; "SROF"; "SSCV"; "STHX"; "SWHI"; "SWOF"; "SWOT"
+  ; "SBSG"; "SIST"; "SSPA"; "STHR"; "SHGO" ]
+

@@ -84,45 +84,44 @@ type ai_context = {
   ctx_enemy_items : Item.loadout option;
 }
 
-(** What a [CastSpell] body gets to work with.
+(** The three board bonus flags, at their recovered offsets on the battle
+    manager. Mutable, and shared with the battle rather than copied, because the
+    spells that switch them off do so for the duration of a board sweep and the
+    next match has to see them back on.
 
-    Separate from [ai_context] on purpose. The AI hook only ever reads - it asks
-    whether a spell is worth casting - whereas the effect body writes: it moves
-    mana, deals damage, edits the board, and grants turns. Sharing one record
-    would mean every read-only hook carried mutable handles it has no business
-    touching, and the compiler would not object.
+    Each is a single byte written by one Lua bridge, all three recovered from
+    [docs/decompiled]:
 
-    The three differences that matter in practice:
+    | field | offset | native | what it gates |
+    | --- | --- | --- | --- |
+    | [wildcard_chance] | `+0x390` | [SET_WILDCARD_CHANCE_ENABLED] | a 5-or-more run creating a wildcard |
+    | [extra_turn_chance] | `+0x391` | [SET_EXTRATURN_CHANCE_ENABLED] | the stat-based extra turn roll |
+    | [damage_multiplier] | `+0x392` | [SET_DAMAGE_MULTIPLIER_ENABLED] | skull damage scaling |
 
-    - [fx_board] is a {e reference}, not a board. [SET_GEM], [DESTROY_GEM] and
-      [ADD_EFFECT_TO_GRID] mutate the board in place, and [Board] is an immutable
-      value with a functional [Board.set_gem]. Handing the effect a copy would
-      silently discard every board edit; the reference writes through to the
-      battle's own cell.
-    - [fx_roll] is the battle's single random source, so an effect that rolls
-      ([SFBA] searching for a skull, several skills using [GET_RANDOM_SYNC])
-      draws from the same stream as everything else and keeps replays
-      deterministic.
-    - [fx_gold] and [fx_xp] are references because they belong to the battle, not
-      to either combatant, and [ADD_GOLD] and [ADD_XP] write them.
+    [SetMultiplierEffects] in [GridUtilities.lua] sets all three together, which is
+    how the board-sweeping spells use them: switch them off, sweep the board, switch
+    them back on, so the gems being removed cannot also pay out a bonus.
 
-    [fx_input] is the cell the spell was aimed at, for the spells whose
-    [input_type] is not 0. It is [None] when the spell needs no target. *)
-type effect_context = {
-  fx_caster : combatant;
-  fx_enemies : combatant list;
-  fx_board : Board.board ref;
-  fx_roll : int -> int;
-  fx_gold : int ref;
-  fx_xp : int ref;
-  fx_input : Board.position option;
-  fx_items : Item.loadout option;
-  fx_enemy_items : Item.loadout option;
-  (** [SetMultiplierEffects(on)]: the board's extra-turn, wildcard and
-      damage-multiplier chances. Every body that sweeps the grid brackets the sweep
-      with this so the gems it removes cannot also pay out a bonus. *)
-  fx_multipliers : bool ref;
+    **Not one of these is the 4-or-5-of-a-kind pattern flag.** That is
+    [SET_45_PATTERN_ENABLED], which writes `+0x395`. An earlier note in
+    [docs/DATA_STRUCTURES.md] attributed "4-of-a-kind grants an extra turn" to
+    `+0x391`; the decompilation says otherwise, since [FUN_0047D4F0] reads
+    `+0x391` in the stat-roll path and [Lua_SET_45_PATTERN_ENABLED.c] writes
+    `+0x395`.
+
+    [damage_multiplier] has no consumer in the port yet. Skull damage here is a
+    flat 1 for a skull and 5 for a red skull, with no scaling term, so there is
+    nothing for the flag to gate. It is modelled rather than dropped so the three
+    stay together and so whoever recovers the scaling has the switch already in
+    place - but it is honest to say that today setting it changes nothing. *)
+type multiplier_flags = {
+  mutable wildcard_chance : bool;
+  mutable extra_turn_chance : bool;
+  mutable damage_multiplier : bool;
 }
+
+let default_multiplier_flags =
+  { wildcard_chance = true; extra_turn_chance = true; damage_multiplier = true }
 
 type spell = {
   id : string;
@@ -148,7 +147,36 @@ type spell = {
   is_cast_legal : (ai_context -> bool) option;
   (* Set when [CastSpell] is ported; see [lib/spell_effects.ml]. *)
   cast_spell : (effect_context -> unit) option;
+  (** [HANDLE_SPELL_COST] sets this on the spell, at `+0x14` on the descriptor.
+      See [Spell_effects.handle_spell_cost] for why that matters. *)
+  mutable cost_charged : bool;
 }
+
+(** What a [CastSpell] body gets to work with.
+
+    Separate from [ai_context] on purpose. The AI hook only ever reads - it asks
+    whether a spell is worth casting - whereas the effect body writes: it moves
+    mana, deals damage, edits the board, and grants turns. Sharing one record
+    would mean every read-only hook carried mutable handles it has no business
+    touching, and the compiler would not object.
+
+    The three differences that matter in practice:
+
+    - [fx_board] is a {e reference}, not a board. [SET_GEM], [DESTROY_GEM] and
+      [ADD_EFFECT_TO_GRID] mutate the board in place, and [Board] is an immutable
+      value with a functional [Board.set_gem]. Handing the effect a copy would
+      silently discard every board edit; the reference writes through to the
+      battle's own cell.
+    - [fx_roll] is the battle's single random source, so an effect that rolls
+      ([SFBA] searching for a skull, several skills using [GET_RANDOM_SYNC])
+      draws from the same stream as everything else and keeps replays
+      deterministic.
+    - [fx_gold] and [fx_xp] are references because they belong to the battle, not
+      to either combatant, and [ADD_GOLD] and [ADD_XP] write them.
+
+    [fx_input] is the cell the spell was aimed at, for the spells whose
+    [input_type] is not 0. It is [None] when the spell needs no target. *)
+and effect_context = {  fx_caster : combatant;   fx_enemies : combatant list;   fx_board : Board.board ref;   fx_roll : int -> int;   fx_gold : int ref;   fx_xp : int ref;   fx_input : Board.position option;   fx_items : Item.loadout option;   fx_enemy_items : Item.loadout option;   (** The battle's own bonus flags, by reference through the record rather than       copied. [SetMultiplierEffects] writes all three, and a sweep that switched       them off on a private copy would leave the battle's unchanged. *)   fx_flags : multiplier_flags;   (** The spell being cast. [HANDLE_SPELL_COST] takes no element or amount: it       reads the descriptor's own four costs, through what the decompilation calls       a current-spell singleton. This is that. *)   fx_spell : spell option;}
 
 let total_cost (s : spell) =
   s.cost_earth + s.cost_fire + s.cost_air + s.cost_water
@@ -174,6 +202,7 @@ let make_spell ?(cost_earth = 0) ?(cost_fire = 0) ?(cost_air = 0) ?(cost_water =
     should_ai_cast;
     is_cast_legal;
     cast_spell;
+    cost_charged = false;
   }
 
 (** [Lua_IS_SPELL_CASTABLE]. A plain per-pool comparison. Note the original
@@ -478,5 +507,9 @@ let spell_of_descriptor (d : descriptor) ?(name = "") ?should_ai_cast ?is_cast_l
     ~cost_water:d.cost_water ~cooldown:d.cooldown ~learn_score:d.learn_score
     ~learn_masks:d.learn_masks ~learn_keys:d.learn_keys ~input_type:d.input_type
     ~turn_cost:d.turn_cost ?should_ai_cast ?is_cast_legal ?cast_spell d.id name
+
+
+
+
 
 
