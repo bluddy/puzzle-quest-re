@@ -35,14 +35,14 @@ let caster ?(mana = zero_mana) ?(life = 100) () =
 
 let foe ?(mana = zero_mana) ?(life = 100) () = make_combatant ~mana ~life ~max_life:100 1 "foe"
 
-let fx ?(spell = None) ?(percentile = 0) ?(roll = fun n -> if n <= 0 then 0 else 0 mod n) ~caster ~foe (board : board ref) =
+let fx ?(spell = None) ?(percentile = 0) ?(input = None) ?(roll = fun n -> if n <= 0 then 0 else 0 mod n) ~caster ~foe (board : board ref) =
   { Spell.fx_caster = caster
   ; Spell.fx_enemies = [ foe ]
   ; Spell.fx_board = board
   ; Spell.fx_roll = roll
   ; Spell.fx_gold = ref 0
   ; Spell.fx_xp = ref 0
-  ; Spell.fx_input = None
+  ; Spell.fx_input = input
   ; Spell.fx_items = None
   ; Spell.fx_enemy_items = None
   ; Spell.fx_flags = Spell.default_multiplier_flags
@@ -613,13 +613,13 @@ let () =
      to agree with each other, and both have to line up with the real spell table -
      a body registered under an id no spell uses would look like progress and be
      nothing. *)
-  check "74 of the 130 CastSpell bodies are ported"
-    (List.length Spell_effects.effect_of_spell_ids = 74);
+  check "81 of the 130 CastSpell bodies are ported"
+    (List.length Spell_effects.effect_of_spell_ids = 81);
   check "and the real spell table resolves exactly that many"
     (List.length (List.filter_map
                     (fun (d : Spell.descriptor) -> Spell_effects.effect_of d.id)
                     Spell_data.spell_descriptors)
-    = 74);
+    = 81);
   check "every id in the list has a body, so the list is not lying"
     (List.for_all (fun id -> Spell_effects.effect_of id <> None)
        Spell_effects.effect_of_spell_ids);
@@ -629,6 +629,158 @@ let () =
           List.exists (fun (d : Spell.descriptor) -> d.id = id) Spell_data.spell_descriptors)
        Spell_effects.effect_of_spell_ids)
 
+
+(* The column sweeps and the lightning spells.
+   Seven bodies, and the reason ADD_LIGHTNING needs no port: it is a pixel-space
+   animation, not a mechanic. See lib/spell_effects.ml. *)
+(* A solid board of one kind, so a swept column is obvious. *)
+let solid_board () = ref (Board.of_array_matrix (Array.make_matrix 8 8 (Mana Fire)))
+
+let column_count b x =
+  let n = ref 0 in
+  for y = 0 to (!b).height - 1 do
+    if equal_gem (get_gem !b { x; y }) Empty then incr n
+  done;
+  !n
+
+let () =
+  (* SCBO's percentile bands run in the OPPOSITE order to STAU's, and the default
+     is load-bearing: the Lua starts at Water and only assigns in the first three
+     bands, so anything above 75 falls through to Fire rather than staying Water.
+     Getting this backwards is the easiest mistake in the file. *)
+  let drained_at p =
+    let c =
+      caster ~mana:{ Combat.earth = 5; fire = 5; air = 5; water = 5 } ()
+    in
+    let e = foe ~mana:Combat.zero_mana () in
+    Spell_effects.effect_scbo (fx ~percentile:p ~caster:c ~foe:e (ref (board_with Spell.GGreen 0)));
+    List.find_opt (fun el -> Combat.mana c el = 0)
+      [ Combat.Earth; Combat.Air; Combat.Fire; Combat.Water ]
+  in
+  check "SCBO at percentile 0 drains Earth" (drained_at 0 = Some Combat.Earth);
+  check "SCBO at 25 is still Earth, being inclusive" (drained_at 25 = Some Combat.Earth);
+  check "SCBO at 26 drains Air, the second band" (drained_at 26 = Some Combat.Air);
+  check "SCBO at 50 is still Air" (drained_at 50 = Some Combat.Air);
+  check "SCBO at 51 drains Fire, the third band" (drained_at 51 = Some Combat.Fire);
+  check "SCBO at 75 is still Fire" (drained_at 75 = Some Combat.Fire);
+  check "SCBO above 75 falls through to Water, not Fire"
+    (drained_at 76 = Some Combat.Water && drained_at 99 = Some Combat.Water);
+
+  (* The drained pool becomes damage, read before the drain. *)
+  let c2 = caster ~mana:{ Combat.earth = 0; fire = 30; air = 0; water = 0 } () in
+  let f2 = foe () in
+  Spell_effects.effect_scbo (fx ~percentile:60 ~caster:c2 ~foe:f2 (ref (board_with Spell.GGreen 0)));
+  check "SCBO deals the pool it drained" (f2.life = 70);
+  check "SCBO emptied the Fire pool" (Combat.mana c2 Combat.Fire = 0)
+
+let () =
+  (* SZAP hits every enemy. The model has one, so the loop is a single iteration,
+     but the damage is five plus an eighth of the caster's Fire. *)
+  let c = caster ~mana:{ Combat.earth = 0; fire = 24; air = 0; water = 0 } () in
+  let f = foe () in
+  Spell_effects.effect_szap (fx ~caster:c ~foe:f (ref (board_with Spell.GGreen 0)));
+  check "SZAP deals 5 plus 24/8, so 8" (f.life = 92)
+
+let () =
+  (* SCLI empties exactly the chosen column, and charges itself. *)
+  let s = spell_costing ~earth:4 ~fire:0 ~air:4 ~water:0 "SCLI" in
+  let c = caster ~mana:{ Combat.earth = 10; fire = 0; air = 10; water = 0 } () in
+  let b = solid_board () in
+  let ctx =
+    fx ~spell:(Some s) ~input:(Some { Board.x = 3; y = 0 })
+      ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) b
+  in
+  Spell_effects.effect_scli ctx;
+  check "SCLI empties the chosen column" (column_count b 3 = 8);
+  check "SCLI leaves its neighbour alone" (column_count b 2 = 0);
+  check "SCLI charged its own cost" (Combat.mana c Combat.Earth = 6);
+  check "SCLI restored the bonus flags"
+    (ctx.Spell.fx_flags.wildcard_chance && ctx.Spell.fx_flags.extra_turn_chance)
+
+let () =
+  (* SLIS takes three columns, and pulls the centre in from the edges so picking
+     column 0 sweeps 0..2 rather than running off the board. *)
+  let s = spell_costing ~earth:0 ~fire:0 ~air:0 ~water:0 "SLIS" in
+  let run_slis x =
+    let b = solid_board () in
+    let ctx = fx ~spell:(Some s) ~input:(Some { Board.x = x; y = 0 }) ~roll:(fun _ -> 0)
+                ~caster:(caster ()) ~foe:(foe ()) b
+    in
+    Spell_effects.effect_slis ctx;
+    List.map (column_count b) [ 0; 1; 2; 3; 6; 7 ]
+  in
+  let swept = run_slis 3 in
+  check "SLIS empties three columns for a middle pick"
+    (swept = [ 0; 0; 8; 8; 0; 0 ]);
+  let edge = run_slis 0 in
+  check "SLIS pulls the centre in from the left edge, sweeping 0..2"
+    (edge = [ 8; 8; 8; 0; 0; 0 ]);
+  let right = run_slis 7 in
+  check "SLIS pulls the centre in from the right edge, sweeping 5..7"
+    (right = [ 0; 0; 0; 0; 8; 8 ])
+
+let () =
+  (* SSUT destroys two DIFFERENT random columns. Which two depends on the draw
+     order, and [random_grid] takes two draws whose evaluation order OCaml does
+     not specify - so this asserts the structural property rather than naming
+     columns: exactly two swept, and they are different. *)
+  let s = spell_costing ~earth:0 ~fire:0 ~air:0 ~water:0 "SSUT" in
+  (* Always the same x for both draws, so every candidate column is 3 and the retry
+     loop has to work for the second one to differ. *)
+  let seq = ref [ 3; 3; 3; 3; 5; 5 ] in
+  let roll _ = match !seq with [] -> 0 | h :: t -> seq := t; h in
+  let b = solid_board () in
+  let ctx = fx ~spell:(Some s) ~roll ~input:None ~caster:(caster ()) ~foe:(foe ()) b in
+  Spell_effects.effect_ssut ctx;
+  let swept = List.init 8 (fun x -> (column_count b x = 8, x)) in
+  let emptied = List.length (List.filter fst swept) in
+  check "SSUT empties exactly two columns" (emptied = 2);
+  check "and they are different columns, so the retry loop worked"
+    (List.length (List.map snd (List.filter fst swept)) = 2)
+
+let () =
+  (* SFCA detonates four cells, each a 3x3 blast, and charges itself. Four separate
+     explosions on a solid board take noticeably more than one. *)
+  let s = spell_costing ~earth:0 ~fire:0 ~air:0 ~water:0 "SFCA" in
+  (* Four cells, one (x, y) pair per draw since random_grid takes two. *)
+  let seq = ref [ 4; 4; 0; 4; 7; 1; 7; 6 ] in
+  let roll _ = match !seq with [] -> 0 | h :: t -> seq := t; h in
+  let b = solid_board () in
+  let ctx = fx ~spell:(Some s) ~roll ~input:None ~caster:(caster ()) ~foe:(foe ()) b in
+  Spell_effects.effect_sfca ctx;
+  let emptied = ref 0 in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      if equal_gem (get_gem !b { x; y }) Empty then incr emptied
+    done
+  done;
+  check "SFCA's four blasts clear more than a single 3x3" (!emptied > 9)
+
+let () =
+  (* SMST turns eight cells into Fire. The board starts all Water so every pick is
+     accepted, and the roll walks forward through the columns so the eight
+     conversions land in eight different places rather than one cell repeatedly -
+     a pinned roll would make every retry re-pick the same cell and the try bound
+     would absorb the rest, which is the bound working but not what is being
+     tested here. *)
+  let s = spell_costing ~earth:0 ~fire:0 ~air:0 ~water:0 "SMST" in
+  (* Alternates: every even draw is x = 0, every odd draw walks y forward. That is
+     eight distinct cells down one column, which is what eight conversions need - a
+     plain mod-8 counter gives four repeated pairs instead. *)
+  let counter = ref 0 in
+  let roll n =
+    if n <= 0 then 0
+    else
+      let k = !counter in
+      incr counter;
+      if k mod 2 = 0 then 0 else (k / 2) mod 8
+  in
+  let b = ref (Board.of_array_matrix (Array.make_matrix 8 8 (Mana Water))) in
+  let ctx = fx ~spell:(Some s) ~roll ~input:None ~caster:(caster ()) ~foe:(foe ()) b in
+  Spell_effects.effect_smst ctx;
+  check "SMST converts eight cells to Fire" (count_of !b (Mana Fire) = 8);
+  check "SMST leaves the rest of the board alone" (count_of !b (Mana Water) = 56);
+  check "SMST restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
 let () =
   if !failures = 0 then print_endline "All spell effect tests passed."
   else begin

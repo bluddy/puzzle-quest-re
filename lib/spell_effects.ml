@@ -1103,6 +1103,195 @@ let effect_sfrz fx =
   add_mana fx.fx_caster Water n;
   change_all_gems fx gem_fire gem_water
 
+(** The column sweeps and the lightning spells.
+
+    Seven bodies, and one finding that removes work rather than adding it.
+
+    **ADD_LIGHTNING is presentation, not a mechanic.** Six scripts call it, and
+    every call passes pixel coordinates from [GET_CHARACTER_X/Y] or [GET_GRID_X/Y]
+    and happens {e after} the spell's actual effect:
+
+    ```c
+    // Lua_ADD_LIGHTNING(x1, y1, x2, y2, duration)
+    // reads five arguments - four ints and a float - and makes one call
+    FUN_00414d20(6, x1, y1, x2, y2, duration);
+    ```
+
+    It writes no mana, no life and no board cell. It is the lightning bolt drawn
+    between two points, and a headless battle has nowhere to draw it. So the six
+    spells that use it are ported {e without} it, on the same grounds as
+    [Std_CastSpellEffect] and [PLAY_SOUND]: porting the absence of a visible thing
+    is still porting it faithfully. What is left of SCBO, SZAP, SCLI, SLIS, SSUT
+    and SFCA below is their whole mechanic.
+
+    **SCLI, SLIS and SMST spell the three flags out individually** -
+    [SET_EXTRATURN_CHANCE_ENABLED], [SET_WILDCARD_CHANCE_ENABLED] and
+    [SET_DAMAGE_MULTIPLIER_ENABLED] on the way off and again on the way back -
+    rather than calling [SetMultiplierEffects] as the others do. Same three bytes,
+    same order, so [set_multiplier_effects] is used and the duplication is noted
+    rather than reproduced. *)
+
+(** Empties one column of the board, top to bottom. SCLI and SLIS sweep with this;
+    the bonus chances are suppressed for the duration so the gems going cannot also
+    pay out. *)
+let sweep_column ~(x : int) fx =
+  let b = !(fx.fx_board) in
+  if x >= 0 && x < b.Board.width then
+    for y = 0 to b.Board.height - 1 do
+      fx.fx_board := Board.set_gem { Board.x; y } Board.Empty !(fx.fx_board)
+    done
+
+(** SCLI: charge itself, then destroy the column the player picked.
+
+    The column index comes from [GET_INPUT_DATA(0)], which is the same cell as
+    [x] in [Board]'s grid - the engine's one-row shift applies to y, not x. *)
+let effect_scli fx =
+  handle_spell_cost fx;
+  set_multiplier_effects fx false;
+  (match fx.fx_input with
+  | None -> ()
+  | Some p -> sweep_column ~x:p.Board.x fx);
+  set_multiplier_effects fx true
+
+(** SLIS: charge itself, then destroy three columns centred on the chosen one.
+
+    The centre is pulled in from the edges before the sweep, so the three columns
+    are always 2..7 rather than 0..2 and 6..8:
+
+    ```lua
+    local midx = GET_INPUT_DATA(0);
+    if (midx == 1) then midx = 2; end;
+    if (midx == 8) then midx = 7; end;
+    ```
+
+    So picking the outermost column still gives a legal middle one, and the spell
+    cannot sweep off the edge of the board. *)
+let effect_slis fx =
+  handle_spell_cost fx;
+  let midx =
+    match fx.fx_input with
+    | None -> 4
+    | Some p -> ( match p.Board.x with 0 -> 1 | 7 -> 6 | x -> x)
+  in
+  set_multiplier_effects fx false;
+  List.iter (fun x -> sweep_column ~x fx) [ midx - 1; midx; midx + 1 ];
+  set_multiplier_effects fx true
+
+(** A random cell, rejecting one that already holds the given gem kind.
+
+    [GetRandomGrid_Not] gives up after a thousand tries and returns whatever it has
+    at that point, which is why the original reads
+    `until (tries > 1000 or done)`. The bound is kept rather than made unbounded,
+    because a board made entirely of the rejected kind would otherwise spin. *)
+let random_grid_not ~(avoid : Board.gem) fx =
+  let b = !(fx.fx_board) in
+  let rec go tries =
+    if tries > 1000 then (0, 0)
+    else
+      let x, y = random_grid fx in
+      if Board.equal_gem (Board.get_gem b { Board.x; y }) avoid then go (tries + 1)
+      else (x, y)
+  in
+  go 0
+
+(** SSUT: charge itself, then destroy two {e different} random columns.
+
+    The second column is drawn until it differs from the first, with no try cap in
+    the original - and that one cannot spin, because there are eight columns and
+    only one forbidden value. *)
+let effect_ssut fx =
+  handle_spell_cost fx;
+  let x1 = fst (random_grid fx) in
+  let rec second tries =
+    let x = fst (random_grid fx) in
+    if x <> x1 || tries > 100 then x else second (tries + 1)
+  in
+  let x2 = second 0 in
+  set_multiplier_effects fx false;
+  sweep_column ~x:x1 fx;
+  sweep_column ~x:x2 fx;
+  set_multiplier_effects fx true
+
+(** A random non-empty cell, or [None] if a thousand draws all come up empty.
+
+    SFCA's own picker is `repeat x,y = GetRandomGrid() until GET_GEM(x,y) ~= GEM_EMPTY`
+    with {e no} try cap, which is a genuine unbounded loop in the original whenever
+    the board has no gems left. This port bounds it rather than reproducing a hang,
+    and that bound is the only deliberate divergence in this file. *)
+let random_non_empty fx =
+  let b = !(fx.fx_board) in
+  let rec go tries =
+    if tries > 1000 then None
+    else
+      let x, y = random_grid fx in
+      if Board.equal_gem (Board.get_gem b { Board.x; y }) Board.Empty then go (tries + 1)
+      else Some (x, y)
+  in
+  go 0
+
+(** SFCA: charge itself, then detonate four cells at random, in that order. *)
+let effect_sfca fx =
+  handle_spell_cost fx;
+  set_multiplier_effects fx false;
+  for _ = 1 to 4 do
+    match random_non_empty fx with
+    | None -> ()
+    | Some (x, y) -> explode_gem fx x y
+  done;
+  set_multiplier_effects fx true
+
+(** SMST: charge itself, then turn eight cells into Fire gems.
+
+    Each pick avoids an existing Fire gem and then rewrites the cell, so the spell
+    cannot stack on one cell. It stops at eight conversions or after a thousand
+    attempts, matching the original's `until (tries > 1000 or amt <= 0)`. *)
+let effect_smst fx =
+  handle_spell_cost fx;
+  let remaining = ref 8 and tries = ref 0 in
+  set_multiplier_effects fx false;
+  while !remaining > 0 && !tries <= 1000 do
+    let x, y = random_grid_not ~avoid:gem_fire fx in
+    fx.fx_board := Board.set_gem { Board.x; y } gem_fire !(fx.fx_board);
+    decr remaining;
+    incr tries
+  done;
+  set_multiplier_effects fx true
+
+(** SCBO: the turn's percentile picks one of the caster's four pools, that pool
+    becomes damage, and it is emptied.
+
+    The bands are STAU's shape but the mapping is different, and the default is
+    load-bearing: the script starts at Water and only assigns in the first three
+    bands, so everything above 75 falls through to Fire.
+
+    ```lua
+    local myManaType = MANA_BLUE;                   -- Water
+    if (myRoll <= 25) then myManaType = MANA_GREEN;      -- Earth
+    elseif (myRoll <= 50) then myManaType = MANA_YELLOW; -- Air
+    elseif (myRoll <= 75) then myManaType = MANA_RED;    -- Fire
+    end
+    ```
+
+    So 0..25 is Earth, 26..50 Air, 51..75 Fire and 76..99 Water - the reverse order
+    to STAU's, which is an easy thing to carry over by accident. *)
+let effect_scbo fx =
+  let elem =
+    if fx.fx_percentile <= 25 then Earth
+    else if fx.fx_percentile <= 50 then Air
+    else if fx.fx_percentile <= 75 then Fire
+    else Water
+  in
+  let dmg = Combat.mana fx.fx_caster elem in
+  set_mana fx.fx_caster elem 0;
+  inflict_damage fx dmg
+
+(** SZAP: five plus an eighth of the caster's Fire, to {e every} enemy. The single
+    enemy in the 1v1 model makes the loop one iteration; it is kept because the
+    original has one and because [fx_enemies] is a list for exactly this reason. *)
+let effect_szap fx =
+  let dmg = 5 + (Combat.mana fx.fx_caster Fire / 8) in
+  List.iter (fun e -> subtract_life fx e dmg) fx.fx_enemies
+
 (** The ported body for [id], if it has one yet.
 
     An absent entry means the body has not been transcribed. [Battle] treats that
@@ -1186,6 +1375,14 @@ let effect_of (id : string) : (effect_context -> unit) option =
   | "SCHL" -> Some effect_schl
   | "SVAM" -> Some effect_svam
   | "SFRZ" -> Some effect_sfrz
+  (* The column sweeps and the lightning spells. *)
+  | "SCBO" -> Some effect_scbo
+  | "SZAP" -> Some effect_szap
+  | "SCLI" -> Some effect_scli
+  | "SLIS" -> Some effect_slis
+  | "SSUT" -> Some effect_ssut
+  | "SFCA" -> Some effect_sfca
+  | "SMST" -> Some effect_smst
   | _ -> None
 
 (** The ids this file covers, for the coverage test and for the report. *)
@@ -1199,6 +1396,7 @@ let effect_of_spell_ids =
   ; "SSSW"; "SCTO"; "SDBO"; "SMBU"; "SSWP"; "SSHO"; "SSBM"; "STAU"
   ; "SFAV"; "SFSH"; "SHAS"; "SPAU"; "SVIG"; "SLIG"; "SSBL"; "SHWL"
   ; "SSPT"; "SRBI"; "SBLU"; "SEGZ"; "SLCO"; "SDST"; "SFBO"; "SRND"
-  ; "SSNK"; "STWH"; "SSGZ"; "SENR"; "SCHL"; "SVAM"; "SFRZ" ]
+  ; "SSNK"; "STWH"; "SSGZ"; "SENR"; "SCHL"; "SVAM"; "SFRZ"
+  ; "SCBO"; "SZAP"; "SCLI"; "SLIS"; "SSUT"; "SFCA"; "SMST" ]
 
 
