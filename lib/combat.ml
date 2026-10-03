@@ -670,3 +670,25 @@ let has_status (c : combatant) (name : string) : bool =
 (** [GET_NUM_STATUS_EFFECTS(idx)]: counts stacks of all kinds, which is what SCOU
     reads rather than testing a named effect. *)
 let num_status_effects (c : combatant) : int = List.length c.effects
+
+(** The engine's skill index, as the Lua [SKILL_] constants number them.
+
+    [SFLV] picks a skill with [GET_RANDOM_SYNC(0,6)] and compares the result
+    against [SKILL_EARTH], [SKILL_FIRE], [SKILL_AIR], [SKILL_WATER],
+    [SKILL_BATTLE], [SKILL_CUNNING] and [SKILL_MORALE] - in that order, so
+    Cunning is 5 and Morale is 6.
+
+    That is the reverse of the [skill] constructors above, which declare Morale
+    before Cunning. Both orders give a uniform draw over the same seven skills so
+    the {e distribution} is unaffected either way, but a seeded replay only
+    reproduces the same skill if the index maps the same way, so the engine's
+    order is spelled out here rather than reusing the constructor order. *)
+let skill_of_index (i : int) : skill =
+  match i with
+  | 0 -> SEarth
+  | 1 -> SFire
+  | 2 -> SAir
+  | 3 -> SWater
+  | 4 -> SBattle
+  | 5 -> SCunning
+  | _ -> SMorale

@@ -342,16 +342,24 @@ let attacker = attacker_of b defender in
     consume the board's rng differently depending on the spell list.
 
     [PERCENTILE_CHANCE_SYNC] returns 0..99, which is what the Lua compares
-    against, so the range here has to stay 100 to match. *)
-let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.ai_context =
-  let evaluation =
-    let e =
-      evaluate_board ~weights:b.rules.ai_weights ~rng:b.rng ~difficulty:b.rules.difficulty
-        ~hero:{ level = b.rules.hero_level; level_cap = b.rules.hero_level_cap }
-        (ai_view b)
-    in
-    if e.has_valid_move then e.best_score else 0
+    against, so the range here has to stay 100 to match.
+
+    Both values are passed in rather than read here, because [take_action] draws
+    the percentile once per turn and hands the same number to the effect context.
+    Reading it twice would consume two rolls and let the effect see a different
+    value from the one the AI hook decided on. *)
+
+(** [EVALUATE_BOARD]: the score of the best move available to the acting side. *)
+let board_evaluation (b : battle) : int =
+  let e =
+    evaluate_board ~weights:b.rules.ai_weights ~rng:b.rng ~difficulty:b.rules.difficulty
+      ~hero:{ level = b.rules.hero_level; level_cap = b.rules.hero_level_cap }
+      (ai_view b)
   in
+  if e.has_valid_move then e.best_score else 0
+
+let ai_context (b : battle) (actor : combatant) (defender : combatant)
+    ~(percentile : int) ~(evaluation : int) : Spell.ai_context =
   Spell.
     {
       ctx_caster = actor;
@@ -363,7 +371,7 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.a
       ctx_enemies = [ defender ];
       ctx_board = b.board;
       ctx_evaluation = evaluation;
-      ctx_percentile = b.rng 100;
+      ctx_percentile = percentile;
       ctx_roll = b.rng;
       ctx_items = Some (loadout_of b actor);
       ctx_enemy_items = Some (loadout_of b defender);
@@ -376,7 +384,7 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant) : Spell.a
     likewise shared, because they belong to the battle rather than to either
     combatant. *)
 let effect_context (b : battle) (actor : combatant) (defender : combatant)
-    (s : Spell.spell) : Spell.effect_context =
+    (s : Spell.spell) (p : int) : Spell.effect_context =
   { Spell.fx_caster = actor
   ; Spell.fx_enemies = [ defender ]
   ; Spell.fx_board = ref b.board
@@ -388,6 +396,7 @@ let effect_context (b : battle) (actor : combatant) (defender : combatant)
   ; Spell.fx_enemy_items = Some (loadout_of b defender)
   ; Spell.fx_flags = b.multipliers
   ; Spell.fx_spell = Some s
+  ; Spell.fx_percentile = p
   }
 
 (** One turn for the acting side: at most one spell, then a swap only if the
@@ -405,9 +414,17 @@ let effect_context (b : battle) (actor : combatant) (defender : combatant)
     get a say beyond the difficulty skip inside [Spell.pick_ai_spell]. *)
 let take_action (b : battle) (actor : combatant) (defender : combatant)
     (spells : spell list) : unit =
+  (* One percentile draw for the whole turn, and it is drawn {e after} the board
+     evaluation as before, so the random stream is consumed in the order it
+     always was. Both the AI hook and the effect read this same value: [STAU]
+     picks which of the caster's pools to drain from it, so a second draw would
+     have the spell drain a different element than the one its own AI hook just
+     reasoned about. *)
+  let evaluation = board_evaluation b in
+  let percentile = b.rng 100 in
   let still_turn =
     match pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
-            (ai_context b actor defender) spells with
+            (ai_context b actor defender ~percentile ~evaluation) spells with
     | None ->
         (* Nothing cast, so the turn is the caster's to use. *)
         emit b (SpellHeld actor.name);
@@ -430,7 +447,7 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
            game could intend. *)
         (match s.Spell.cast_spell with
         | Some f ->
-            let fx = effect_context b actor defender s in
+            let fx = effect_context b actor defender s percentile in
             f fx;
             (* A board sweep empties cells; the board has to resolve them before
                the next move or the grid is left short of gems. *)
@@ -573,3 +590,6 @@ let format_event = function
 
 let print_log (b : battle) : unit =
   List.iter (fun e -> print_endline (format_event e)) (log_of b)
+
+
+

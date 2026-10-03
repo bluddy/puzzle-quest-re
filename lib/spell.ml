@@ -176,7 +176,30 @@ type spell = {
 
     [fx_input] is the cell the spell was aimed at, for the spells whose
     [input_type] is not 0. It is [None] when the spell needs no target. *)
-and effect_context = {  fx_caster : combatant;   fx_enemies : combatant list;   fx_board : Board.board ref;   fx_roll : int -> int;   fx_gold : int ref;   fx_xp : int ref;   fx_input : Board.position option;   fx_items : Item.loadout option;   fx_enemy_items : Item.loadout option;   (** The battle's own bonus flags, by reference through the record rather than       copied. [SetMultiplierEffects] writes all three, and a sweep that switched       them off on a private copy would leave the battle's unchanged. *)   fx_flags : multiplier_flags;   (** The spell being cast. [HANDLE_SPELL_COST] takes no element or amount: it       reads the descriptor's own four costs, through what the decompilation calls       a current-spell singleton. This is that. *)   fx_spell : spell option;}
+and effect_context = {
+  fx_caster : combatant;
+  fx_enemies : combatant list;
+  fx_board : Board.board ref;
+  fx_roll : int -> int;
+  fx_gold : int ref;
+  fx_xp : int ref;
+  fx_input : Board.position option;
+  fx_items : Item.loadout option;
+  fx_enemy_items : Item.loadout option;
+  (** The battle's own bonus flags, by reference through the record rather than
+      copied. [SetMultiplierEffects] writes all three, and a sweep that switched
+      them off on a private copy would leave the battle's unchanged. *)
+  fx_flags : multiplier_flags;
+  (** The spell being cast. [HANDLE_SPELL_COST] takes no element or amount: it
+      reads the descriptor's own four costs, through what the decompilation calls
+      a current-spell singleton. This is that. *)
+  fx_spell : spell option;
+  (** [PERCENTILE_CHANCE_SYNC]: the 0..99 turn roll. One draw per turn, and an
+      effect that needs it has to read the same value the AI decision did - STAU
+      picks which pool to drain from it, so a different draw would have the spell
+      drain a different element than the one it advertised. *)
+  fx_percentile : int;
+}
 
 let total_cost (s : spell) =
   s.cost_earth + s.cost_fire + s.cost_air + s.cost_water
@@ -348,7 +371,8 @@ let apply_match_gain ?(enabled = true) ?(roll = Random.int) ?(pending = false) t
 
     Not "a modifier percent". The body is:
 
-    ```lua
+    
+`lua
     function Std_AISpellcastingChance(modifier)
         local evaluation = EVALUATE_BOARD();
         local chance = PERCENTILE_CHANCE_SYNC();
@@ -356,7 +380,8 @@ let apply_match_gain ?(enabled = true) ?(roll = Random.int) ?(pending = false) t
         if (evaluation > 30) then return 0; end
         return 1;
     end
-    ```
+    
+`
 
     So it casts when the percentile is at or under 50 plus the modifier, and
     only when the board has no good move lined up. That second clause is the real
@@ -507,6 +532,8 @@ let spell_of_descriptor (d : descriptor) ?(name = "") ?should_ai_cast ?is_cast_l
     ~cost_water:d.cost_water ~cooldown:d.cooldown ~learn_score:d.learn_score
     ~learn_masks:d.learn_masks ~learn_keys:d.learn_keys ~input_type:d.input_type
     ~turn_cost:d.turn_cost ?should_ai_cast ?is_cast_legal ?cast_spell d.id name
+
+
 
 
 

@@ -679,6 +679,430 @@ let effect_shgo fx =
   | Board.Wildcard _ | Board.Empty -> ());
   set_multiplier_effects fx true
 
+(** The mana and skill group.
+
+    Fifty-five of the remaining bodies live here, and they collapse into seven
+    shapes. Each is transcribed from its Lua; the shared helper exists so the
+    shape is stated once rather than a dozen times with small differences.
+
+    Two things recur and are worth stating once.
+
+    **Damage is often the caster's own pool, then the pool is emptied.**
+    SBRF, SBRI, SBRP, SBRZ, SSOB and SSOS all read one element off the caster,
+    deal that much damage to the enemy, and set the pool to zero. The order
+    matters: the damage is dealt at the pool's value *before* the drain, and
+    SET_MANA clamps to the ceiling so zeroing is exact.
+
+    **Integer division is everywhere and it truncates.** Lua's `/` on two integers
+    floors, so "half the enemy's Air" is a floor, and the mana-scaled status
+    durations are floors. These are written with `/` here so they truncate the same
+    way rather than rounding. *)
+
+(* ------------------------------------------------------------------ *)
+(* Shape 1: the caster's own pool becomes damage, and is then drained    *)
+(* ------------------------------------------------------------------ *)
+
+(** SBRF (Fire), SBRI (Water), SSOB (Earth) and SSOS (Air) are this exactly.
+    SBRP (Air) and SBRZ (Earth) add a debuff on top. *)
+let pool_into_damage ~(elem : element) fx =
+  let dmg = Combat.mana fx.fx_caster elem in
+  inflict_damage fx dmg;
+  set_mana fx.fx_caster elem 0
+
+let effect_sbrf fx = pool_into_damage ~elem:Fire fx
+let effect_sbri fx = pool_into_damage ~elem:Water fx
+let effect_ssob fx = pool_into_damage ~elem:Earth fx
+let effect_ssos fx = pool_into_damage ~elem:Air fx
+
+(* SBRP is the Air body plus Disease on the enemy for 20 turns. The status is
+   applied after the drain, and the Lua uses the raw "EDIS" file name. *)
+let effect_sbrp fx =
+  pool_into_damage ~elem:Air fx;
+  inflict_status fx "Disease" 20
+
+(* SBRZ is the Earth body plus Poison for 20 turns, under the raw name "EPOI". *)
+let effect_sbrz fx =
+  pool_into_damage ~elem:Earth fx;
+  inflict_status fx "Poison" 20
+
+(* ------------------------------------------------------------------ *)
+(* Shape 2: bank a little mana and take another turn                     *)
+(* ------------------------------------------------------------------ *)
+
+(** SCHA, SCHE, SCHF and SCHW are this over Air, Earth, Fire and Water. The five
+    is fixed and the extra turn is unconditional. *)
+let mana_then_extra_turn ~(elem : element) ~(amount : int) fx =
+  add_mana fx.fx_caster elem amount;
+  extra_turn fx.fx_caster
+
+let effect_scha fx = mana_then_extra_turn ~elem:Air ~amount:5 fx
+let effect_sche fx = mana_then_extra_turn ~elem:Earth ~amount:5 fx
+let effect_schf fx = mana_then_extra_turn ~elem:Fire ~amount:5 fx
+let effect_schw fx = mana_then_extra_turn ~elem:Water ~amount:5 fx
+
+(* ------------------------------------------------------------------ *)
+(* Shape 3: count a gem kind, destroy them all, bank it as skill         *)
+(* ------------------------------------------------------------------ *)
+
+(** SBNA, SBNE, SBNF and SBNW. The gems are destroyed rather than converted, so
+    this trades board presence for a permanent skill gain - and the skill is what
+    drives mana *yield* later, which is why it is worth more than the mana would
+    have been.
+
+    The count is taken before the destroy, and it is a whole-board count. *)
+let gems_into_skill ~(gem : Board.gem) ~(skill : skill) fx =
+  let n = count_gems_of fx gem in
+  destroy_all_gems fx gem;
+  add_temp_skill fx.fx_caster skill n
+
+let effect_sbna fx = gems_into_skill ~gem:gem_air ~skill:SAir fx
+let effect_sbne fx = gems_into_skill ~gem:gem_earth ~skill:SEarth fx
+let effect_sbnf fx = gems_into_skill ~gem:gem_fire ~skill:SFire fx
+let effect_sbnw fx = gems_into_skill ~gem:gem_water ~skill:SWater fx
+
+(* ------------------------------------------------------------------ *)
+(* Shape 4: mana or skulls converted into a skill                        *)
+(* ------------------------------------------------------------------ *)
+
+(** SBAV empties the caster's Earth pool into Battle skill. The drain happens
+    {e first}: it reads the pool, zeroes it, and only then adds the skill, so a
+    ceiling-clamped read cannot be double counted. *)
+let effect_sbav fx =
+  let m = Combat.mana fx.fx_caster Earth in
+  set_mana fx.fx_caster Earth 0;
+  add_temp_skill fx.fx_caster SBattle m
+
+(** SESK is SBAV's shape over skulls instead of mana, and it takes both skull
+    kinds. They are counted first and deleted second, and the two counts add
+    because a board of five red skulls is worth five battle skill, same as five
+    plain ones. *)
+let effect_sesk fx =
+  let n = count_gems_of fx Board.Skull + count_gems_of fx Board.RedSkull in
+  delete_all_gems fx Board.Skull;
+  delete_all_gems fx Board.RedSkull;
+  add_temp_skill fx.fx_caster SBattle n
+
+(** SREV doubles the caster's existing Battle skill. A no-op at zero, since adding
+    zero to zero is zero - the Lua does not guard it either. *)
+let effect_srev fx =
+  let have = Combat.skill_in SBattle fx.fx_caster.Combat.skills in
+  add_temp_skill fx.fx_caster SBattle have
+
+(** SFLV empties the Fire pool into a {e random} skill, drawn with
+    [GET_RANDOM_SYNC(0,6)] - seven options, so every one of the seven skills.
+
+    The Lua is a seven-arm if/elseif over SKILL_EARTH through SKILL_MORALE, and
+    every arm does the same thing: add the mana to whichever skill was drawn. So
+    the branches carry no information beyond the index and it is a single
+    [Combat.skill_of_index]. Note that SFLV at 0 fire is still worth casting in the
+    original - it adds nothing. *)
+let effect_sflv fx =
+  let m = Combat.mana fx.fx_caster Fire in
+  let idx = fx.fx_roll 7 in
+  set_mana fx.fx_caster Fire 0;
+  add_temp_skill fx.fx_caster (Combat.skill_of_index idx) m
+
+(* ------------------------------------------------------------------ *)
+(* Shape 5: taking the enemy's mana                                      *)
+(* ------------------------------------------------------------------ *)
+
+(** SFSP takes the enemy's whole Fire pool and heals the caster for it. The
+    enemy's pool is zeroed {e before} the heal, and the heal reads the value read
+    at the top - so the order is fixed. *)
+let effect_sfsp fx =
+  let taken = match fx.fx_enemies with e :: _ -> Combat.mana e Fire | [] -> 0 in
+  (match fx.fx_enemies with
+  | e :: _ -> set_mana e Fire 0
+  | [] -> ());
+  healing fx.fx_caster taken
+
+(** SSWA deals four plus the enemy's Earth pool. The pool is {e not} drained - the
+    spell reads it and hits for it. *)
+let effect_sswa fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      let amt = 4 + Combat.mana e Earth in
+      inflict_damage fx amt
+
+(** SARC would belong here: it halves the enemy's Air pool into damage and banks an
+    extra turn if the {e caster} has 15 or more Air, and those two tests read
+    different characters.
+
+    It is deliberately absent. SARC is the spell-research mini-game descriptor
+    rather than a battle spell - [tools/extract_spell_data.ps1] excludes it and
+    there is no descriptor for it in [lib/spell_data.ml], so nothing in a battle
+    can ever cast it. A body here would be a registration under an id no spell
+    carries, which is exactly what the coverage test is there to catch. It belongs
+    with the mini-game, when that is ported. *)
+
+(** SBST empties the enemy's Earth pool, and takes an extra turn only if that pool
+    was at least ten - checked {e before} the drain. *)
+let effect_sbst fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      let amt = Combat.mana e Earth in
+      if amt >= 10 then extra_turn fx.fx_caster;
+      set_mana e Earth 0
+
+(** SSSW swaps the two sides' four pools, less a spell cost of 6 Earth, 12 Air and
+    18 Water taken off the caster's share.
+
+    The three subtractions can go negative, and the Lua does not floor them - it
+    passes the negative straight to ADD_MANA. Here [add_mana] ignores a
+    non-positive amount, so a caster who cannot cover the cost simply has that
+    element skipped rather than crediting a negative. That is the one place this
+    body and the original could differ, and it only arises when a pool is under
+    the cost. *)
+let effect_sssw fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      let c = fx.fx_caster in
+      let mine = List.map (fun el -> (el, Combat.mana c el)) [ Air; Earth; Fire; Water ] in
+      let theirs = List.map (fun el -> (el, Combat.mana e el)) [ Air; Earth; Fire; Water ] in
+      List.iter (fun (el, _) -> set_mana c el 0) mine;
+      List.iter (fun (el, _) -> set_mana e el 0) theirs;
+      let cost = [ (Earth, 6); (Air, 12); (Water, 18) ] in
+      List.iter
+        (fun (el, amt) -> add_mana e el (List.assoc el mine - amt))
+        cost;
+      List.iter (fun (el, amt) -> add_mana c el amt) theirs;
+      extra_turn c
+
+(** SCTO drains three from every one of the enemy's pools and banks five Earth.
+    Fixed amounts, and the drain floors at zero, so a nearly-empty enemy simply
+    loses what it has. *)
+let effect_scto fx =
+  let drain = 3 in
+  (match fx.fx_enemies with
+  | e :: _ ->
+      List.iter (fun el -> subtract_mana e el drain) [ Air; Earth; Fire; Water ]
+  | [] -> ());
+  add_mana fx.fx_caster Earth 5
+
+(** SDBO blinds the enemy for two turns and takes five from its Air and Fire. Only
+    two of the four pools, which is the spell's identity. *)
+let effect_sdbo fx =
+  inflict_status fx "Blinded" 2;
+  (match fx.fx_enemies with
+  | e :: _ ->
+      subtract_mana e Air 5;
+      subtract_mana e Fire 5
+  | [] -> ())
+
+(** SMBU takes five from all four of the enemy's pools, then takes an extra turn if
+    the {e caster} has 8 or more Fire. Again the turn test reads the caster, not
+    the enemy it just drained. *)
+let effect_smbu fx =
+  (match fx.fx_enemies with
+  | e :: _ -> List.iter (fun el -> subtract_mana e el 5) [ Earth; Fire; Air; Water ]
+  | [] -> ());
+  if Combat.mana fx.fx_caster Fire >= 8 then extra_turn fx.fx_caster
+
+(** SSWP halves each enemy's Air pool, over the whole enemy side rather than just
+    the first, then takes an extra turn if the caster has 14 or more Air. *)
+let effect_sswp fx =
+  List.iter
+    (fun e -> subtract_mana e Air (Combat.mana e Air / 2))
+    fx.fx_enemies;
+  if Combat.mana fx.fx_caster Air >= 14 then extra_turn fx.fx_caster
+
+(** SSHO doubles the enemy's Earth pool - crediting mana to the enemy, which is the
+    point of the spell - and halves its Fire, Air and Water. The halvings floor,
+    so an odd pool loses one. *)
+let effect_ssho fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      add_mana e Earth (Combat.mana e Earth);
+      List.iter (fun el -> subtract_mana e el (Combat.mana e el / 2)) [ Fire; Air; Water ]
+
+(** SSBM credits the caster with enough Water to fill the pool, takes half the
+    enemy's Air, and does neither naively: the Water figure is capped so that
+    twice it cannot exceed the caster's own ceiling.
+
+    ```lua
+    local amt_yellow = GET_MANA_AIR(idxEnemy)/2;
+    local amt_blue = GET_MANA_WATER(idxCaster);
+    if (2*amt_blue > GET_MAX_MANA_WATER(idxCaster)) then
+        amt_blue = GET_MAX_MANA_WATER(idxCaster) - amt_blue;
+    end
+    ```
+    So it tops the caster up to exactly the ceiling and no further. The add still
+    respects the ceiling afterwards, which is what makes the correction
+    sufficient. *)
+let effect_ssbm fx =
+  let amt_air = match fx.fx_enemies with e :: _ -> Combat.mana e Air / 2 | [] -> 0 in
+  let c = fx.fx_caster in
+  let amt_water = Combat.mana c Water in
+  let amt_water =
+    if 2 * amt_water > Combat.max_mana c Water then Combat.max_mana c Water - amt_water
+    else amt_water
+  in
+  add_mana c Water amt_water;
+  (match fx.fx_enemies with e :: _ -> subtract_mana e Air amt_air | [] -> ())
+
+(** STAU picks which of the enemy's pools to drain from the turn's percentile,
+    in four bands, and the damage grows with the caster's Air. The bands are
+    inclusive at both ends, so a roll of 25 lands in the first and 26 in the
+    second.
+
+    ```lua
+    local damage = 8 + GET_MANA_AIR(idxCaster)/10;
+    local chance = PERCENTILE_CHANCE_SYNC();
+    if (chance <= 25) then SUBTRACT_MANA_EARTH(idxEnemy,damage);
+    elseif (chance <= 50) then SUBTRACT_MANA_FIRE(idxEnemy,damage);
+    elseif (chance <= 75) then SUBTRACT_MANA_AIR(idxEnemy,damage);
+    else SUBTRACT_MANA_WATER(idxEnemy,damage);
+    end
+    ```
+
+    The other assignments in the Lua set a text colour and are presentation. *)
+let effect_stau fx =
+  let damage = 8 + (Combat.mana fx.fx_caster Air / 10) in
+  let elem =
+    if fx.fx_percentile <= 25 then Earth
+    else if fx.fx_percentile <= 50 then Fire
+    else if fx.fx_percentile <= 75 then Air
+    else Water
+  in
+  match fx.fx_enemies with
+  | e :: _ -> subtract_mana e elem damage
+  | [] -> ()
+
+(* ------------------------------------------------------------------ *)
+(* Shape 6: a status whose duration scales with a pool                   *)
+(* ------------------------------------------------------------------ *)
+
+(** Eleven bodies set a status for a base duration plus a fraction of one of the
+    caster's pools. The fraction truncates. SFAV is Favored for 8 + Air/6 on the
+    caster; the others differ in base, divisor, element and target.
+
+    The durations are written as `base + pool / divisor` rather than
+    `base + pool * something` because that is what the Lua says, and the floor is
+    load-bearing: at a pool of 5 with a divisor of 6 the bonus is zero, not one. *)
+let scaled_status ~(base : int) ~(elem : element) ~(divisor : int) ~(name : string)
+    ~(on_caster : bool) fx =
+  let dur = base + (Combat.mana fx.fx_caster elem / divisor) in
+  if on_caster then receive_status fx.fx_caster name dur
+  else inflict_status fx name dur
+
+let effect_sfav fx = scaled_status ~base:8 ~elem:Air ~divisor:6 ~name:"Favoreded" ~on_caster:true fx
+let effect_sfsh fx = scaled_status ~base:8 ~elem:Fire ~divisor:3 ~name:"FireShielded" ~on_caster:true fx
+let effect_shas fx = scaled_status ~base:10 ~elem:Air ~divisor:5 ~name:"Hasted" ~on_caster:true fx
+let effect_spau fx = scaled_status ~base:8 ~elem:Air ~divisor:5 ~name:"PaladinsAuraed" ~on_caster:true fx
+let effect_svig fx = scaled_status ~base:8 ~elem:Water ~divisor:5 ~name:"Vigiled" ~on_caster:true fx
+let effect_slig fx = scaled_status ~base:2 ~elem:Air ~divisor:8 ~name:"Blinded" ~on_caster:false fx
+let effect_ssbl fx = scaled_status ~base:5 ~elem:Air ~divisor:2 ~name:"SingingBladesed" ~on_caster:true fx
+(* SHWL also banks four Earth for the caster before the fear, so it is not purely
+   a status body. That is the whole of its difference from the eleven. *)
+let effect_shwl fx =
+  add_mana fx.fx_caster Earth 4;
+  scaled_status ~base:5 ~elem:Air ~divisor:5 ~name:"Fear" ~on_caster:false fx
+
+(* SSPT inflicts two statuses off one duration: Blind and Poison, both
+   3 + Water/12. *)
+let effect_sspt fx =
+  let dur = 3 + (Combat.mana fx.fx_caster Water / 12) in
+  inflict_status fx "Blinded" dur;
+  inflict_status fx "Poison" dur
+
+(* SRBI deals a flat 4 and then inflicts Disease for 5 + Water/5. *)
+let effect_srbi fx =
+  inflict_damage fx 4;
+  scaled_status ~base:5 ~elem:Water ~divisor:5 ~name:"Disease" ~on_caster:false fx
+
+(* ------------------------------------------------------------------ *)
+(* Shape 7: the flat bodies                                              *)
+(* ------------------------------------------------------------------ *)
+
+(** SBLU banks a fixed twelve Fire and nothing else. *)
+let effect_sblu fx = add_mana fx.fx_caster Fire 12
+
+(** SEGZ heals 25 and empties all four pools. The heal comes {e first}, so a
+    caster at 90 life gets 25 rather than the overflow. *)
+let effect_segz fx =
+  healing fx.fx_caster 25;
+  List.iter (fun el -> set_mana fx.fx_caster el 0) [ Air; Water; Fire; Earth ]
+
+(** SLCO raises the caster's Fire ceiling by twelve, permanently, and takes an extra
+    turn. The ceiling is raised rather than the pool filled, so the benefit is
+    every subsequent match, not this one - which is what [set_mana_limit] models,
+    including its clamp of the current pool. *)
+let effect_slco fx =
+  let raised = Combat.max_mana fx.fx_caster Fire + 12 in
+  set_max_mana fx.fx_caster Fire raised;
+  extra_turn fx.fx_caster
+
+(** SDST deals the caster's whole Fire pool as damage and poisons for eight. *)
+let effect_sdst fx =
+  inflict_damage fx (Combat.mana fx.fx_caster Fire);
+  inflict_status fx "Poison" 8
+
+(** SFBO deals four plus a ninth of the caster's Fire. The Lua goes through
+    [Std_InflictDamageWithAnimEffect], which is [Std_InflictDamage] with an
+    animation argument. *)
+let effect_sfbo fx = inflict_damage fx (4 + (Combat.mana fx.fx_caster Fire / 8))
+
+(* The three "hit them and keep the turn" bodies: SRND for 5, SSNK for 3, STWH
+   for 10. Damage then an unconditional extra turn. *)
+let damage_then_extra_turn ~(amount : int) fx =
+  inflict_damage fx amount;
+  extra_turn fx.fx_caster
+
+let effect_srnd fx = damage_then_extra_turn ~amount:5 fx
+let effect_ssnk fx = damage_then_extra_turn ~amount:3 fx
+let effect_stwh fx = damage_then_extra_turn ~amount:10 fx
+
+(** SSGZ rewrites every Earth gem as a skull and then takes an extra turn if the
+    caster has 15 or more Earth. The turn test reads the pool the rewrite did not
+    touch. *)
+let effect_ssgz fx =
+  change_all_gems fx gem_earth Board.Skull;
+  if Combat.mana fx.fx_caster Earth >= 15 then extra_turn fx.fx_caster
+
+(** SENR takes an extra turn and enrages the caster for eight. *)
+let effect_senr fx =
+  extra_turn fx.fx_caster;
+  receive_status fx.fx_caster "Enraged" 8
+
+(** SCHL challenges {e both} sides for six, then takes an extra turn if the caster
+    has 15 or more Air. Challenging the caster as well as the enemy is not a
+    typo in the port; the Lua does both. *)
+let effect_schl fx =
+  inflict_status fx "Challenged" 6;
+  receive_status fx.fx_caster "Challenged" 6;
+  if Combat.mana fx.fx_caster Air >= 15 then extra_turn fx.fx_caster
+
+(** SVAM deals five plus a tenth of the caster's Fire, capped at the enemy's
+    remaining life, and heals for exactly what it dealt. The cap is what makes the
+    heal equal the damage: a hit that would overkill is trimmed first.
+
+    ```lua
+    local amt_damage = 5 + GET_MANA_FIRE(idxCaster)/10;
+    if (amt_damage > GET_LIFE(idxEnemy)) then amt_damage = GET_LIFE(idxEnemy); end
+    local amt_heal = amt_damage;
+    Std_InflictDamage(amt_damage, idxCaster);
+    Std_Healing(amt_heal, idxCaster);
+    ``` *)
+let effect_svam fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      let raw = 5 + (Combat.mana fx.fx_caster Fire / 10) in
+      let amt = if raw > e.Combat.life then e.Combat.life else raw in
+      inflict_damage fx amt;
+      healing fx.fx_caster amt
+
+(** SFRZ turns every Fire gem into a Water gem and credits the caster with the
+    count as Water. Count first, then rewrite, then credit. *)
+let effect_sfrz fx =
+  let n = count_gems_of fx gem_fire in
+  add_mana fx.fx_caster Water n;
+  change_all_gems fx gem_fire gem_water
+
 (** The ported body for [id], if it has one yet.
 
     An absent entry means the body has not been transcribed. [Battle] treats that
@@ -709,11 +1133,72 @@ let effect_of (id : string) : (effect_context -> unit) option =
   | "SSPA" -> Some effect_sspa
   | "STHR" -> Some effect_sthr
   | "SHGO" -> Some effect_shgo
+  (* The mana and skill group. *)
+  | "SBRF" -> Some effect_sbrf
+  | "SBRI" -> Some effect_sbri
+  | "SBRP" -> Some effect_sbrp
+  | "SBRZ" -> Some effect_sbrz
+  | "SSOB" -> Some effect_ssob
+  | "SSOS" -> Some effect_ssos
+  | "SCHA" -> Some effect_scha
+  | "SCHE" -> Some effect_sche
+  | "SCHF" -> Some effect_schf
+  | "SCHW" -> Some effect_schw
+  | "SBNA" -> Some effect_sbna
+  | "SBNE" -> Some effect_sbne
+  | "SBNF" -> Some effect_sbnf
+  | "SBNW" -> Some effect_sbnw
+  | "SBAV" -> Some effect_sbav
+  | "SESK" -> Some effect_sesk
+  | "SREV" -> Some effect_srev
+  | "SFLV" -> Some effect_sflv
+  | "SFSP" -> Some effect_sfsp
+  | "SSWA" -> Some effect_sswa
+  | "SBST" -> Some effect_sbst
+  | "SSSW" -> Some effect_sssw
+  | "SCTO" -> Some effect_scto
+  | "SDBO" -> Some effect_sdbo
+  | "SMBU" -> Some effect_smbu
+  | "SSWP" -> Some effect_sswp
+  | "SSHO" -> Some effect_ssho
+  | "SSBM" -> Some effect_ssbm
+  | "STAU" -> Some effect_stau
+  | "SFAV" -> Some effect_sfav
+  | "SFSH" -> Some effect_sfsh
+  | "SHAS" -> Some effect_shas
+  | "SPAU" -> Some effect_spau
+  | "SVIG" -> Some effect_svig
+  | "SLIG" -> Some effect_slig
+  | "SSBL" -> Some effect_ssbl
+  | "SHWL" -> Some effect_shwl
+  | "SSPT" -> Some effect_sspt
+  | "SRBI" -> Some effect_srbi
+  | "SBLU" -> Some effect_sblu
+  | "SEGZ" -> Some effect_segz
+  | "SLCO" -> Some effect_slco
+  | "SDST" -> Some effect_sdst
+  | "SFBO" -> Some effect_sfbo
+  | "SRND" -> Some effect_srnd
+  | "SSNK" -> Some effect_ssnk
+  | "STWH" -> Some effect_stwh
+  | "SSGZ" -> Some effect_ssgz
+  | "SENR" -> Some effect_senr
+  | "SCHL" -> Some effect_schl
+  | "SVAM" -> Some effect_svam
+  | "SFRZ" -> Some effect_sfrz
   | _ -> None
 
 (** The ids this file covers, for the coverage test and for the report. *)
 let effect_of_spell_ids =
   [ "SCAU"; "SCLV"; "SDDI"; "SDIV"; "SDRR"; "SEPO"; "SFBM"; "SFBT"; "SFSK"
   ; "SHID"; "SHOP"; "SROF"; "SSCV"; "STHX"; "SWHI"; "SWOF"; "SWOT"
-  ; "SBSG"; "SIST"; "SSPA"; "STHR"; "SHGO" ]
+  ; "SBSG"; "SIST"; "SSPA"; "STHR"; "SHGO"
+  ; "SBRF"; "SBRI"; "SBRP"; "SBRZ"; "SSOB"; "SSOS"
+  ; "SCHA"; "SCHE"; "SCHF"; "SCHW"; "SBNA"; "SBNE"; "SBNF"; "SBNW"
+  ; "SBAV"; "SESK"; "SREV"; "SFLV"; "SFSP"; "SSWA"; "SBST"
+  ; "SSSW"; "SCTO"; "SDBO"; "SMBU"; "SSWP"; "SSHO"; "SSBM"; "STAU"
+  ; "SFAV"; "SFSH"; "SHAS"; "SPAU"; "SVIG"; "SLIG"; "SSBL"; "SHWL"
+  ; "SSPT"; "SRBI"; "SBLU"; "SEGZ"; "SLCO"; "SDST"; "SFBO"; "SRND"
+  ; "SSNK"; "STWH"; "SSGZ"; "SENR"; "SCHL"; "SVAM"; "SFRZ" ]
+
 
