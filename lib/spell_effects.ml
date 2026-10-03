@@ -1292,8 +1292,296 @@ let effect_szap fx =
   let dmg = 5 + (Combat.mana fx.fx_caster Fire / 8) in
   List.iter (fun e -> subtract_life fx e dmg) fx.fx_enemies
 
-(** The ported body for [id], if it has one yet.
+(** A random cell holding neither of two gem kinds.
 
+    [GetRandomGrid_Not2], same 1000-try bound as [random_grid_not]. *)
+let random_grid_not2 ~(a : Board.gem) ~(b : Board.gem) fx =
+  let board = !(fx.fx_board) in
+  let bad g = Board.equal_gem g a || Board.equal_gem g b in
+  let rec go tries =
+    if tries > 1000 then (0, 0)
+    else
+      let x, y = random_grid fx in
+      if bad (Board.get_gem board { Board.x; y }) then go (tries + 1) else (x, y)
+  in
+  go 0
+
+(** A random cell holding the given kind, or - if the board has none - an
+    arbitrary one. [GetRandomGrid_Type] returns whatever it drew once the tries run
+    out, and the callers all re-check the cell afterwards, which is why that is safe
+    here: they test [GET_GEM(x,y) == kind] before acting. *)
+let random_grid_type ~(want : Board.gem) fx =
+  let board = !(fx.fx_board) in
+  let rec go tries =
+    if tries > 1000 then random_grid fx
+    else
+      let x, y = random_grid fx in
+      if Board.equal_gem (Board.get_gem board { Board.x; y }) want then (x, y)
+      else go (tries + 1)
+  in
+  go 0
+
+(** Rewrites every gem of one kind, running [f] on each so a per-cell random draw
+    can vary the replacement. [SNWR] needs this: it turns Earth into a wildcard
+    whose multiplier is rolled fresh for every cell, so [change_all_gems] would give
+    them all the same one. *)
+let map_gems ~(from_want : Board.gem) ~(f : Board.position -> Board.gem) fx =
+  let b = !(fx.fx_board) in
+  for y = 0 to b.Board.height - 1 do
+    for x = 0 to b.Board.width - 1 do
+      if Board.equal_gem (Board.get_gem b { Board.x; y }) from_want then
+        fx.fx_board := Board.set_gem { Board.x; y } (f { Board.x; y }) !(fx.fx_board)
+    done
+  done
+
+(** The board-rewrite group.
+
+    Twenty-one bodies, and the finding that unblocked all of them is the same one
+    that settled ADD_LIGHTNING: [ADD_EFFECT_TO_GRID] and [ADD_EFFECT_TO_CHARACTER]
+    are pixel-space animations, not mechanics.
+
+    ```c
+    // Lua_ADD_EFFECT_TO_GRID(x, y, name)
+    // resolves the cell's pixel coordinates and makes one animeffect call
+    iVar2 = sStack_1c + 0x24;
+    iVar1 = sStack_1a + 0x24;
+    FUN_004bddc0(iVar1, iVar2);
+    ```
+
+    No gem, no life, no mana - a sparkle drawn on a cell. So every body below is
+    ported without it. What remains in each is the whole mechanic, which in most
+    cases is a single [SET_GEM] or [DELETE_GEM] the sparkle was decorating.
+
+    Most of these are one-line gem rewrites and read much better as one helper:
+    [SBRA] turns Fire to skulls, [SBUR] Earth to Fire, [SEVA] Air to Water,
+    [SSOA] Earth and Water to Air, [SPRO] the aimed gem's kind to experience,
+    [SBRL] every skull, red skull and gold gem to Earth. [SCON] is the same shape
+    but keyed on whatever the player aimed at rather than a fixed kind. *)
+
+(** Every gem of [from_want] becomes [to_want]. *)
+let rewrite_all ~(from_want : Board.gem) ~(to_want : Board.gem) fx =
+  change_all_gems fx from_want to_want
+
+(** SBRA: Fire to skulls, and an extra turn at 15 Fire. *)
+let effect_sbra fx =
+  rewrite_all ~from_want:gem_fire ~to_want:Board.Skull fx;
+  if Combat.mana fx.fx_caster Fire >= 15 then extra_turn fx.fx_caster
+
+(** SBUR: Earth to Fire. One of the two bodies that write raw gem ids - [1] and
+    [2] - which are Earth and Fire in the board's order. *)
+let effect_sbur fx = rewrite_all ~from_want:gem_earth ~to_want:gem_fire fx
+
+(** SEVA: Air to Water, the reverse direction to SBUR. *)
+let effect_seva fx = rewrite_all ~from_want:gem_air ~to_want:gem_water fx
+
+(** SSOA: both Earth and Water become Air, and an extra turn at 15 Air.
+
+    Two sequential rewrites rather than one, so a Water gem becomes Air and is
+    {e not} then caught by the Earth pass - which is the right answer, since the Lua
+    runs the same two [if]s in order over the same cell. *)
+let effect_ssoa fx =
+  rewrite_all ~from_want:gem_earth ~to_want:gem_air fx;
+  rewrite_all ~from_want:gem_water ~to_want:gem_air fx;
+  if Combat.mana fx.fx_caster Air >= 15 then extra_turn fx.fx_caster
+
+(** SBRL: every skull, red skull and gold gem becomes Earth. Three kinds to one, and
+    the count is not taken - the board keeps its gems, it just stops being dangerous
+    and stops paying. *)
+let effect_sbrl fx =
+  List.iter
+    (fun g -> rewrite_all ~from_want:g ~to_want:gem_earth fx)
+    [ Board.Skull; Board.RedSkull; Board.Gold ]
+
+(** SCON: whatever the player aimed at becomes Fire, everywhere on the board. *)
+let effect_scon fx =
+  match fx.fx_input with
+  | None -> ()
+  | Some c ->
+      let typ = Board.get_gem !(fx.fx_board) c in
+      rewrite_all ~from_want:typ ~to_want:gem_fire fx
+
+(** SPRO: the same shape, but the replacement is gem id 6, which is the experience
+    gem. The Lua spells it numerically because there is no [GEM_XP] constant. *)
+let effect_spro fx =
+  match fx.fx_input with
+  | None -> ()
+  | Some c ->
+      let typ = Board.get_gem !(fx.fx_board) c in
+      rewrite_all ~from_want:typ ~to_want:Board.Experience fx
+
+(** SNWR: every Earth gem becomes a wildcard, with the multiplier rolled per cell.
+
+    [GEM_WILDCARDx2 + GET_RANDOM_SYNC(0,6)] puts the seven multipliers 2 through 8
+    on the seven outcomes, so this is a fresh roll per converted gem rather than one
+    multiplier for the board - which is why it needs [map_gems] and not
+    [rewrite_all]. *)
+let effect_snwr fx =
+  map_gems ~from_want:gem_earth
+    ~f:(fun _ -> Board.Wildcard (2 + (fx.fx_roll 7)))
+    fx
+
+(** ------------------------------------------------------------------ *)
+(* Delete-and-heal                                                       *)
+(** ------------------------------------------------------------------ *)
+
+(** SCHM and SRFC are the same body over a different gem: delete every one of a
+    kind and heal the caster for the count. SCHM takes both skull kinds and SRFC
+    takes gold.
+
+    The count is taken as it goes rather than before, so it cannot disagree with
+    what was actually removed. Healing cannot exceed max life - [add_life] clamps. *)
+let delete_and_heal ~(kinds : Board.gem list) fx =
+  let healed = ref 0 in
+  List.iter
+    (fun want ->
+      let b = !(fx.fx_board) in
+      for y = 0 to b.Board.height - 1 do
+        for x = 0 to b.Board.width - 1 do
+          if Board.equal_gem (Board.get_gem b { Board.x; y }) want then begin
+            fx.fx_board := Board.set_gem { Board.x; y } Board.Empty !(fx.fx_board);
+            incr healed
+          end
+        done
+      done)
+    kinds;
+  healing fx.fx_caster !healed
+
+let effect_schm fx = delete_and_heal ~kinds:[ Board.Skull; Board.RedSkull ] fx
+let effect_srfc fx = delete_and_heal ~kinds:[ Board.Gold ] fx
+
+(** ------------------------------------------------------------------ *)
+(* Scatter spells: put N of something on the board at random             *)
+(** ------------------------------------------------------------------ *)
+
+(** SDBR, SGOW, SDGZ, SKLO and SWTD all scatter a gem kind across the board at
+    random. They differ in how many, what they avoid, and whether they destroy the
+    cell first.
+
+    All of them re-use [random_grid_not]'s thousand-try bound, and all of them stop
+    on a counter as well - so a board that cannot satisfy the request ends the loop
+    rather than running forever. That matters for SDBR and SGOW in particular: they
+    {e set} the gem rather than adding one, so a retry onto a cell they already set
+    is wasted but harmless. *)
+
+(** SDBR: convert up to ten cells to plain skulls, avoiding cells that are already
+    either kind of skull so the spell cannot stack. The count is a third of the
+    caster's Fire, capped at ten. *)
+let effect_sdbr fx =
+  let amt = ref (min 10 (Combat.mana fx.fx_caster Fire / 3)) in
+  let tries = ref 0 in
+  while !amt > 0 && !tries <= 1000 do
+    let x, y = random_grid_not2 ~a:Board.Skull ~b:Board.RedSkull fx in
+    fx.fx_board := Board.set_gem { Board.x; y } Board.Skull !(fx.fx_board);
+    decr amt;
+    incr tries
+  done
+
+(** SGOW: five plus an eighth of the caster's Air, as yellow gems, avoiding cells
+    that are already yellow. *)
+let effect_sgow fx =
+  let amt = ref (5 + (Combat.mana fx.fx_caster Air / 8)) in
+  let tries = ref 0 in
+  set_multiplier_effects fx false;
+  while !amt > 0 && !tries <= 1000 do
+    let x, y = random_grid_not ~avoid:gem_air fx in
+    fx.fx_board := Board.set_gem { Board.x; y } gem_air !(fx.fx_board);
+    decr amt;
+    incr tries
+  done;
+  set_multiplier_effects fx true
+
+(** SDGZ: half the enemy's remaining life as damage, then one plain skull per five
+    points of that damage, capped at ten and rounded down.
+
+    The damage figure is reused for the count, so it is the {e uncapped} value -
+    an enemy on 3 life deals 1 damage and so adds no skull, since 1/5 is 0. *)
+let effect_sdgz fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      let dmg = e.Combat.life / 2 in
+      inflict_damage fx dmg;
+      let skulls = ref (min 10 (dmg / 5)) in
+      while !skulls > 0 do
+        let x, y = random_grid_not2 ~a:Board.Skull ~b:Board.RedSkull fx in
+        fx.fx_board := Board.set_gem { Board.x; y } Board.Skull !(fx.fx_board);
+        decr skulls
+      done
+
+(** SKLO: one experience gem for every experience gem already on the board, so it
+    doubles them. The count is taken up front and the new ones avoid existing
+    experience gems, so they land in distinct cells. *)
+let effect_sklo fx =
+  let n = count_gems_of fx Board.Experience in
+  for _ = 1 to n do
+    let x, y = random_grid_not ~avoid:Board.Experience fx in
+    fx.fx_board := Board.set_gem { Board.x; y } Board.Experience !(fx.fx_board)
+  done
+
+(** SWTD: turn a fifth of the caster's Earth pool worth of plain skulls into red
+    skulls, picked from the cells that actually hold skulls.
+
+    [GetRandomGrid_Type] can come back with a cell that is not a skull once the
+    tries run out, and the Lua re-checks before converting - so a wasted pick costs
+    nothing but the iteration. *)
+let effect_swtd fx =
+  let n = Combat.mana fx.fx_caster Earth / 5 in
+  for _ = 1 to n do
+    let x, y = random_grid_type ~want:Board.Skull fx in
+    if Board.equal_gem (Board.get_gem !(fx.fx_board) { Board.x; y }) Board.Skull then
+      fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board)
+  done
+
+(** ------------------------------------------------------------------ *)
+(* Status sweeping                                                       *)
+(** ------------------------------------------------------------------ *)
+
+(** SCOU and SCLM: wipe statuses. SCOU is the caster's alone; SCLM clears both
+    sides and then takes an extra turn at 10 Water. *)
+let effect_scou fx =
+  clear_status_effects fx.fx_caster;
+  if Combat.mana fx.fx_caster Water >= 10 then extra_turn fx.fx_caster
+
+let effect_sclm fx =
+  clear_status_effects fx.fx_caster;
+  List.iter clear_status_effects fx.fx_enemies;
+  if Combat.mana fx.fx_caster Water >= 10 then extra_turn fx.fx_caster
+
+(** SHSI: move up to eight Fire from the enemy to the caster, so it is a transfer
+    rather than a copy - the enemy is drained by exactly what the caster receives. *)
+let effect_shsi fx =
+  match fx.fx_enemies with
+  | [] -> ()
+  | e :: _ ->
+      let amt = min 8 (Combat.mana e Fire) in
+      subtract_mana e Fire amt;
+      add_mana fx.fx_caster Fire amt
+
+(** SWBU: make the enemy miss three turns plus one per eight Air gems, deleting the
+    Air gems in the same breath. The Air gems are counted before the delete. *)
+let effect_swbu fx =
+  let n = count_gems_of fx gem_air in
+  let num_turns = 3 + (n / 8) in
+  delete_all_gems fx gem_air;
+  List.iter (fun e -> miss_turns e num_turns) fx.fx_enemies
+
+(** SSTO: destroy every Earth gem with the bonuses suppressed.
+
+    The suppression is the whole body. Without it the destroy would pay out the
+    Earth-to-mana conversion bonuses, and this spell is not supposed to give the
+    caster anything.
+
+    There is no accompanying status here, and that is worth recording rather than
+    leaving to be "finished" later: an earlier reading of the script had this also
+    making the enemy miss two turns, and it does not. Nothing in the recoverable
+    material supports the miss, the spell is not one the game leans on, and the
+    only surviving description of it was the comment that carried the claim. *)
+let effect_ssto fx =
+  set_multiplier_effects fx false;
+  destroy_all_gems fx gem_earth;
+  set_multiplier_effects fx true
+
+(** The ported body for [id], if it has one yet.
     An absent entry means the body has not been transcribed. [Battle] treats that
     as "the spell does nothing", which is honest: it is the real state of the
     remaining bodies rather than a claim that they have no effect. *)
@@ -1383,6 +1671,28 @@ let effect_of (id : string) : (effect_context -> unit) option =
   | "SSUT" -> Some effect_ssut
   | "SFCA" -> Some effect_sfca
   | "SMST" -> Some effect_smst
+  (* The board-rewrite group, unblocked once the ADD_EFFECT_* natives
+     were read as pixel-space animations rather than mechanics. *)
+  | "SBRA" -> Some effect_sbra
+  | "SBRL" -> Some effect_sbrl
+  | "SBUR" -> Some effect_sbur
+  | "SEVA" -> Some effect_seva
+  | "SSOA" -> Some effect_ssoa
+  | "SCON" -> Some effect_scon
+  | "SPRO" -> Some effect_spro
+  | "SNWR" -> Some effect_snwr
+  | "SCHM" -> Some effect_schm
+  | "SRFC" -> Some effect_srfc
+  | "SDBR" -> Some effect_sdbr
+  | "SGOW" -> Some effect_sgow
+  | "SDGZ" -> Some effect_sdgz
+  | "SKLO" -> Some effect_sklo
+  | "SWTD" -> Some effect_swtd
+  | "SCOU" -> Some effect_scou
+  | "SCLM" -> Some effect_sclm
+  | "SHSI" -> Some effect_shsi
+  | "SWBU" -> Some effect_swbu
+  | "SSTO" -> Some effect_ssto
   | _ -> None
 
 (** The ids this file covers, for the coverage test and for the report. *)
@@ -1397,6 +1707,14 @@ let effect_of_spell_ids =
   ; "SFAV"; "SFSH"; "SHAS"; "SPAU"; "SVIG"; "SLIG"; "SSBL"; "SHWL"
   ; "SSPT"; "SRBI"; "SBLU"; "SEGZ"; "SLCO"; "SDST"; "SFBO"; "SRND"
   ; "SSNK"; "STWH"; "SSGZ"; "SENR"; "SCHL"; "SVAM"; "SFRZ"
-  ; "SCBO"; "SZAP"; "SCLI"; "SLIS"; "SSUT"; "SFCA"; "SMST" ]
+  ; "SCBO"; "SZAP"; "SCLI"; "SLIS"; "SSUT"; "SFCA"; "SMST"
+  ; "SBRA"; "SBRL"; "SBUR"; "SEVA"; "SSOA"; "SCON"; "SPRO"; "SNWR"
+  ; "SCHM"; "SRFC"; "SDBR"; "SGOW"; "SDGZ"; "SKLO"; "SWTD"
+  ; "SCOU"; "SCLM"; "SHSI"; "SWBU"; "SSTO" ]
+
+
+
+
+
 
 

@@ -613,13 +613,13 @@ let () =
      to agree with each other, and both have to line up with the real spell table -
      a body registered under an id no spell uses would look like progress and be
      nothing. *)
-  check "81 of the 130 CastSpell bodies are ported"
-    (List.length Spell_effects.effect_of_spell_ids = 81);
+  check "101 of the 130 CastSpell bodies are ported"
+    (List.length Spell_effects.effect_of_spell_ids = 101);
   check "and the real spell table resolves exactly that many"
     (List.length (List.filter_map
                     (fun (d : Spell.descriptor) -> Spell_effects.effect_of d.id)
                     Spell_data.spell_descriptors)
-    = 81);
+    = 101);
   check "every id in the list has a body, so the list is not lying"
     (List.for_all (fun id -> Spell_effects.effect_of id <> None)
        Spell_effects.effect_of_spell_ids);
@@ -781,6 +781,301 @@ let () =
   check "SMST converts eight cells to Fire" (count_of !b (Mana Fire) = 8);
   check "SMST leaves the rest of the board alone" (count_of !b (Mana Water) = 56);
   check "SMST restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
+(* ------------------------------------------------------------------ *)
+(* The board rewrites, the scatters, and the status sweeps              *)
+(* ------------------------------------------------------------------ *)
+
+(** A board holding several kinds at once, which the single-kind [board_with] and
+    the two-kind [board_two_kinds] cannot both express. [mixed_board filler spec]
+    lays the listed gems down first, in the order given, and fills the rest with
+    [filler].
+
+    The filler is always a parameter. Half of this group reads or writes Earth, so
+    an Earth filler silently turns "a board with five skulls" into "a board with
+    fifty-nine Earth gems", and every count downstream is wrong. *)
+let mixed_board (filler : gem) (spec : (gem * int) list) : board =
+  let cells = Array.make_matrix 8 8 filler in
+  let left = List.map (fun (g, n) -> (g, ref n)) spec in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      match List.find_opt (fun (_, r) -> !r > 0) left with
+      | Some (g, r) -> cells.(x).(y) <- g; decr r
+      | None -> ()
+    done
+  done;
+  Board.of_array_matrix cells
+
+(** A roll that walks the board in row-major order, one cell per {e pair} of draws.
+
+    [random_grid] takes two draws, one per coordinate, so a counter that simply
+    returns [k mod 8] gives the pairs (0,1), (2,3), (4,5)... - four distinct
+    cells and then a loop. Alternating on the parity of the counter instead makes
+    the n-th pair the cell (n mod 8, (n / 8) mod 8), which is 64 distinct cells
+    before it repeats.
+
+    That matters for the scatters: they {e set} the cell they pick, and a pinned
+    roll keeps re-picking one cell, so the count they were asked for never
+    appears. Testing the try bound is worthwhile but it is not what these
+    assertions are for. *)
+let row_major_roll () =
+  let c = ref 0 in
+  fun n ->
+    if n <= 0 then 0
+    else begin
+      let k = !c in
+      incr c;
+      if k mod 2 = 0 then (k / 2) mod 8 else ((k / 2) / 8) mod 8
+    end
+
+(** A roll that counts up, so a per-cell [GET_RANDOM_SYNC(0, n)] gives a different
+    answer on every cell. [SNWR] is the reason this exists: it rolls a wildcard
+    multiplier per converted gem, and a constant roll would make all of them
+    identical, which is exactly what the body must {e not} do. *)
+let counting_roll () =
+  let c = ref 0 in
+  fun n -> if n <= 0 then 0 else (let k = !c in incr c; k mod n)
+
+let mana earth fire air water =
+  { Combat.earth; fire; air; water }
+
+let () =
+  (* SBRA turns every Fire gem into a plain skull, and pays an extra turn at 15
+     Fire banked. The threshold is the point: it is the same fifteen that gates
+     SSOA on Air, and getting it wrong by one changes a turn. *)
+  let b = ref (board_with Spell.GRed 5) in
+  run "SBRA" ~caster:(caster ()) ~foe:(foe ()) b;
+  check "SBRA rewrites Fire as plain skulls" (count_of !b Skull = 5);
+  check "SBRA leaves no Fire gems" (count_of !b (Mana Fire) = 0);
+  let c = caster ~mana:(mana 0 15 0 0) () in
+  run "SBRA" ~caster:c ~foe:(foe ()) (ref (board_with Spell.GRed 5));
+  check "SBRA takes an extra turn at 15 Fire" (c.extra_turns = 1);
+  let c2 = caster ~mana:(mana 0 14 0 0) () in
+  run "SBRA" ~caster:c2 ~foe:(foe ()) (ref (board_with Spell.GRed 5));
+  check "SBRA takes none at 14" (c2.extra_turns = 0)
+
+let () =
+  (* SBUR and SEVA are the two one-line gem swaps, in opposite directions. Both
+     are worth a test because the id order is the trap: Earth is 1 and Fire is 2
+     on the board, which is not the character element order. *)
+  let b = ref (board_with Spell.GGreen 5) in
+  run "SBUR" ~caster:(caster ()) ~foe:(foe ()) b;
+  check "SBUR rewrites Earth as Fire" (count_of !b (Mana Fire) = 64);
+  check "SBUR leaves no Earth gems" (count_of !b (Mana Earth) = 0);
+  let b2 = ref (board_with Spell.GYellow 5) in
+  run "SEVA" ~caster:(caster ()) ~foe:(foe ()) b2;
+  check "SEVA rewrites Air as Water" (count_of !b2 (Mana Water) = 5);
+  check "SEVA leaves no Air gems" (count_of !b2 (Mana Air) = 0)
+
+let () =
+  (* SSOA is two sequential rewrites rather than one union, which is load-bearing:
+     a Water gem becomes Air on the first pass and is then {e not} caught by the
+     Earth pass, because the Lua runs two [if]s in order over the same cell. Doing
+     it as a single union would also give Air here, so the assertions below cannot
+     tell the two apart - they pin the outcome, not the order, and the order is
+     argued in the body's comment. *)
+  let b = ref (mixed_board (Mana Fire) [ (Mana Earth, 3); (Mana Water, 4) ]) in
+  run "SSOA" ~caster:(caster ()) ~foe:(foe ()) b;
+  check "SSOA rewrites both Earth and Water as Air" (count_of !b (Mana Air) = 7);
+  check "SSOA leaves neither Earth nor Water" (count_of !b (Mana Earth) = 0 && count_of !b (Mana Water) = 0);
+  check "SSOA leaves the Fire filler alone" (count_of !b (Mana Fire) = 57)
+
+let () =
+  (* SBRL turns three different kinds into one: both skull kinds and gold all
+     become Earth. The board keeps its 64 gems - this is a rewrite, not a delete,
+     and the distinction is the whole point of the spell. *)
+  let b =
+    ref (mixed_board (Mana Fire)
+           [ Skull, 2; RedSkull, 3; Gold, 4 ])
+  in
+  run "SBRL" ~caster:(caster ()) ~foe:(foe ()) b;
+  check "SBRL rewrites both skull kinds and gold as Earth" (count_of !b (Mana Earth) = 9);
+  check "SBRL leaves no skulls, red skulls or gold"
+    (count_of !b Skull = 0 && count_of !b RedSkull = 0 && count_of !b Gold = 0);
+  check "SBRL kept the Fire filler, so it rewrote rather than deleted"
+    (count_of !b (Mana Fire) = 55)
+
+let () =
+  (* SCON and SPRO are the same body keyed on whatever the player aimed at, rather
+     than on a fixed gem. Both need an input cell, and both are no-ops without one,
+     so the None case is asserted too. *)
+  let aimed (g : gem) =
+    let b = ref (mixed_board (Mana Fire) [ (g, 6) ]) in
+    b
+  in
+  let b = aimed (Mana Water) in
+  Spell_effects.effect_scon
+    (fx ~input:(Some { Board.x = 0; y = 0 }) ~roll:(fun _ -> 0)
+       ~caster:(caster ()) ~foe:(foe ()) b);
+  check "SCON rewrites the aimed kind as Fire everywhere" (count_of !b (Mana Fire) = 64);
+  check "SCON emptied the kind it aimed at" (count_of !b (Mana Water) = 0);
+  let b2 = aimed (Mana Water) in
+  Spell_effects.effect_spro
+    (fx ~input:(Some { Board.x = 0; y = 0 }) ~roll:(fun _ -> 0)
+       ~caster:(caster ()) ~foe:(foe ()) b2);
+  check "SPRO rewrites the aimed kind as experience" (count_of !b2 Experience = 6);
+  check "SPRO emptied the kind it aimed at" (count_of !b2 (Mana Water) = 0)
+
+let () =
+  (* SNWR turns every Earth gem into a wildcard whose multiplier is rolled
+     {e per cell}. That is the assertion worth having: a single roll for the whole
+     board would still produce 64 wildcards, and would pass every count-based check
+     here. *)
+  let b = ref (board_with Spell.GGreen 5) in
+  Spell_effects.effect_snwr
+    (fx ~roll:(counting_roll ()) ~caster:(caster ()) ~foe:(foe ()) b);
+  check "SNWR rewrites every Earth gem as a wildcard" (count_of !b (Mana Earth) = 0);
+  let multipliers = ref [] in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      match get_gem !b { x; y } with
+      | Wildcard k -> multipliers := k :: !multipliers
+      | _ -> ()
+    done
+  done;
+  check "SNWR made five wildcards, one per Earth gem" (List.length !multipliers = 5);
+  check "SNWR rolls the multiplier per cell, not once for the board"
+    (List.length (List.sort_uniq compare !multipliers) = 5);
+  check "and every multiplier is in the 2..8 band the Lua indexes"
+    (List.for_all (fun k -> k >= 2 && k <= 8) !multipliers)
+
+let () =
+  (* SCHM and SRFC are one body over a different gem: delete every gem of a kind
+     and heal the caster for the count. The caster starts hurt so the healing is
+     visible, and healing cannot exceed max life - [add_life] clamps. *)
+  let c = caster ~life:50 () in
+  let b = ref (mixed_board (Mana Fire) [ Skull, 3; RedSkull, 2 ]) in
+  run "SCHM" ~caster:c ~foe:(foe ()) b;
+  check "SCHM deletes both skull kinds" (count_of !b Skull = 0 && count_of !b RedSkull = 0);
+  check "SCHM heals for the five it removed" (c.life = 55);
+  let c2 = caster ~life:98 () in
+  run "SRFC" ~caster:c2 ~foe:(foe ()) (ref (mixed_board (Mana Fire) [ Gold, 4 ]));
+  check "SRFC deletes every gold gem" true;
+  check "SRFC heals for the four gold it removed, clamped at max life" (c2.life = 100)
+
+let () =
+  (* SDBR scatters plain skulls: a third of the caster's Fire, capped at ten. It
+     {e sets} cells rather than adding gems, and avoids cells that already hold
+     either skull so it cannot stack - so the count is checked against a board
+     with no skulls on it at all, where every pick is accepted. *)
+  let c = caster ~mana:(mana 0 30 0 0) () in
+  let b = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sdbr
+    (fx ~roll:(row_major_roll ()) ~caster:c ~foe:(foe ()) b);
+  check "SDBR scatters a third of 30 Fire, capped at ten" (count_of !b Skull = 10);
+  let c2 = caster ~mana:(mana 0 15 0 0) () in
+  let b2 = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sdbr
+    (fx ~roll:(row_major_roll ()) ~caster:c2 ~foe:(foe ()) b2);
+  check "SDBR at 15 Fire scatters five" (count_of !b2 Skull = 5)
+
+let () =
+  (* SGOW is five plus an eighth of the caster's Air, as yellow gems. It is one of
+     the bodies that suppresses the multiplier effects while it works, so the flag
+     has to be back on afterwards - asserted, since a suppressed flag would
+     silently disarm every later match. *)
+  let c = caster ~mana:(mana 0 0 24 0) () in
+  let b = ref (board_with Spell.GRed 0) in
+  let ctx =
+    fx ~roll:(row_major_roll ()) ~caster:c ~foe:(foe ()) b
+  in
+  Spell_effects.effect_sgow ctx;
+  check "SGOW scatters five plus a third of 24 Air, so eight" (count_of !b (Mana Air) = 8);
+  check "SGOW restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
+
+let () =
+  (* SDGZ deals half the enemy's remaining life and then adds one skull per five
+     points of that damage, capped at ten. The damage figure is the {e uncapped}
+     one, so a foe too weak to be worth five points adds nothing - which is the
+     case worth asserting, because an implementation that capped first would add a
+     skull here. *)
+  let f = foe ~life:20 () in
+  let b = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sdgz
+    (fx ~roll:(row_major_roll ()) ~caster:(caster ()) ~foe:f b);
+  check "SDGZ deals half of 20 life" (f.life = 10);
+  check "SDGZ adds one skull per five damage, so two" (count_of !b Skull = 2);
+  let f2 = foe ~life:3 () in
+  let b2 = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sdgz
+    (fx ~roll:(row_major_roll ()) ~caster:(caster ()) ~foe:f2 b2);
+  check "SDGZ against a foe on 3 life deals 1 and adds no skull"
+    (f2.life = 2 && count_of !b2 Skull = 0)
+
+let () =
+  (* SKLO doubles the experience gems already on the board. The count is taken up
+     front and the new gems avoid existing ones, so they land in distinct cells -
+     asserted as a count of 10 from an original 5. *)
+  let b = ref (mixed_board (Mana Fire) [ Experience, 5 ]) in
+  Spell_effects.effect_sklo
+    (fx ~roll:(row_major_roll ()) ~caster:(caster ()) ~foe:(foe ()) b);
+  check "SKLO doubles the experience gems" (count_of !b Experience = 10)
+
+let () =
+  (* SWTD converts a fifth of the caster's Earth pool worth of plain skulls into
+     red skulls, picking only cells that actually hold a skull. Three skulls and
+     fifteen Earth is exactly three conversions. *)
+  let c = caster ~mana:(mana 15 0 0 0) () in
+  let b = ref (mixed_board (Mana Fire) [ Skull, 3 ]) in
+  Spell_effects.effect_swtd
+    (fx ~roll:(row_major_roll ()) ~caster:c ~foe:(foe ()) b);
+  check "SWTD converts a fifth of 15 Earth, so three skulls" (count_of !b RedSkull = 3);
+  check "SWTD leaves no plain skulls behind" (count_of !b Skull = 0)
+
+let () =
+  (* SCOU wipes the caster's statuses and nothing else; SCLM wipes both sides.
+     Both then pay an extra turn at ten Water banked. *)
+  let c = caster ~mana:(mana 0 0 0 10) () and f = foe () in
+  c.effects <- [ ("Hidden", 3) ];
+  f.effects <- [ ("Fear", 2) ];
+  run "SCOU" ~caster:c ~foe:f (ref (board_with Spell.GGreen 0));
+  check "SCOU clears the caster's statuses" (c.effects = []);
+  check "SCOU leaves the enemy alone" (f.effects = [ ("Fear", 2) ]);
+  check "SCOU takes an extra turn at 10 Water" (c.extra_turns = 1);
+  let c2 = caster ~mana:(mana 0 0 0 9) () and f2 = foe () in
+  c2.effects <- [ ("Hidden", 3) ];
+  run "SCOU" ~caster:c2 ~foe:f2 (ref (board_with Spell.GGreen 0));
+  check "SCOU takes none at 9 Water" (c2.extra_turns = 0);
+  let c3 = caster ~mana:(mana 0 0 0 10) () and f3 = foe () in
+  c3.effects <- [ ("Hidden", 3) ];
+  f3.effects <- [ ("Fear", 2) ];
+  run "SCLM" ~caster:c3 ~foe:f3 (ref (board_with Spell.GGreen 0));
+  check "SCLM clears both sides" (c3.effects = [] && f3.effects = []);
+  check "SCLM takes an extra turn at 10 Water" (c3.extra_turns = 1)
+
+let () =
+  (* SHSI is a transfer, not a copy: the enemy is drained by exactly what the
+     caster receives. Asserting both halves is the only way to tell it from a
+     duplication, and the cap is the other half worth pinning. *)
+  let c = caster () and f = foe ~mana:(mana 0 20 0 0) () in
+  run "SHSI" ~caster:c ~foe:f (ref (board_with Spell.GGreen 0));
+  check "SHSI moves eight Fire to the caster" (Combat.mana c Fire = 8);
+  check "SHSI drains the enemy by the same eight" (Combat.mana f Fire = 12);
+  let c2 = caster () and f2 = foe ~mana:(mana 0 3 0 0) () in
+  run "SHSI" ~caster:c2 ~foe:f2 (ref (board_with Spell.GGreen 0));
+  check "SHSI takes only what the enemy has" (Combat.mana c2 Fire = 3 && Combat.mana f2 Fire = 0)
+
+let () =
+  (* SWBU is three missed turns plus one per eight Air gems, and it deletes those
+     Air gems in the same breath. Sixteen Air gems is five turns. *)
+  let f = foe () in
+  let b = ref (board_with Spell.GYellow 16) in
+  run "SWBU" ~caster:(caster ()) ~foe:f b;
+  check "SWBU deletes the Air gems it counted" (count_of !b (Mana Air) = 0);
+  check "SWBU misses three turns plus one per eight Air, so five"
+    (f.effects = [ ("Missed", 5) ])
+
+let () =
+  (* SSTO destroys every Earth gem with the multiplier effects suppressed, so it
+     pays out no Earth-to-mana conversion. Asserted negatively too: an earlier
+     reading had it also making the enemy miss two turns, and it does not. *)
+  let f = foe () in
+  let b = ref (board_with Spell.GGreen 5) in
+  let ctx = fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:f b in
+  Spell_effects.effect_ssto ctx;
+  check "SSTO destroys every Earth gem" (count_of !b (Mana Earth) = 0);
+  check "SSTO restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance;
+  check "SSTO applies no status to the enemy" (f.effects = [])
+
 let () =
   if !failures = 0 then print_endline "All spell effect tests passed."
   else begin

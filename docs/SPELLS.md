@@ -483,6 +483,50 @@ difficulty-gated skip and an affordability filter, first affordable wins. The
 ranking that should replace it is deliberately not written yet, so the current
 behaviour stays testable and the improvement stays a visible diff.
 
+### The `CastSpell` bodies
+
+`lib/spell_effects.ml`, tests in `test/test_spell_effects.ml`.
+
+**101 of the 130.** The count is asserted against two independent things - the
+dispatch table and the real spell table in `lib/spell_data.ml` - so a body
+registered under an id no spell uses cannot read as progress.
+
+Unlike `ShouldAICastSpell`, these do not all take the same shape. They are the
+scripts themselves, and the interesting part of each is usually *which* gems it
+counts and *what* it does with the count. The file is grouped by that rather than
+by spell: board sweeps, gem rewrites, the mana and skill group, delete-and-heal,
+scatters, status sweeps.
+
+**The finding that unblocked twenty-one of them.** `ADD_EFFECT_TO_GRID` and
+`ADD_EFFECT_TO_CHARACTER` read as though they should do something to the board,
+which is what stalled them. They do not:
+
+```c
+// Lua_ADD_EFFECT_TO_GRID(x, y, name)
+iVar2 = sStack_1c + 0x24;   // the cell's pixel coordinates
+iVar1 = sStack_1a + 0x24;
+FUN_004bddc0(iVar1, iVar2); // one animeffect call
+```
+
+A sparkle drawn on a cell - no gem, no life, no mana. So the headless port drops
+it, and what remains in each of those twenty-one bodies is the whole mechanic,
+which in most cases is the single `SET_GEM` or `DELETE_GEM` the sparkle was
+decorating. This is the same conclusion that settled `ADD_LIGHTNING`.
+
+**Not presentation, unlike its neighbours.** `ADD_TEMP_RESISTANCE` sits beside
+these in the decompilation and looks similar, but is *not* an animation: its
+decompilation shows a real accumulating resistance field, and `SSAN` is the body
+that needs it. It is one of the two effects still blocking full coverage, along
+with `SCHG`'s untranscribed `EvaluateRows` and `SFBA`'s `SET_INPUT_DATA` target
+write-back.
+
+**One deliberate divergence.** `SFCA`'s original is an unbounded
+`repeat ... until GET_GEM(x,y) ~= GEM_EMPTY`. It is not reachable in practice -
+boards are refilled before spell effects run, and four 3x3 explosions remove at
+most 36 of 64 cells - but it is still a loop that cannot terminate as written.
+The port caps it at 1000 attempts. That cap is the only place this port does not
+transcribe the original faithfully, and it is deliberate.
+
 ---
 
 ## 8. Confidence
