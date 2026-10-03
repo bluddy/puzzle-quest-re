@@ -486,34 +486,30 @@ let () =
      literal, which picked up SCHV, SCLE and SSTL, plus SSNK's bare [return 1].
      None of those needed judgement; they had been invisible to a pattern that
      only matched non-negative digits. *)
-  check "53 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 53);
-  check "and 74 board-reading, mana and item ones are hand written"
-    (List.length Spell_ai_manual.manual_hook_of_spell_ids = 74);
-  check_eq "so 127 of the 129 are ported" (List.length Spell_data.spells_with_ai_hook) 127;
-  (* The two left are SCHG, which needs the untranscribed EvaluateRows helper,
-     and SFBA, which searches the board for a random skull and writes it back
-     through SET_INPUT_DATA. Both named here so the gap is on the record. *)
-  check "and only SCHG and SFBA are not"
-    (List.sort compare
-       (List.map (fun (d : Spell.descriptor) -> d.id) Spell_data.spells_without_ai_hook)
-    = [ "SCHG"; "SFBA" ]);
-  (* An unported spell must be treated as never cast rather than always cast, or
-     the AI would fire spells the game deliberately suppresses. *)
-  let unported =
-    List.hd
-      (List.filter
-         (fun (d : Spell.descriptor) -> Spell_ai.hook_of d.id = None)
-         Spell_data.spell_descriptors)
-  in
-  let s =
-    List.hd
-      (List.filter (fun (x : Spell.spell) -> x.id = unported.id)
-         (Spell_data.load_spell_table ()))
-  in
-  check "an unported spell's hook says no"
-    (match s.should_ai_cast with
-    | Some f -> not (f (bctx (yellows 8) ()))
-    | None -> false);
+check "53 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 53);
+  check "and 76 board-reading, mana and item ones are hand written"
+    (List.length Spell_ai_manual.manual_hook_of_spell_ids = 76);
+  check_eq "so all 129 of the 129 are ported" (List.length Spell_data.spells_with_ai_hook) 129;
+  (* SCHG and SFBA were the last two, and both were recorded here as unobtainable:
+     SCHG for a Lua helper whose body had not been transcribed, SFBA because its
+     SET_INPUT_DATA write is not observable in a headless port. Both helpers were
+     in the spells' own scripts. The assertion stays because an empty list is the
+     claim, and "empty because nobody wrote it" is the failure it rules out. *)
+  check "and none are missing"
+    (List.map (fun (d : Spell.descriptor) -> d.id) Spell_data.spells_without_ai_hook = []);
+  (* An absent hook must be treated as never cast rather than always cast, or the
+     AI would fire spells the game deliberately suppresses.
+
+     This used to be exercised through a real gap in the table - it needed a spell
+     with no ported hook, and there is none now that all 129 are ported. So it is
+     asked of [hook_of] directly, with an id that is deliberately not in either
+     table. The property is about how an absent entry is read, and that has not
+     changed just because the gap closed. *)
+  check "an id with no hook at all resolves to None" (Spell_ai.hook_of "SXXX" = None);
+  check "and a real spell never resolves to None"
+    (List.for_all
+       (fun (d : Spell.descriptor) -> Spell_ai.hook_of d.id <> None)
+       Spell_data.spell_descriptors);
 
   if !failures = 0 then print_endline "\nAll spell tests passed."
   else begin

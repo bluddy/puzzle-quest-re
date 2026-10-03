@@ -282,6 +282,46 @@ let () =
     (done_b.enemy.mana.fire < 20 || done_b.hero.mana.fire < 20)
 
 let () =
+  (* NOTIFY_OF_FREE_SPELL is a latch on the combatant, not a modifier on the
+     spell, so the only place it can be observed is the charge in [take_action].
+
+     Comparing the hero's pool against a control run of the {e same} battle is what
+     makes this a real assertion. An absolute value would not do: matches credit
+     mana and mana burn spends it, so the pool moves for reasons that have nothing
+     to do with the charge, and a hero that simply never cast also "passes" a bare
+     [fire = 20].
+
+     [take_action] reads the latch before the body runs, so a body that sets it is
+     granting the spell {e after} this one rather than refunding this one. *)
+  let rules = { default_rules with difficulty = 2 } in
+  let s = make_spell ~cost_fire:3 "SFIRE" "firebolt" in
+  let paid_hero = fighter ~mana:{ zero_mana with fire = 20 } 0 "hero" in
+  let free_hero = fighter ~mana:{ zero_mana with fire = 20 } 0 "hero" in
+  free_hero.next_spell_free <- true;
+  let paid =
+    create ~rng:(lcg 13) ~rules ~hero_spells:[ s ] (playable_board ()) paid_hero
+      (fighter ~mana:zero_mana 1 "foe")
+  in
+  let free =
+    create ~rng:(lcg 13) ~rules ~hero_spells:[ s ] (playable_board ()) free_hero
+      (fighter ~mana:zero_mana 1 "foe")
+  in
+  let casts b =
+    List.length
+      (List.filter
+         (function SpellCast (who, _) -> who = "hero" | _ -> false)
+         (log_of b))
+  in
+  let paid_done = run paid in
+  let free_done = run free in
+  check "the hero casts in both runs" (casts paid_done > 0 && casts free_done > 0);
+  check "the same number of times, so the runs really are comparable"
+    (casts paid_done = casts free_done);
+  check "a latched cast is not charged for"
+    (free_done.hero.mana.fire > paid_done.hero.mana.fire)
+
+
+let () =
   (* A spell the caster cannot afford must never be picked, and a held spell
      must be logged rather than silently dropped. *)
   let pricey = make_spell ~cost_fire:500 "SPRICEY" "too much" in

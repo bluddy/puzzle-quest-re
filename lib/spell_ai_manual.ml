@@ -637,6 +637,88 @@ let hook_sdup ctx =
   done;
   ai_spellcasting_chance_i ~modifier:(if !worthwhile then 50 else -100) ctx
 
+(** The last two, and the two this file used to say were unobtainable.
+
+    Both claims were wrong in the same way: the helper each one calls is a local
+    function in the spell's {e own} script, so reading the script was all it took.
+    [EvaluateRows] sits ten lines below [CastSpell] in [SCHG.lua].
+
+    Both hooks also call [SET_INPUT_DATA] to record the cell the AI picked, and
+    {e that} half is still not observable here - [Battle] reads the target from
+    the spell's [input_type], which is the human's aim. What is ported is the
+    decision, which is what decides whether the spell is cast at all. *)
+
+(** [SCHG]'s [EvaluateRows]: score every row by its skulls, plain counting one and
+    red counting five, and keep the best.
+
+    ```lua
+    if (currSkulls >= numSkulls) then numSkulls = currSkulls; bestRow = y; end
+    ...
+    if (numSkulls < 4) then return -20; end
+    return numSkulls*5;
+    ```
+
+    Two things are easy to get wrong. The [>=] means a later row {e ties} and wins,
+    so the last best row is the one kept - which does not matter for the score but
+    would matter for the aim. And the return is not a count: it is [-20] below four
+    skulls and [numSkulls * 5] above, so the caller sees a {e penalty} for a sparse
+    board and a bonus for a crowded one.
+
+    That bonus runs the opposite way from the obvious reading. The hook vetoes when
+    [chance < 50 - rowValue], so more skulls means an {e easier} gate: four skulls
+    veto below 30, sixteen below -30 and therefore never, and fewer than four skulls
+    veto below 70. It wants to clear a row that is worth clearing. *)
+let skull_weight_of_row (b : Board.board) (y : int) : int =
+  let n = ref 0 in
+  for x = 0 to b.Board.width - 1 do
+    match Board.get_gem b { Board.x; y } with
+    | Board.Skull -> n := !n + 1
+    | Board.RedSkull -> n := !n + 5
+    | _ -> ()
+  done;
+  !n
+
+(** The best row's score, in the Lua's own units. [>=] keeps the last of a tie. *)
+let evaluate_rows_value (b : Board.board) : int =
+  let best = ref 0 in
+  for y = 0 to b.Board.height - 1 do
+    let v = skull_weight_of_row b y in
+    if v >= !best then best := v
+  done;
+  if !best < 4 then -20 else !best * 5
+
+let hook_schg ctx =
+  let row_value = evaluate_rows_value ctx.ctx_board in
+  (* [chance < 50 - rowValue] rearranged into [p + rowValue < 50], which is the
+     shape [evaluate_gate] and [colour_gate] already use. *)
+  evaluate_gate ~adjust:(fun _ p -> p + row_value) ~specific:(fun _ _ -> true) ctx
+
+(** [SFBA]: the board has to hold a skull, and a red skull is worth a flat 20.
+
+    ```lua
+    local x,y = GetRandomGrid_Type(GEM_REDSKULL);
+    if (GET_GEM(x,y) ~= GEM_REDSKULL) then
+      local x,y = GetRandomGrid_Type(GEM_SKULL);
+      if (GET_GEM(x,y) ~= GEM_SKULL) then return 0; end
+    else modifier = 20; end
+    SET_INPUT_DATA(0,x); SET_INPUT_DATA(1,y);
+    return Std_AISpellcastingChance(modifier);
+    ```
+
+    [GetRandomGrid_Type] gives up and returns an arbitrary cell once its tries run
+    out, and the script re-checks it - so "a red skull was found" really does mean
+    the board holds one. Which is why this is a count and not a pick.
+
+    The [else] is worth reading twice: the 20 is only added when the {e first}
+    search succeeded. A board with plain skulls but no red one pays nothing rather
+    than something smaller. *)
+let hook_sfba ctx =
+  let red = gredskull ctx in
+  let plain = gskull ctx in
+  if red > 0 then ai_spellcasting_chance_i ~modifier:20 ctx
+  else if plain > 0 then ai_spellcasting_chance_i ~modifier:0 ctx
+  else false
+
 (** Hooks by spell id. The generated table in [Spell_ai] covers the mechanical
     shape; these are the ones that read the board, the pools, or the items. *)
 
@@ -719,16 +801,18 @@ let manual_hook_of = function
   | "STHU" -> Some hook_sthu
   (* Items. *)
   | "SDUP" -> Some hook_sdup
+  | "SCHG" -> Some hook_schg
+  | "SFBA" -> Some hook_sfba
   | _ -> None
 
 (** The ids this file covers, for the coverage test and for the report the
     extractor prints.
 
-    SCHG and SFBA are deliberately absent. SCHG calls [EvaluateRows], a Lua helper
-    whose body has not been transcribed; guessing it would put a fabricated
-    scoring function in the middle of the AI's decision. SFBA calls
-    [GetRandomGrid_Type] and then [SET_INPUT_DATA], which mutates the spell's
-    target cell, and the cell it picks is not observable until [CastSpell] lands. *)
+    Nothing is absent. SCHG and SFBA were both written off as unobtainable - one
+    for a Lua helper whose body had not been transcribed, the other because its
+    [SET_INPUT_DATA] write is not observable here - and both were in their own
+    scripts to be read. SFBA's [SET_INPUT_DATA] half is still not ported; see
+    [hook_sfba]. *)
 let manual_hook_of_spell_ids =
   [ "SBNA"; "SBNE"; "SBNF"; "SBNW"; "SBRL"; "SCLI"; "STHR"; "SLIS"; "SCLV"
   ; "SFBT"; "SROF"; "SNWR"; "SDDI"; "SFRZ"; "SFSK"; "SSCV"; "SDIV"; "STHX"
@@ -740,4 +824,4 @@ let manual_hook_of_spell_ids =
   ; "SCHL"; "SENR"; "SHAS"; "SHID"; "SHWL"; "SSPT"; "SWOF"; "SSBL"
   ; "SRBI"; "SRFC"; "SCHM"; "SBUR"; "SSTO"; "SBRA"; "SSOA"; "SPET"; "SWEB"
   ; "SSPF"; "STAU"; "SSWP"; "SVAM"; "SZAP"; "STHU"
-  ; "SDUP" ]
+  ; "SDUP"; "SCHG"; "SFBA" ]

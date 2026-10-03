@@ -414,6 +414,90 @@ let () =
   check "SDUP fires when the enemy holds something the caster does not"
     (Spell_ai_manual.hook_sdup enemy_only)
 
+(* ------------------------------------------------------------------ *)
+(* The last two, and the two this file used to call unobtainable              *)
+(* ------------------------------------------------------------------ *)
+
+(** A board whose rows are given as skull counts, so [EvaluateRows]'s row scoring
+    can be driven directly. Plain skulls count one and red skulls five.
+
+    [of_array_matrix] reads [matrix.(y).(x)], so the writes are row-major too.
+    Writing [cells.(x).(y)] puts the whole row down column zero instead, which
+    looks almost right and scores every row as empty. *)
+let rows_board (rows : (int * int) list) : Board.board =
+  let cells = Array.make_matrix 8 8 Board.Empty in
+  List.iteri
+    (fun y (plain, red) ->
+      let placed = ref 0 in
+      for x = 0 to 7 do
+        if !placed < plain then begin
+          cells.(y).(x) <- Board.Skull;
+          incr placed
+        end
+        else if !placed < plain + red then begin
+          cells.(y).(x) <- Board.RedSkull;
+          incr placed
+        end
+      done)
+    rows;
+  Board.of_array_matrix cells
+
+let () =
+  (* SCHG's EvaluateRows scores the best row and returns -20 below four skulls,
+     five per skull above. Both directions matter: the hook vetoes when
+     [chance < 50 - rowValue], so a crowded row makes the spell *easier* and a
+     sparse one makes it much harder. *)
+  check "EvaluateRows returns -20 on an empty board"
+    (Spell_ai_manual.evaluate_rows_value (rows_board []) = -20);
+  check "and -20 just under four skulls"
+    (Spell_ai_manual.evaluate_rows_value (rows_board [ (3, 0) ]) = -20);
+  check "four skulls is the first row that scores"
+    (Spell_ai_manual.evaluate_rows_value (rows_board [ (4, 0) ]) = 20);
+  check "a red skull counts five, so one red beats four plain"
+    (Spell_ai_manual.evaluate_rows_value (rows_board [ (0, 1) ]) = 25);
+  check "and the best row wins, not the first"
+    (Spell_ai_manual.evaluate_rows_value (rows_board [ (2, 0); (5, 0) ]) = 25)
+
+(** Both hooks are asked through one helper each, so the percentile and the
+    evaluation are named once instead of at every call site. Nesting
+    [hook (ctx ...)] inside [not] three deep is where the missing paren in this
+    file went.
+
+    The thresholds follow [ai_spellcasting_chance], which casts when
+    [percentile <= 50 + modifier] - so a positive modifier makes a spell
+    {e easier}, not harder. SCHG does its own arithmetic and lands on
+    [percentile >= 50 - rowValue] instead. *)
+let schg rows ~percentile ~evaluation =
+  Spell_ai_manual.hook_schg (ctx ~board:(rows_board rows) ~percentile ~evaluation ())
+
+let () =
+  (* Four skulls score 20, so the gate is percentile 30. *)
+  check "SCHG needs percentile 30 on a four-skull row"
+    (not (schg [ (4, 0) ] ~percentile:29 ~evaluation:0));
+  check "and fires at 30" (schg [ (4, 0) ] ~percentile:30 ~evaluation:0);
+  check "SCHG on an empty board needs 70, the -20 branch"
+    (not (schg [] ~percentile:69 ~evaluation:0));
+  check "and fires there at 70" (schg [] ~percentile:70 ~evaluation:0);
+  check "SCHG still refuses a good board, as every evaluate hook does"
+    (not (schg [ (8, 0) ] ~percentile:0 ~evaluation:31))
+
+let sfba rows percentile =
+  Spell_ai_manual.hook_sfba (ctx ~board:(rows_board rows) ~percentile ())
+
+let () =
+  (* SFBA wants a skull on the board, and pays a flat 20 for a red one - which by
+     [ai_spellcasting_chance] moves the threshold from 50 to 70. The [else] is the
+     part to read twice: a board with only plain skulls pays nothing at all rather
+     than something smaller, because the 20 is only added on the first search
+     succeeding. *)
+  check "SFBA refuses a board with no skulls" (not (sfba [] 0));
+  check "SFBA pays 20 for a red skull, so the threshold is 70"
+    (sfba [ (0, 1) ] 70);
+  check "and not at 71" (not (sfba [ (0, 1) ] 71));
+  check "SFBA pays nothing extra for a plain skull, so it needs 50"
+    (sfba [ (4, 0) ] 50);
+  check "and not at 51" (not (sfba [ (4, 0) ] 51))
+
 let () =
   if !failures = 0 then print_endline "All spell hook tests passed."
   else begin

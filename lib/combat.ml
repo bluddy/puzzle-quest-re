@@ -181,11 +181,46 @@ type combatant = {
      than on the [Spell.spell] record because a spell object is shared between
      the two sides in our model, and one side's cast must not gate the other's. *)
   mutable cooldowns : (string * int) list;
+  (* Per-element temporary resistance, as [ADD_TEMP_RESISTANCE] builds it.
+
+     Four ints at [combatant + 0x94 + id * 4], accumulating: [Lua_ADD_TEMP_RESISTANCE]
+     does a bare [\*piVar1 = \*piVar1 + iVar4] with no clamp and no expiry of its
+     own, so this is a running total per element rather than a status effect.
+
+     The index is the *Lua* mana id, which is the board's gem order -
+     1 Earth, 2 Fire, 3 Water, 4 Air - and {e not} [element]'s order, which is
+     Earth, Fire, Air, Water. [resistance] and [add_resistance] do that
+     transposition in one place; nothing outside this file should index the array
+     directly. *)
+  mutable resist : int array;
+  (* Gold carried into the battle. [GET_GOLD(idx)] is per combatant, so [SSTL]'s
+     transfer is a real move between two holders rather than a change to the
+     battle-wide pool that [Battle.gold] tracks. *)
+  mutable gold : int;
+  (* [IS_MONSTER(idx)]. Only [SRGN] reads it, and only to let a monster heal more
+     than a hero can - so the default has to be false or every hero cast of SRGN
+     would take the monster branch. [Battle.create] sets it on the enemy. *)
+  mutable is_monster : bool;
+  (* [NOTIFY_OF_FREE_SPELL], which is one byte at [+0x14] on the spell-cost object
+     and nothing else:
+
+     ```c
+     undefined4 Lua_NOTIFY_OF_FREE_SPELL(void) {
+       iVar1 = Engine_HANDLE_SPELL_COST_4622c0();
+       iVar1[0x14] = 1;              // a single unsigned byte
+       return 0;
+     }
+     ```
+
+     A latch rather than a modifier: it makes the caster's {e next} spell free and
+     [SCHV] is the only script that sets it. Separate from [Spell.cost_charged],
+     which is set by a spell paying for {e itself} and lives on the spell. *)
+  mutable next_spell_free : bool;
 }
 
 let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_mana)
     ?(max_mana = zero_caps) ?(skills = zero_skills) ?(extra_turns = 0) ?(effects = [])
-    ?(cooldowns = []) id name =
+    ?(cooldowns = []) ?(gold = 0) ?(is_monster = false) id name =
   {
     id;
     name;
@@ -199,7 +234,31 @@ let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_
     extra_turns;
     effects;
     cooldowns;
+    resist = [| 0; 0; 0; 0 |];
+    gold;
+    is_monster;
+    next_spell_free = false;
   }
+
+(** The four resistance slots, in [element] order: Earth, Fire, Air, Water.
+
+    The array is in the Lua id order - Earth, Fire, Water, Air - so Air and Water
+    swap places on the way through. This is the only place that transposition
+    happens. *)
+let resistance (c : combatant) (e : element) : int =
+  let i = match e with Earth -> 0 | Fire -> 1 | Air -> 2 | Water -> 3 in
+  c.resist.(i)
+
+(** [ADD_TEMP_RESISTANCE(idx, element, amount)]: accumulate, never clamp. *)
+let add_resistance (c : combatant) (e : element) (amount : int) : unit =
+  let i = match e with Earth -> 0 | Fire -> 1 | Air -> 2 | Water -> 3 in
+  c.resist.(i) <- c.resist.(i) + amount
+
+(** [SET_MANA_<E>(idx, GET_MAX_MANA_<E>(idx))], which the scripts write as a
+    read and a write of the same field. Refilling rather than setting the ceiling
+    is the point of those spells, so this is separate from [set_max_mana]. *)
+let refill_mana (c : combatant) : unit =
+  c.mana <- c.max_mana
 
 
 (** Status effect definitions, parsed from the [Assets/StatusEffects/*.xml]

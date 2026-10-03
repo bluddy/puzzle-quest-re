@@ -613,13 +613,13 @@ let () =
      to agree with each other, and both have to line up with the real spell table -
      a body registered under an id no spell uses would look like progress and be
      nothing. *)
-  check "101 of the 130 CastSpell bodies are ported"
-    (List.length Spell_effects.effect_of_spell_ids = 101);
-  check "and the real spell table resolves exactly that many"
+  check "every one of the 129 battle spells has a ported body"
+    (List.length Spell_effects.effect_of_spell_ids = 129);
+  check "and the real spell table resolves every one of them"
     (List.length (List.filter_map
                     (fun (d : Spell.descriptor) -> Spell_effects.effect_of d.id)
                     Spell_data.spell_descriptors)
-    = 101);
+    = 129);
   check "every id in the list has a body, so the list is not lying"
     (List.for_all (fun id -> Spell_effects.effect_of id <> None)
        Spell_effects.effect_of_spell_ids);
@@ -1075,6 +1075,444 @@ let () =
   check "SSTO destroys every Earth gem" (count_of !b (Mana Earth) = 0);
   check "SSTO restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance;
   check "SSTO applies no status to the enemy" (f.effects = [])
+
+(* ------------------------------------------------------------------ *)
+(* The last twenty-eight                                                  *)
+(* ------------------------------------------------------------------ *)
+
+(** A roll whose draws step through the percentile bands, for the bodies that
+    roll {e per cell} rather than once per cast. [SRNC] is the only one: a
+    constant roll would turn a whole board of gold into one mana kind and the
+    spell would look like it worked. *)
+let band_walking_roll () =
+  let c = ref 0 in
+  fun n ->
+    if n <= 0 then 0
+    else begin
+      let k = !c in
+      incr c;
+      if n >= 100 then (k * 26) mod 100 else k mod n
+    end
+
+(** The row a spell swept: how many cells of it are empty. *)
+let row_empties b y =
+  let n = ref 0 in
+  for x = 0 to (!b).width - 1 do
+    if equal_gem (get_gem !b { x; y }) Empty then incr n
+  done;
+  !n
+
+let () =
+  (* SCHG charges itself, sweeps the row the player aimed at, and hits for five.
+     It opens with "Charge the mana first", so the self-charge and the
+     [cost_charged] flag are the first things to check - and the sweep uses
+     [DESTROY_GEM], so the row empties rather than just clearing. *)
+  let s = spell_costing ~earth:5 ~fire:0 ~air:0 ~water:0 "SCHG" in
+  let c = caster ~mana:(mana 5 0 0 0) () and f = foe () in
+  let b = solid_board () in
+  Spell_effects.effect_schg
+    (fx ~spell:(Some s) ~input:(Some { Board.x = 0; y = 3 }) ~roll:(fun _ -> 0)
+       ~caster:c ~foe:f b);
+  check "SCHG charges its own cost" s.Spell.cost_charged;
+  check "SCHG empties the aimed row" (row_empties b 3 = 8);
+  check "SCHG leaves the neighbouring rows alone" (row_empties b 2 = 0);
+  check "SCHG deals five" (f.life = 95);
+  let c2 = caster () in
+  let ctx2 = fx ~input:(Some { Board.x = 0; y = 0 }) ~caster:c2 ~foe:(foe ()) (solid_board ()) in
+  Spell_effects.effect_schg ctx2;
+  check "SCHG restored the bonus flags, for real" ctx2.Spell.fx_flags.wildcard_chance
+
+let () =
+  (* SFBA charges itself, deals a flat eight whatever the pools hold, and blows a
+     3x3 around the aimed cell. Aimed at an edge, the sweep is clipped rather than
+     wrapping - which is the bounds test, and is the part worth pinning. *)
+  let s = spell_costing ~earth:0 ~fire:0 ~air:0 ~water:5 "SFBA" in
+  let f = foe () in
+  let b = solid_board () in
+  Spell_effects.effect_sfba
+    (fx ~spell:(Some s) ~input:(Some { Board.x = 0; y = 0 }) ~roll:(fun _ -> 0)
+       ~caster:(caster ()) ~foe:f b);
+  check "SFBA charges its own cost" s.Spell.cost_charged;
+  check "SFBA deals a flat eight" (f.life = 92);
+  let cleared = ref 0 in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      if equal_gem (get_gem !b { x; y }) Empty then incr cleared
+    done
+  done;
+  check "SFBA clears four cells when aimed at a corner, not nine" (!cleared = 4);
+  let f2 = foe () in
+  let b2 = solid_board () in
+  Spell_effects.effect_sfba
+    (fx ~spell:(Some s) ~input:(Some { Board.x = 4; y = 4 }) ~roll:(fun _ -> 0)
+       ~caster:(caster ()) ~foe:f2 b2);
+  let cleared2 = ref 0 in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      if equal_gem (get_gem !b2 { x; y }) Empty then incr cleared2
+    done
+  done;
+  check "SFBA clears the full nine from the middle" (!cleared2 = 9)
+
+let () =
+  (* SSAN gives five resistance to one element drawn at random, and the four
+     outcomes are the four elements - in the board's id order, so rMana 2 is Water
+     and not Air. Each branch is checked separately because getting the order
+     wrong permutes the spell rather than breaking it. *)
+  let resist_with roll expect =
+    let c = make_combatant ~max_life:100 0 "caster" in
+    Spell_effects.effect_ssan (fx ~roll ~caster:c ~foe:(foe ()) (solid_board ()));
+    List.fold_left (fun acc e -> if Combat.resistance c e = 5 then acc + 1 else acc) 0
+      [ Combat.Earth; Combat.Fire; Combat.Air; Combat.Water ]
+    |> fun n -> n = 1 && Combat.resistance c expect = 5
+  in
+  check "SSAN rMana 0 is Earth" (resist_with (fun _ -> 0) Combat.Earth);
+  check "SSAN rMana 1 is Fire" (resist_with (fun _ -> 1) Combat.Fire);
+  check "SSAN rMana 2 is Water, not Air" (resist_with (fun _ -> 2) Combat.Water);
+  check "SSAN rMana 3 is Air" (resist_with (fun _ -> 3) Combat.Air);
+  let c = make_combatant ~max_life:100 0 "caster" in
+  Spell_effects.effect_ssan
+    (fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) (solid_board ()));
+  Spell_effects.effect_ssan
+    (fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) (solid_board ()));
+  check "SSAN accumulates rather than replacing" (Combat.resistance c Combat.Earth = 10)
+
+let () =
+  (* The four miss-turn bodies differ only in the constant and the pool, so each
+     is pinned on both: SENT is 2 + Earth/20, SPET is 3 on the same pool, and SWEB
+     reads Air. SSPF is a flat four - the Lua writes [3 + 1] - with damage once
+     the caster is past 35 Water. *)
+  let missed = ref 0 in
+  let turns_for build =
+    let f = foe () in
+    build f;
+    match List.assoc_opt "Missed" f.effects with Some n -> n | None -> !missed
+  in
+  check "SENT is two turns plus Earth/20"
+    (turns_for (fun f ->
+         Spell_effects.effect_sent
+           (fx ~caster:(caster ~mana:(mana 40 0 0 0) ()) ~foe:f (solid_board ()))) = 4);
+  check "SPET is three on the same pool, one more than SENT"
+    (turns_for (fun f ->
+         Spell_effects.effect_spet
+           (fx ~caster:(caster ~mana:(mana 40 0 0 0) ()) ~foe:f (solid_board ()))) = 5);
+  check "SWEB reads Air, not Earth"
+    (turns_for (fun f ->
+         Spell_effects.effect_sweb
+           (fx ~caster:(caster ~mana:(mana 40 0 24 0) ()) ~foe:f (solid_board ()))) = 4);
+  check "SWEB ignores a full Earth pool"
+    (turns_for (fun f ->
+         Spell_effects.effect_sweb
+           (fx ~caster:(caster ~mana:(mana 40 0 0 0) ()) ~foe:f (solid_board ()))) = 2);
+  check "SSPF is a flat four turns" (turns_for (fun f ->
+         Spell_effects.effect_sspf
+           (fx ~caster:(caster ()) ~foe:f (solid_board ()))) = 4);
+  let f = foe () in
+  Spell_effects.effect_sspf
+    (fx ~caster:(caster ~mana:(mana 0 0 0 35) ()) ~foe:f (solid_board ()));
+  check "SSPF deals no damage at exactly 35 Water" (f.life = 100);
+  let f2 = foe () in
+  Spell_effects.effect_sspf
+    (fx ~caster:(caster ~mana:(mana 0 0 0 36) ()) ~foe:f2 (solid_board ()));
+  check "SSPF deals ten at 36 Water" (f2.life = 90)
+
+let () =
+  (* SHBT reads the Fire gems, deletes them, and misses two turns plus one per
+     eight. Sixteen red gems is four turns. *)
+  let f = foe () in
+  let b = ref (board_with Spell.GRed 16) in
+  run "SHBT" ~caster:(caster ()) ~foe:f b;
+  check "SHBT deletes the Fire gems it counted" (count_of !b (Mana Fire) = 0);
+  check "SHBT is two turns plus one per eight Fire, so four"
+    (f.effects = [ ("Missed", 4) ])
+
+let () =
+  (* SSTU misses two turns and deals 5 + Fire/8 in the same pass over the enemy,
+     so both land together. *)
+  let f = foe () in
+  Spell_effects.effect_sstu
+    (fx ~caster:(caster ~mana:(mana 0 24 0 0) ()) ~foe:f (solid_board ()));
+  check "SSTU misses two turns" (f.effects = [ ("Missed", 2) ]);
+  check "SSTU deals five plus a third of 24 Fire, so eight" (f.life = 92)
+
+let () =
+  (* SWOP applies Fear for eight and Blind for six to the enemy - both, and both
+     to the enemy despite the script passing the caster as the source - then misses
+     three turns.
+
+     The damage it computes is the point of the negative assertions: the script
+     builds [5 + Fire/8] for a message and never spends it, so there is none. *)
+  let f = foe () in
+  Spell_effects.effect_swop
+    (fx ~caster:(caster ~mana:(mana 0 24 0 0) ()) ~foe:f (solid_board ()));
+  check "SWOP fears the enemy for eight" (has_status f "Fear");
+  check "SWOP blinds the enemy for six" (has_status f "Blind");
+  check "SWOP misses three turns" (match List.assoc_opt "Missed" f.effects with Some n -> n = 3 | None -> false);
+  check "SWOP deals no damage, though it computes some" (f.life = 100)
+
+let () =
+  (* SFOF is 6 + Fire/4 to every enemy, STHU is a flat ten, and STRM is
+     max(1, Earth/2) to the first enemy only - the floor being the part that
+     matters, since a caster with no Earth still hits for one. *)
+  let f = foe () in
+  Spell_effects.effect_sfof
+    (fx ~caster:(caster ~mana:(mana 0 20 0 0) ()) ~foe:f (solid_board ()));
+  check "SFOF deals six plus a quarter of 20 Fire, so eleven" (f.life = 89);
+  let f2 = foe () in
+  Spell_effects.effect_sthu
+    (fx ~caster:(caster ~mana:(mana 99 99 99 99) ()) ~foe:f2 (solid_board ()));
+  check "STHU deals a flat ten, ignoring the pools" (f2.life = 90);
+  let f3 = foe () in
+  Spell_effects.effect_strm
+    (fx ~caster:(caster ~mana:(mana 20 0 0 0) ()) ~foe:f3 (solid_board ()));
+  check "STRM deals half the Earth pool, so ten" (f3.life = 90);
+  let f4 = foe () in
+  Spell_effects.effect_strm
+    (fx ~caster:(caster ()) ~foe:f4 (solid_board ()));
+  check "STRM floors at one" (f4.life = 99)
+
+let () =
+  (* SGEM heals five plus a quarter of the caster's Water, and healing clamps at
+     max life - the clamp is [add_life]'s, not this body's. *)
+  let c = caster ~life:50 ~mana:(mana 0 0 0 20) () in
+  Spell_effects.effect_sgem
+    (fx ~caster:c ~foe:(foe ()) (solid_board ()));
+  check "SGEM heals five plus a quarter of 20 Water, so ten" (c.life = 60)
+
+let () =
+  (* SRGN is the one body that reads [IS_MONSTER], and it is the difference
+     between healing four and spending the caster's own Water to buy more. Both
+     branches are checked, because the default has to be the hero one. *)
+  let hero = caster ~life:50 ~mana:(mana 0 0 0 40) () in
+  Spell_effects.effect_srgn (fx ~caster:hero ~foe:(foe ()) (solid_board ()));
+  check "SRGN heals a hero four and no more" (hero.life = 54);
+  check "SRGN spends none of the hero's Water" (Combat.mana hero Water = 40);
+  check "SRGN takes an extra turn" (hero.extra_turns = 1);
+let monster =
+    make_combatant ~life:50 ~max_life:100 ~mana:(mana 0 0 0 40)
+      ~max_mana:(mana 0 0 0 60) ~is_monster:true 0 "monster"
+  in
+  Spell_effects.effect_srgn
+    (fx ~caster:monster ~foe:(foe ()) (solid_board ()));
+  check "SRGN has a monster spend Water: 40 buys four rounds of seven"
+    (Combat.mana monster Water = 12);
+  check "so the monster heals four plus four a round, so twenty" (monster.life = 70);
+  (* With the ceiling left at the default the loop is cut short by [set_mana]'s
+     clamp rather than by either of the Lua's two conditions: 40 is above the
+     ceiling of 20, so the first subtraction stores 33 and it becomes 20. *)
+  let capped =
+    make_combatant ~life:50 ~max_life:100 ~mana:(mana 0 0 0 40) ~is_monster:true 0 "capped"
+  in
+  Spell_effects.effect_srgn
+    (fx ~caster:capped ~foe:(foe ()) (solid_board ()));
+  check "SRGN's first subtraction is clamped to the pool ceiling, which bites"
+    (Combat.mana capped Water = 13 && capped.life = 62);
+  let hurt_less = make_combatant ~life:95 ~max_life:100 ~is_monster:true 0 "monster" in
+  Spell_effects.effect_srgn
+    (fx ~caster:hurt_less ~foe:(foe ()) (solid_board ()));
+  check "SRGN stops buying healing once it is nearly full, and keeps the mana"
+    (hurt_less.life = 99 && Combat.mana hurt_less Water = 0)
+
+let () =
+  (* SCTH turns the red and green gems into Earth mana, Fire mana and life, one
+     each per gem. It is the body that most needs the bonuses suppressed: the
+     payoff is in the [ADD_MANA] calls, not in the clear. *)
+  let c = caster ~life:50 ~mana:(mana 0 0 0 0) () in
+  let b = ref (mixed_board (Mana Water) [ (Mana Fire, 3); (Mana Earth, 4) ]) in
+  let ctx = fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) b in
+  Spell_effects.effect_scth ctx;
+  check "SCTH deletes both Fire and Earth" (count_of !b (Mana Fire) = 0 && count_of !b (Mana Earth) = 0);
+  check "SCTH banks seven Earth" (Combat.mana c Combat.Earth = 7);
+  check "SCTH banks seven Fire" (Combat.mana c Combat.Fire = 7);
+  check "SCTH heals seven" (c.life = 57);
+  check "SCTH restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
+
+let () =
+  (* SSBD and SWLO are the same body at two weights: two experience per gem and
+     one. Both count before deleting, and both guard the award, so a board with
+     none of the two kinds banks nothing at all. *)
+  let b = ref (mixed_board (Mana Earth) [ (Mana Fire, 2); (Mana Water, 3) ]) in
+  let ctx = fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) b in
+  Spell_effects.effect_ssbd ctx;
+  check "SSBD banks two per gem, so ten" (!(ctx.Spell.fx_xp) = 10);
+  check "SSBD deleted both kinds" (count_of !b (Mana Fire) = 0 && count_of !b (Mana Water) = 0);
+  let b2 = ref (mixed_board (Mana Earth) [ (Mana Air, 2); (Mana Water, 3) ]) in
+  let ctx2 = fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) b2 in
+  Spell_effects.effect_swlo ctx2;
+  check "SWLO banks one per gem, so five" (!(ctx2.Spell.fx_xp) = 5);
+  let ctx3 = fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) (ref (board_with Spell.GGreen 0)) in
+  Spell_effects.effect_swlo ctx3;
+  check "SWLO banks nothing from a board with neither kind" (!(ctx3.Spell.fx_xp) = 0)
+
+let () =
+  (* SSWM turns the Air gems into life and Morale skill, one for one. *)
+  let c = make_combatant ~life:50 ~max_life:100 ~skills:Combat.zero_skills 0 "caster" in
+  let b = ref (board_with Spell.GYellow 6) in
+  let ctx = fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) b in
+  Spell_effects.effect_sswm ctx;
+  check "SSWM deletes the Air gems" (count_of !b (Mana Air) = 0);
+  check "SSWM heals six" (c.life = 56);
+  check "SSWM banks six Morale" (Combat.skill_in SMorale c.skills = 6);
+  check "SSWM restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
+
+let () =
+  (* SCMA's band order is its own, not SCBO's: the default is Water and only the
+     first three bands assign, so 76 stays Water instead of falling through. *)
+  let destroyed_at p =
+    let b = ref (mixed_board (Mana Water) [ (Mana Earth, 2); (Mana Air, 2); (Mana Fire, 2); (Mana Water, 2) ]) in
+    Spell_effects.effect_scma (fx ~percentile:p ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) b);
+    List.find_opt (fun g -> count_of !b g = 0) [ Mana Earth; Mana Air; Mana Fire; Mana Water ]
+  in
+  check "SCMA at 25 destroys Earth" (destroyed_at 25 = Some (Mana Earth));
+  check "SCMA at 50 destroys Air" (destroyed_at 50 = Some (Mana Air));
+  check "SCMA at 75 destroys Fire" (destroyed_at 75 = Some (Mana Fire));
+  check "SCMA at 76 stays Water, the default" (destroyed_at 76 = Some (Mana Water))
+
+let () =
+  (* SCLE empties the board outright - [DELETE_GEM], so nothing resolves. *)
+  let b = solid_board () in
+  Spell_effects.effect_scle (fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) b);
+  check "SCLE empties all 64 cells" (empties_of !b = 64)
+
+let () =
+  (* SRNC is the body that rolls {e per cell}, and that is the whole difference
+     between it and a shared percentile: eight gold gems must be able to come out
+     as a mix of all four mana kinds rather than one kind eight times. *)
+  let b =
+    ref (mixed_board (Mana Earth) [ Gold, 2; Experience, 2; Skull, 2; RedSkull, 2 ])
+  in
+  let ctx = fx ~roll:(band_walking_roll ()) ~caster:(caster ()) ~foe:(foe ()) b in
+  Spell_effects.effect_srnc ctx;
+  check "SRNC converts every gold, star, skull and red skull" (count_of !b Gold = 0
+    && count_of !b Experience = 0 && count_of !b Skull = 0 && count_of !b RedSkull = 0);
+  let total = count_of !b (Mana Earth) + count_of !b (Mana Fire) + count_of !b (Mana Air) + count_of !b (Mana Water) in
+  check "SRNC leaves the 56 filler Earth gems where they were, so all 64 are mana"
+    (total = 64);
+  check "SRNC rolls per cell, so more than one mana kind comes out"
+    (List.length (List.filter (fun g -> count_of !b g > 0) [ Mana Earth; Mana Fire; Mana Air; Mana Water ]) > 1);
+  check "SRNC restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
+
+let () =
+  (* SWMG scatters four wildcards, each with its own rolled multiplier, and pays
+     an extra turn only when all four pools hold twelve. *)
+  let c = caster ~mana:(mana 12 12 12 12) () in
+  let b = ref (board_with Spell.GGreen 0) in
+  let ctx = fx ~roll:(row_major_roll ()) ~caster:c ~foe:(foe ()) b in
+  Spell_effects.effect_swmg ctx;
+  let wildcards = ref 0 in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      (match get_gem !b { x; y } with Wildcard _ -> incr wildcards | _ -> ())
+    done
+  done;
+  check "SWMG scatters four wildcards" (!wildcards = 4);
+  check "SWMG takes an extra turn at twelve in every pool" (c.extra_turns = 1);
+  let c2 = caster ~mana:(mana 12 12 11 12) () in
+  Spell_effects.effect_swmg
+    (fx ~roll:(row_major_roll ()) ~caster:c2 ~foe:(foe ()) (ref (board_with Spell.GGreen 0)));
+  check "SWMG takes none at eleven Air" (c2.extra_turns = 0)
+
+let () =
+  (* SBAC drops a red skull somewhere with no skull beside it, and pays an extra
+     turn at fifteen Fire. The isolation is the mechanic: it is what stops the
+     spell handing out a chain. *)
+  let c = caster ~mana:(mana 0 15 0 0) () in
+  let b = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sbac (fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) b);
+  check "SBAC places one red skull" (count_of !b RedSkull = 1);
+  check "SBAC takes an extra turn at 15 Fire" (c.extra_turns = 1);
+  let c2 = caster ~mana:(mana 0 14 0 0) () in
+  Spell_effects.effect_sbac
+    (fx ~roll:(fun _ -> 0) ~caster:c2 ~foe:(foe ()) (ref (board_with Spell.GGreen 0)));
+  check "SBAC takes none at 14" (c2.extra_turns = 0);
+  (* A board that is nothing but skulls has no isolated cell at all, so the
+     thousand-try bound gives up and the spell writes to (0, 0) regardless. *)
+  let crowded = ref (board_with Spell.GGreen 0) in
+  for y = 0 to 7 do
+    for x = 0 to 7 do
+      crowded := Board.set_gem { x; y } Skull !crowded
+    done
+  done;
+  Spell_effects.effect_sbac
+    (fx ~roll:(row_major_roll ()) ~caster:(caster ()) ~foe:(foe ()) crowded);
+  check "SBAC falls back to a corner when no cell is isolated" (count_of !crowded RedSkull >= 1)
+
+let () =
+  (* SFOD turns the aimed cell into a red skull, and does nothing without an aim. *)
+  let b = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sfod
+    (fx ~input:(Some { Board.x = 5; y = 2 }) ~roll:(fun _ -> 0)
+       ~caster:(caster ()) ~foe:(foe ()) b);
+  check "SFOD makes the aimed cell a red skull" (count_of !b RedSkull = 1);
+  check "SFOD left the rest of the board alone" (count_of !b (Mana Fire) = 63);
+  let b2 = ref (board_with Spell.GGreen 0) in
+  Spell_effects.effect_sfod (fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) b2);
+  check "SFOD does nothing without an aim" (count_of !b2 RedSkull = 0)
+
+let () =
+  (* SCHV tops both sides up to their ceilings, wipes both sides' statuses, and
+     latches the free-spell flag. The latch is the interesting part: it lives on
+     the combatant, not the spell, and is read before the body runs, so it grants
+     the spell {e after} this one. *)
+  let c = caster ~mana:(mana 1 2 3 4) () and f = foe ~mana:(mana 0 0 0 0) () in
+  c.effects <- [ ("Hidden", 3) ];
+  f.effects <- [ ("Missed", 5); ("Fear", 2) ];
+  Spell_effects.effect_schv (fx ~roll:(fun _ -> 0) ~caster:c ~foe:f (solid_board ()));
+  check "SCHV refills the caster's pools to their ceiling, which is 20 by default"
+    (Combat.mana c Combat.Earth = Combat.default_mana_limit
+     && Combat.mana c Combat.Fire = Combat.default_mana_limit);
+  check "SCHV clears the caster's statuses" (c.effects = []);
+  check "SCHV clears the enemy's statuses, missed turns included" (f.effects = []);
+  check "SCHV latches the free-spell flag on the caster" c.next_spell_free;
+  check "SCHV does not latch it on the enemy" (not f.next_spell_free)
+
+let () =
+  (* SDUP copies one of the enemy's items onto the matching slot, and only from a
+     slot that differs. An empty enemy slot must not qualify just because the
+     caster's is empty too - the script tests emptiness separately, and without
+     that the spell would copy nothing while claiming to have. *)
+  let loadout_with id =
+    match Item_data.descriptor_of id with
+    | Some d ->
+        let l = Item.new_loadout () in
+        ignore (Item.equip_at l 0 (Item.make_item d));
+        l
+    | None -> Item.new_loadout ()
+  in
+  let run_dup mine theirs =
+    let b = solid_board () in
+    let ctx = fx ~roll:(fun _ -> 0) ~caster:(caster ()) ~foe:(foe ()) b in
+    let ctx = { ctx with Spell.fx_items = Some mine; Spell.fx_enemy_items = Some theirs } in
+    Spell_effects.effect_sdup ctx;
+    Item.get_item_slot mine 0
+  in
+  check "SDUP copies a differing item into the slot"
+    (run_dup (loadout_with "IADO") (loadout_with "IADS") = Some "IADS");
+  check "SDUP leaves the slot alone when the two sides match"
+    (run_dup (loadout_with "IADO") (loadout_with "IADO") = Some "IADO");
+  check "SDUP does not treat an empty enemy slot as something to copy"
+    (run_dup (Item.new_loadout ()) (Item.new_loadout ()) = Some "");
+  let one_sided = Item.new_loadout () in
+  ignore (Item.equip_at one_sided 0 (Item.make_item (Option.get (Item_data.descriptor_of "IADO"))));
+  check "SDUP skips an empty enemy slot even when the caster's is full"
+    (run_dup one_sided (Item.new_loadout ()) = Some "IADO")
+
+let () =
+  (* SSTL moves up to 25 gold off the enemy and onto the caster. [GET_GOLD] is per
+     combatant, so this is a transfer between two holders and not a change to the
+     battle-wide pool. *)
+  let poor = make_combatant ~max_life:100 1 "poor" in
+  poor.Combat.gold <- 8;
+  let c = make_combatant ~max_life:100 0 "caster" in
+  Spell_effects.effect_sstl
+    (fx ~roll:(fun _ -> 0) ~caster:c ~foe:poor (solid_board ()));
+  check "SSTL takes all eight from a poor enemy" (poor.Combat.gold = 0 && c.Combat.gold = 8);
+  let rich = make_combatant ~max_life:100 1 "rich" in
+  rich.Combat.gold <- 100;
+  let c2 = make_combatant ~max_life:100 0 "caster" in
+  Spell_effects.effect_sstl
+    (fx ~roll:(fun _ -> 0) ~caster:c2 ~foe:rich (solid_board ()));
+  check "SSTL caps the haul at 25" (rich.Combat.gold = 75 && c2.Combat.gold = 25)
 
 let () =
   if !failures = 0 then print_endline "All spell effect tests passed."

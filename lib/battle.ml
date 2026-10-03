@@ -438,6 +438,11 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
         start_cooldown actor s;
         s.use_count <- s.use_count + 1;
         s.Spell.cost_charged <- false;
+        (* [NOTIFY_OF_FREE_SPELL] latches on the combatant rather than on the
+           spell, so it is read {e before} the body runs: a body that sets the flag
+           is granting the spell after this one, not refunding this one. *)
+        let was_free = actor.next_spell_free in
+        actor.next_spell_free <- false;
         emit b (SpellCast (actor.name, s.id));
         (* The effect runs before the charge. That is the normal case and it makes
            no difference, but ten spells open with "Charge the mana first" and
@@ -456,8 +461,9 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
             if actor.is_dead then emit b (Death actor.name)
         | None -> ());
         (* Charged last, and only if the body did not charge itself. See
-           [Spell_effects.handle_spell_cost]. *)
-        if not s.Spell.cost_charged then pay_cost actor s;
+           [Spell_effects.handle_spell_cost]. The free-spell latch suppresses it
+           the same way. *)
+        if not s.Spell.cost_charged && not was_free then pay_cost actor s;
         keeps
   in
   if still_turn then play_move b defender
@@ -515,6 +521,11 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
     ?(enemy_spells = []) ?(effects = []) ?hero_items ?enemy_items
     (board : board) (hero : combatant) (enemy : combatant) : battle =
   if hero.id = enemy.id then invalid_arg "Battle.create: combatants need distinct ids";
+  (* [IS_MONSTER(idx)] is a property of the character rather than of the spell, so
+     it is set here rather than asked of every fixture: a [Battle] is one hero
+     against one monster, and [SRGN] is the only script that reads the flag. *)
+  enemy.is_monster <- true;
+  hero.is_monster <- false;
   {
     rules;
     board;

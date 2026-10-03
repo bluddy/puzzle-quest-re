@@ -1306,6 +1306,68 @@ let random_grid_not2 ~(a : Board.gem) ~(b : Board.gem) fx =
   in
   go 0
 
+(** [GetRandomGrid_Isolated2(a, b)]: a cell holding neither kind, and with neither
+    kind in any of its eight neighbours.
+
+    This is the strictest of the random-cell helpers, and it exists so a spawned
+    skull cannot chain: [SBAC] drops a red skull, and a red skull beside another
+    skull detonates on the next match. The adjacency test reads the board as it was
+    when the search started rather than re-reading it per candidate, because the
+    Lua tests [GET_GEM] on the same unchanged grid throughout.
+
+    Cells off the board count as not-that-kind, so a corner is easier to satisfy
+    than an interior cell. *)
+let random_grid_isolated2 ~(a : Board.gem) ~(b : Board.gem) fx =
+  let board = !(fx.fx_board) in
+  let bad g = Board.equal_gem g a || Board.equal_gem g b in
+  let clear nx ny =
+    nx < 0 || nx >= board.Board.width || ny < 0 || ny >= board.Board.height
+    || not (bad (Board.get_gem board { Board.x = nx; y = ny }))
+  in
+  let isolated x y =
+    not (bad (Board.get_gem board { Board.x = x; y = y }))
+    && clear (x - 1) y && clear (x + 1) y && clear x (y - 1) && clear x (y + 1)
+    && clear (x - 1) (y - 1) && clear (x + 1) (y - 1)
+    && clear (x - 1) (y + 1) && clear (x + 1) (y + 1)
+  in
+  let rec go tries =
+    if tries > 1000 then (0, 0)
+    else
+      let x, y = random_grid fx in
+      if isolated x y then (x, y) else go (tries + 1)
+  in
+  go 0
+
+(** [IsWildcard(g)]. Only [SWMG] reads it, and it reads it to {e skip} the cell: a
+    wildcard already standing there is not a candidate for becoming another
+    wildcard. *)
+let is_wildcard (g : Board.gem) : bool =
+  match g with Board.Wildcard _ -> true | _ -> false
+
+(** [GET_NUM_ENEMIES(idxCaster)].
+
+    Every script that calls it uses it to drive [GET_ENEMY(idxCaster, i)] over
+    [1, numEnemies] with a zero-based [i], so the loop is [1..n] fetching
+    [n-1..0]. [fx_enemies] is already a list in that order, so the transcription is
+    a [List.iter] rather than an indexed loop. The count is kept as its own
+    function anyway, because [SSPF] computes it and then never uses it - a script
+    reading a value it ignores is worth being able to see. *)
+let num_enemies (fx : effect_context) : int = List.length fx.fx_enemies
+
+(** [PERCENTILE_CHANCE_SYNC()] drawn fresh, rather than the once-per-cast
+    [fx_percentile].
+
+    Most scripts read the shared draw, which is why it lives in the context. [SRNC]
+    is the exception: it rolls once per qualifying cell, so a board of eight gold
+    gems can come out as eight different mana kinds. Reusing [fx_percentile] there
+    collapses that to one kind, which is a different spell. *)
+let percentile_roll (fx : effect_context) : int = fx.fx_roll 100
+
+(** [GET_RANDOM_SYNC(lo, hi)], inclusive at both ends: [SSAN] reads
+    [GET_RANDOM_SYNC(0,3)] as four outcomes and [SWMG] reads [GET_RANDOM_SYNC(0,6)]
+    as seven, matching the seven multipliers 2 through 8. *)
+let random_sync ~(lo : int) ~(hi : int) fx = lo + (fx.fx_roll (hi - lo + 1))
+
 (** A random cell holding the given kind, or - if the board has none - an
     arbitrary one. [GetRandomGrid_Type] returns whatever it drew once the tries run
     out, and the callers all re-check the cell afterwards, which is why that is safe
@@ -1581,6 +1643,481 @@ let effect_ssto fx =
   destroy_all_gems fx gem_earth;
   set_multiplier_effects fx true
 
+(** ------------------------------------------------------------------ *)
+(* The last twenty-eight                                                    *)
+(* ------------------------------------------------------------------ *)
+
+(** These are the bodies that were still missing when the Lua turned up.
+
+    Three things about them are worth saying before the list, because two of the
+    three were previously written off as unportable:
+
+    - **[SCHG]'s [EvaluateRows] is not missing.** It was recorded as "a Lua helper
+      whose body has not been transcribed", which turned out to be wrong in an
+      unhelpful way: it is a local function in [SCHG.lua] itself, ten lines below
+      [CastSpell]. Both are ported below.
+
+    - **[SFBA] is not blocked by [SET_INPUT_DATA] either.** It reads the aimed cell
+      and sweeps a 3x3 around it, which is the same shape as [SLIS] and [SSUT]
+      already in this file.
+
+    - **[SSAN] really does need [ADD_TEMP_RESISTANCE],** and unlike
+      [ADD_EFFECT_TO_GRID] it is a real mechanic: [Lua_ADD_TEMP_RESISTANCE]
+      accumulates into [combatant + 0x94 + element * 4] with no clamp. It is on
+      [Combat.resist] rather than being faked with a status effect, because
+      [GET_RESISTANCE] is a separate Lua API that other content reads.
+
+    Every remaining body is mechanical. The [Std_CastSpellEffect],
+    [Std_EnemySpellEffect], [Std_GridSpellEffect], [Std_CasterSpellEffect] and
+    [ADD_TEXT_MESSAGE*] calls are presentation and are dropped, as is
+    [PLAY_SOUND]. Two scripts compute a value purely to format it into a message
+    and never use it otherwise - [SWOP]'s damage and [SSWM]'s [numSkulls], which is
+    an undefined global and therefore nil - and those are noted where they occur
+    rather than being given an effect they never had. *)
+
+(** [SCHG]: charge, then sweep one whole row and hit everything for five.
+
+    ```lua
+    HANDLE_SPELL_COST(idxCaster);
+    local y = GET_INPUT_DATA(0);
+    SET_EXTRATURN_CHANCE_ENABLED(0); SET_WILDCARD_CHANCE_ENABLED(0);
+    SET_DAMAGE_MULTIPLIER_ENABLED(0);
+    for x = 1,8 do DESTROY_GEM(x,y); end
+    ```
+
+    The three [SET_*_ENABLED] calls are the same three flags
+    [SetMultiplierEffects] writes, so one call covers them. [DESTROY_GEM] rather
+    than [DELETE_GEM]: the row resolves and refills, so the sweep can chain.
+
+    The damage is [SUBTRACT_LIFE(idxEnemy, damage, idxCaster)] in a loop over every
+    enemy, which in the 1v1 model [fx_enemies] already is. *)
+let effect_schg fx =
+  handle_spell_cost fx;
+  (match aimed_at fx with
+  | Some (_, y) ->
+      set_multiplier_effects fx false;
+      let b = !(fx.fx_board) in
+      for x = 0 to b.Board.width - 1 do
+        destroy_gem fx x y
+      done;
+      set_multiplier_effects fx true
+  | None -> ());
+  List.iter (fun e -> subtract_life fx e 5) fx.fx_enemies
+
+(** [SFBA]: charge, deal a flat eight, then blow a hole around the aimed cell.
+
+    ```lua
+    HANDLE_SPELL_COST(idxCaster);
+    local damage = 8; Std_InflictDamage(damage, idxCaster);
+    local gridx = GET_INPUT_DATA(0); local gridy = GET_INPUT_DATA(1);
+    SetMultiplierEffects(false);
+    for y = gridy-1,gridy+1 do for x = gridx-1,gridx+1 do
+      if (x >= 1 and x <= 8 and y >= 1 and y <= 8) then DESTROY_GEM(x,y); end
+    end end
+    SetMultiplierEffects(true);
+    ```
+
+    The bounds test is written against the Lua's 1-based grid, so it becomes
+    [0 <= x < width] here. [Std_InflictDamage] hits the first enemy only, which is
+    [inflict_damage]'s existing behaviour. *)
+let effect_sfba fx =
+  handle_spell_cost fx;
+  inflict_damage fx 8;
+  match aimed_at fx with
+  | Some (gx, gy) ->
+      let b = !(fx.fx_board) in
+      set_multiplier_effects fx false;
+      for y = gy - 1 to gy + 1 do
+        for x = gx - 1 to gx + 1 do
+          if x >= 0 && x < b.Board.width && y >= 0 && y < b.Board.height then
+            destroy_gem fx x y
+        done
+      done;
+      set_multiplier_effects fx true
+  | None -> ()
+
+(** [SSAN]: five points of resistance to one randomly chosen element.
+
+    ```lua
+    local rMana = GET_RANDOM_SYNC(0,3);
+    if(rMana == 0)then ADD_TEMP_RESISTANCE(idxCaster,MANA_GREEN,amt);
+    elseif(rMana == 1)then ADD_TEMP_RESISTANCE(idxCaster,MANA_RED,5);
+    elseif(rMana == 2) then ADD_TEMP_RESISTANCE(idxCaster,MANA_BLUE,5);
+    else ADD_TEMP_RESISTANCE(idxCaster,MANA_YELLOW,5); end
+    ```
+
+    The ids are the board's, not [element]'s: MANA_GREEN 1, MANA_RED 2, MANA_BLUE
+    3, MANA_YELLOW 4, so rMana 2 is Water and the [else] is Air.
+    [Combat.add_resistance] does that transposition. *)
+let effect_ssan fx =
+  let amt = 5 in
+  let e =
+    match random_sync ~lo:0 ~hi:3 fx with
+    | 0 -> Earth
+    | 1 -> Fire
+    | 2 -> Water
+    | _ -> Air
+  in
+  Combat.add_resistance fx.fx_caster e amt
+
+(** [SENT], [SPET], [SWEB] and [SSPF] are the same body: make every enemy miss a
+    number of turns that depends on a pool, and differ only in the constant and the
+    pool. [SSPF]'s is written [3 + 1] in the Lua, which is four; it is transcribed
+    as four rather than tidied into [3], because the tidy version would be a
+    different edit from the original and there is no reason to hide that. *)
+let miss_all (turns : int) fx = List.iter (fun e -> miss_turns e turns) fx.fx_enemies
+
+let effect_sent fx = miss_all (2 + (Combat.mana fx.fx_caster Earth / 20)) fx
+let effect_spet fx = miss_all (3 + (Combat.mana fx.fx_caster Earth / 20)) fx
+let effect_sweb fx = miss_all (2 + (Combat.mana fx.fx_caster Air / 12)) fx
+
+(** [SSPF]: four missed turns each, plus ten damage once the caster has more than
+    35 Water.
+
+    The [if] is [> 35], so 36 is the first pool that pays - and the damage lands
+    {e after} the loop, once, not once per enemy. *)
+let effect_sspf fx =
+  miss_all 4 fx;
+  if Combat.mana fx.fx_caster Water > 35 then inflict_damage fx 10
+
+(** [SHBT]: two missed turns plus one per eight Fire gems, and the Fire gems are
+    deleted. The count is taken before the delete. *)
+let effect_shbt fx =
+  let num_gems = count_gems_of fx gem_fire in
+  let num_turns = 2 + (num_gems / 8) in
+  delete_all_gems fx gem_fire;
+  List.iter (fun e -> miss_turns e num_turns) fx.fx_enemies
+
+(** [SSTU]: two missed turns and the same 5 + Fire/8 damage as [SZAP], applied
+    together in one loop over the enemies. *)
+let effect_sstu fx =
+  let damage = 5 + (Combat.mana fx.fx_caster Fire / 8) in
+  List.iter
+    (fun e ->
+      miss_turns e 2;
+      subtract_life fx e damage)
+    fx.fx_enemies
+
+(** [SWOP]: fear for eight, blind for six, and three missed turns.
+
+    [Std_InflictStatusEffect] takes the {e source} as its third argument, so both
+    statuses land on the enemy even though the script passes [idxCaster].
+
+    The script then computes [local damage = 5 + (GET_MANA_FIRE(idxCaster)/8)] and
+    uses it for nothing but a message. There is no damage in this spell. *)
+let effect_swop fx =
+  inflict_status fx "Fear" 8;
+  inflict_status fx "Blind" 6;
+  List.iter (fun e -> miss_turns e 3) fx.fx_enemies
+
+(** [SFOF] and [STHU] are the plain board-wide damage bodies, and [STRM] is the
+    single-target one.
+
+    [STRM]'s floor is the interesting part: [if (damage < 1) then damage = 1], so
+    it always hits for at least one however little Earth is banked. *)
+let effect_sfof fx =
+  let damage = 6 + (Combat.mana fx.fx_caster Fire / 4) in
+  List.iter (fun e -> subtract_life fx e damage) fx.fx_enemies
+
+let effect_sthu fx = List.iter (fun e -> subtract_life fx e 10) fx.fx_enemies
+
+let effect_strm fx =
+  let damage = max 1 (Combat.mana fx.fx_caster Earth / 2) in
+  inflict_damage fx damage
+
+(** [SGEM]: heal for five plus a quarter of the caster's Water. *)
+let effect_sgem fx = healing fx.fx_caster (5 + (Combat.mana fx.fx_caster Water / 4))
+
+(** [SRGN]: heal four, take an extra turn, and - only if the caster is a monster -
+    keep spending its own Water to buy more healing.
+
+    ```lua
+    local mana_each = 7; local amt_each = 4;
+    local amt = amt_each;
+    local healing_required = GET_MAX_LIFE(idxCaster) - GET_LIFE(idxCaster);
+    if (IS_MONSTER(idxCaster)) then
+      while (GET_MANA_WATER(idxCaster) >= mana_each*2 and
+             healing_required >= amt_each*2) do
+        SUBTRACT_MANA_WATER(idxCaster,mana_each);
+        amt = amt + amt_each; healing_required = healing_required - amt_each;
+      end
+    end
+    ADD_LIFE(idxCaster,amt); EXTRA_TURN(1,0);
+    ```
+
+    Two details worth keeping. The loop pays [mana_each * 2] = 14 Water to gain
+    [amt_each * 2] = 8 healing, so it runs while {e both} remain affordable - a
+    loop bounded on only one of them would buy a different amount. And
+    [healing_required] is decremented alongside [amt], so the loop also stops once
+    there is no longer that much missing health, even with mana to spare.
+
+    [healing_required] is read before the [ADD_LIFE], which is why it starts at
+    the caster's missing health and not at zero. *)
+let effect_srgn fx =
+  let mana_each = 7 and amt_each = 4 in
+  let amt = ref amt_each in
+  let healing_required = ref (fx.fx_caster.max_life - fx.fx_caster.life) in
+  if fx.fx_caster.is_monster then begin
+    while
+      Combat.mana fx.fx_caster Water >= mana_each * 2
+      && !healing_required >= amt_each * 2
+    do
+      subtract_mana fx.fx_caster Water mana_each;
+      amt := !amt + amt_each;
+      healing_required := !healing_required - amt_each
+    done
+  end;
+  healing fx.fx_caster !amt;
+  extra_turn fx.fx_caster
+
+(** [SCTH]: the red and green gems become Earth mana, Fire mana and life, three at
+    one. The bonuses are suppressed for the delete so it pays out nothing itself -
+    the whole point is that the payoff is in [ADD_MANA_*], not in the clear. *)
+let effect_scth fx =
+  set_multiplier_effects fx false;
+  let num_gems = count_gems_of fx gem_fire + count_gems_of fx gem_earth in
+  delete_all_gems fx gem_earth;
+  delete_all_gems fx gem_fire;
+  add_mana fx.fx_caster Earth num_gems;
+  add_mana fx.fx_caster Fire num_gems;
+  healing fx.fx_caster num_gems;
+  set_multiplier_effects fx true
+
+(** [SSBD] and [SWLO] are the same body over the same two gems, differing only in
+    the weight: two experience per gem against one. Both guard the [ADD_XP] on a
+    positive amount, so a board with none of either gem banks nothing.
+
+    The counts are taken before either delete, so the two gems are disjoint by
+    construction and the order of the deletes cannot matter. *)
+let xp_for_gems ~(weight : int) ~(a : Board.gem) ~(b : Board.gem) fx =
+  let amt = (weight * count_gems_of fx a) + (weight * count_gems_of fx b) in
+  delete_all_gems fx a;
+  delete_all_gems fx b;
+  if amt > 0 then add_xp fx amt
+
+let effect_ssbd fx = xp_for_gems ~weight:2 ~a:gem_fire ~b:gem_water fx
+let effect_swlo fx = xp_for_gems ~weight:1 ~a:gem_air ~b:gem_water fx
+
+(** [SSWM]: the Air gems become life and Morale skill, one for one.
+
+    The message is built from [numSkulls], which is not a local in this function
+    and does not exist in scope - it reads as nil and formats as such. That is a
+    bug in the script's {e text} and has no effect on the mechanic, so it is
+    recorded here and not ported. *)
+let effect_sswm fx =
+  set_multiplier_effects fx false;
+  let num_gems = count_gems_of fx gem_air in
+  delete_all_gems fx gem_air;
+  healing fx.fx_caster num_gems;
+  add_temp_skill fx.fx_caster SMorale num_gems;
+  set_multiplier_effects fx true
+
+(** [SCMA]: destroy one mana kind, chosen by the shared percentile.
+
+    The band order is its own thing and not [SCBO]'s: the default is Water and only
+    the first three bands assign, so anything above 75 stays Water rather than
+    falling through to Fire. *)
+let effect_scma fx =
+  set_multiplier_effects fx false;
+  let mana_type =
+    if fx.fx_percentile <= 25 then gem_earth
+    else if fx.fx_percentile <= 50 then gem_air
+    else if fx.fx_percentile <= 75 then gem_fire
+    else gem_water
+  in
+  destroy_all_gems fx mana_type;
+  set_multiplier_effects fx true
+
+(** [SCLE]: empty the entire board. [DELETE_GEM] rather than [DESTROY_GEM], so
+    nothing resolves and the board is left genuinely bare for [Battle] to refill. *)
+let effect_scle fx =
+  let b = !(fx.fx_board) in
+  for y = 0 to b.Board.height - 1 do
+    for x = 0 to b.Board.width - 1 do
+      delete_gem fx x y
+    done
+  done
+
+(** [SRNC]: every gold, star, skull and red skull becomes a mana gem, rolled
+    {e per cell}.
+
+    That is the whole spell. The shared percentile would collapse a board of eight
+    gold gems into eight of one kind; the script calls [PERCENTILE_CHANCE_SYNC]
+    inside the loop, so each cell gets its own draw. The bands are a third shape
+    again - Earth, Fire, Water, Air, in that order, with Air as the [else].
+
+    Wildcards are untouched, because they are not any of the four kinds tested. *)
+let effect_srnc fx =
+  set_multiplier_effects fx false;
+  let b = !(fx.fx_board) in
+  for y = 0 to b.Board.height - 1 do
+    for x = 0 to b.Board.width - 1 do
+      let g = Board.get_gem b { Board.x = x; y } in
+      let interesting =
+        Board.equal_gem g Board.Gold || Board.equal_gem g Board.Experience
+        || Board.equal_gem g Board.Skull || Board.equal_gem g Board.RedSkull
+      in
+      if interesting then begin
+        let chance = percentile_roll fx in
+        let typ =
+          if chance <= 25 then gem_earth
+          else if chance <= 50 then gem_fire
+          else if chance <= 75 then gem_water
+          else gem_air
+        in
+        fx.fx_board := Board.set_gem { Board.x = x; y } typ !(fx.fx_board)
+      end
+    done
+  done;
+  set_multiplier_effects fx true
+
+(** [SWMG]: four wildcards at random multipliers, and an extra turn if every pool
+    has twelve in it.
+
+    ```lua
+    local amt = 4; local tries = 0;
+    repeat
+      local x,y = GetRandomGrid();
+      if (not IsWildcard(GET_GEM(x,y))) then
+        amt = amt - 1;
+        myGem = GEM_WILDCARDx2 + GET_RANDOM_SYNC(0,6);
+        SET_GEM(x,y,myGem);
+      end
+      tries = tries+1;
+    until (tries > 1000 or amt <= 0)
+    ```
+
+    The loop counts {e every} iteration, including the ones that skip a wildcard,
+    so a board that is all wildcards runs out at 1001 rather than spinning. That is
+    the bound working, not a divergence - the original has the same [tries]
+    increment in the same place.
+
+    [myGem] is missing its [local], so it is a global here. It is still written
+    before it is read on the next pass, so the missing keyword changes nothing. *)
+let effect_swmg fx =
+  let amt = ref 4 in
+  let tries = ref 0 in
+  while !amt > 0 && !tries <= 1000 do
+    let x, y = random_grid fx in
+    if not (is_wildcard (Board.get_gem !(fx.fx_board) { Board.x = x; y })) then begin
+      decr amt;
+      let my_gem = Board.Wildcard (2 + (fx.fx_roll 7)) in
+      fx.fx_board := Board.set_gem { Board.x = x; y } my_gem !(fx.fx_board)
+    end;
+    incr tries
+  done;
+  let c = fx.fx_caster in
+  if Combat.mana c Earth >= 12 && Combat.mana c Fire >= 12
+     && Combat.mana c Air >= 12 && Combat.mana c Water >= 12
+  then extra_turn c
+
+(** [SBAC]: one red skull on a cell that has no skull near it, and an extra turn at
+    fifteen Fire.
+
+    The isolation is the mechanic: a red skull dropped next to another skull
+    detonates on the following match, so [GetRandomGrid_Isolated2] is what stops
+    this spell from handing the player a chain. *)
+let effect_sbac fx =
+  let x, y = random_grid_isolated2 ~a:Board.Skull ~b:Board.RedSkull fx in
+  fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board);
+  if Combat.mana fx.fx_caster Fire >= 15 then extra_turn fx.fx_caster
+
+(** [SFOD]: turn the aimed cell into a red skull. *)
+let effect_sfod fx =
+  match aimed_at fx with
+  | Some (x, y) -> fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board)
+  | None -> ()
+
+(** [MISS_TURNS(idx, 0)] is a removal, not a no-op: the other [MISS_TURNS] bodies
+    accumulate a duration, so zero means "not missing any turns". [miss_turns]
+    itself refuses non-positive amounts, which is right for every caller that
+    passes a computed count, so the clearing case is spelled out here.
+
+    [SCHV] is the only script that does this. *)
+let clear_missed_turns (target : combatant) : unit =
+  target.effects <- List.filter (fun (id, _) -> id <> "Missed") target.effects
+
+(** [SCHV]: fill both sides' mana to their ceilings, wipe both sides' statuses,
+    clear both sides' missed turns, and make the caster's next spell free.
+
+    [SET_MANA_<E>(idx, GET_MAX_MANA_<E>(idx))] is a refill, not a ceiling change -
+    it raises the pool to the cap that is already there and leaves the cap alone. *)
+let effect_schv fx =
+  Combat.refill_mana fx.fx_caster;
+  List.iter Combat.refill_mana fx.fx_enemies;
+  fx.fx_caster.next_spell_free <- true;
+  clear_status_effects fx.fx_caster;
+  List.iter clear_status_effects fx.fx_enemies;
+  clear_missed_turns fx.fx_caster;
+  List.iter clear_missed_turns fx.fx_enemies
+
+(** [SDUP]: copy one of the enemy's items onto the matching slot.
+
+    ```lua
+    if (GET_ITEM(idxEnemy,i) ~= GET_ITEM(idxCaster,i) and
+        GET_ITEM(idxEnemy,i) ~= "") then legalList[legalListSize] = i; ... end
+    ...
+    local myChoice = GET_RANDOM_SYNC(0,legalListSize-1);
+    SET_ITEM(idxCaster,myItem,GET_ITEM(idxEnemy,myItem));
+    ```
+
+    Two conditions, and the second is not implied by the first: a slot the enemy
+    leaves empty returns "" rather than a missing value, and "" differs from
+    whatever the caster has, so without the emptiness test an empty enemy slot
+    would qualify whenever the caster's slot is also empty. The legal list is
+    built in slot order and the draw is over its length, not over four.
+
+    [SET_ITEM] overwrites, so the caster's existing item in that slot is replaced
+    rather than refused - the duplication is the point. *)
+let effect_sdup fx =
+  match fx.fx_items, fx.fx_enemy_items with
+  | Some mine, Some theirs ->
+      let legal =
+        List.filter_map
+          (fun n ->
+            (* [get_item_slot] answers [Some ""] for an empty slot, because that is
+               what [GET_ITEM] returns, so emptiness is a value here rather than a
+               [None]. Testing it as a [None] would let an empty enemy slot qualify
+               whenever the caster's slot were also empty. *)
+            match Item.get_item_slot theirs n, Item.get_item_slot mine n with
+            | Some enemy_id, Some my_id
+              when enemy_id <> "" && enemy_id <> my_id -> Some n
+            | _ -> None)
+          [ 0; 1; 2; 3 ]
+      in
+      (match legal with
+      | [] -> ()
+      | _ ->
+          let slot = List.nth legal (fx.fx_roll (List.length legal)) in
+          (* [Item.slot_at] is only a guard that [slot] is one of the four real
+             slots; [equip_at] takes the number, not the location. *)
+          (match Item.slot_at slot, Item.get_item_slot theirs slot with
+          | Some _, Some id ->
+              (match Item_data.descriptor_of id with
+              | Some d -> ignore (Item.equip_at mine slot (Item.make_item d))
+              | None -> ())
+          | _ -> ()))
+  | _ -> ()
+
+(** [SSTL]: take up to 25 gold off the enemy.
+
+    ```lua
+    local amt_gold = GET_GOLD(idxEnemy);
+    if (amt_gold > 25) then amt_gold = 25; end
+    Std_LoseGold(amt_gold, idxEnemy); Std_GainGold(amt_gold, idxCaster);
+    ```
+
+    [GET_GOLD] is per combatant, so this moves gold between two holders rather
+    than changing the battle-wide pool that [fx_gold] tracks. [Combatant.gold] is
+    what it reads. *)
+let effect_sstl fx =
+  List.iter
+    (fun e ->
+      let amt = min 25 e.Combat.gold in
+      e.Combat.gold <- e.Combat.gold - amt;
+      fx.fx_caster.Combat.gold <- fx.fx_caster.Combat.gold + amt)
+    fx.fx_enemies
+
 (** The ported body for [id], if it has one yet.
     An absent entry means the body has not been transcribed. [Battle] treats that
     as "the spell does nothing", which is honest: it is the real state of the
@@ -1692,6 +2229,37 @@ let effect_of (id : string) : (effect_context -> unit) option =
   | "SCLM" -> Some effect_sclm
   | "SHSI" -> Some effect_shsi
   | "SWBU" -> Some effect_swbu
+  (* The last twenty-eight, once the Lua turned up. See the block above:*)
+  (* SCHG's EvaluateRows and SFBA's input sweep were both written off as*)
+  (* unobtainable, and neither was.*)
+  | "SBAC" -> Some effect_sbac
+  | "SCHG" -> Some effect_schg
+  | "SCHV" -> Some effect_schv
+  | "SCLE" -> Some effect_scle
+  | "SCMA" -> Some effect_scma
+  | "SCTH" -> Some effect_scth
+  | "SDUP" -> Some effect_sdup
+  | "SENT" -> Some effect_sent
+  | "SFBA" -> Some effect_sfba
+  | "SFOD" -> Some effect_sfod
+  | "SFOF" -> Some effect_sfof
+  | "SGEM" -> Some effect_sgem
+  | "SHBT" -> Some effect_shbt
+  | "SPET" -> Some effect_spet
+  | "SRGN" -> Some effect_srgn
+  | "SRNC" -> Some effect_srnc
+  | "SSAN" -> Some effect_ssan
+  | "SSBD" -> Some effect_ssbd
+  | "SSPF" -> Some effect_sspf
+  | "SSTL" -> Some effect_sstl
+  | "SSTU" -> Some effect_sstu
+  | "SSWM" -> Some effect_sswm
+  | "STHU" -> Some effect_sthu
+  | "STRM" -> Some effect_strm
+  | "SWEB" -> Some effect_sweb
+  | "SWLO" -> Some effect_swlo
+  | "SWMG" -> Some effect_swmg
+  | "SWOP" -> Some effect_swop
   | "SSTO" -> Some effect_ssto
   | _ -> None
 
@@ -1710,7 +2278,8 @@ let effect_of_spell_ids =
   ; "SCBO"; "SZAP"; "SCLI"; "SLIS"; "SSUT"; "SFCA"; "SMST"
   ; "SBRA"; "SBRL"; "SBUR"; "SEVA"; "SSOA"; "SCON"; "SPRO"; "SNWR"
   ; "SCHM"; "SRFC"; "SDBR"; "SGOW"; "SDGZ"; "SKLO"; "SWTD"
-  ; "SCOU"; "SCLM"; "SHSI"; "SWBU"; "SSTO" ]
+  ; "SCOU"; "SCLM"; "SHSI"; "SWBU"; "SSTO"
+  ; "SBAC"; "SCHG"; "SCHV"; "SCLE"; "SCMA"; "SCTH"; "SDUP"; "SENT"; "SFBA"; "SFOD"; "SFOF"; "SGEM"; "SHBT"; "SPET"; "SRGN"; "SRNC"; "SSAN"; "SSBD"; "SSPF"; "SSTL"; "SSTU"; "SSWM"; "STHU"; "STRM"; "SWEB"; "SWLO"; "SWMG"; "SWOP" ]
 
 
 

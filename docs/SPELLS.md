@@ -372,17 +372,30 @@ Two consequences worth stating because they are easy to get backwards:
 
 ### What is ported
 
-**127 of the 129.** Two remain, and both are named:
+**All 129.** Nothing is missing:
 
 - 53 mechanical hooks are generated into `lib/spell_ai.ml` by
   `tools/extract_spell_ai.ps1`.
-- 74 that read the board, the pools, the life, the status effects or the items
+- 76 that read the board, the pools, the life, the status effects or the items
   are hand-written in `lib/spell_ai_manual.ml`, each with its Lua alongside.
-- `SCHG` calls `EvaluateRows`, a Lua helper whose body has not been transcribed.
-  Guessing it would put a fabricated scoring function in the middle of the AI's
-  decision.
-- `SFBA` calls `GetRandomGrid_Type` and then `SET_INPUT_DATA`, searching the board
-  for a random skull and writing the cell back as the spell's target.
+
+The last two were `SCHG` and `SFBA`, and both were recorded here as unobtainable
+for reasons that turned out to be wrong:
+
+- `SCHG` was blocked on `EvaluateRows`, "a Lua helper whose body has not been
+  transcribed". It is a local function in `SCHG.lua` itself, ten lines below
+  `CastSpell`. Nothing outside the spell's own script was ever needed.
+- `SFBA` was blocked on `SET_INPUT_DATA`, which writes back the cell the spell
+  targets. The *scoring* is portable and is ported; the write-back is not,
+  because in a headless port the target comes from the spell's `input_type`,
+  which is the human's aim. See `hook_sfba`.
+
+Worth recording as a process note: both were declared unobtainable on the grounds
+that guessing would put a fabricated function in the middle of the AI's decision.
+That reasoning was right and it is why the gap was visible rather than papered
+over - and it was still wrong, because the source was one file read away. The
+`Assets.zip` sits at `game/Assets.zip` in this repository. It should have been
+opened before either claim was written down.
 
 **What the return value means.** These functions return a *number*, not a
 boolean: `Std_AISpellcastingChance` returns 0 or 1, and three hooks return
@@ -487,15 +500,15 @@ behaviour stays testable and the improvement stays a visible diff.
 
 `lib/spell_effects.ml`, tests in `test/test_spell_effects.ml`.
 
-**101 of the 130.** The count is asserted against two independent things - the
-dispatch table and the real spell table in `lib/spell_data.ml` - so a body
-registered under an id no spell uses cannot read as progress.
+**All 129.** The count is asserted against two independent things - the dispatch
+table and the real spell table in `lib/spell_data.ml` - so a body registered under
+an id no spell uses cannot read as progress.
 
 Unlike `ShouldAICastSpell`, these do not all take the same shape. They are the
 scripts themselves, and the interesting part of each is usually *which* gems it
 counts and *what* it does with the count. The file is grouped by that rather than
 by spell: board sweeps, gem rewrites, the mana and skill group, delete-and-heal,
-scatters, status sweeps.
+scatters, status sweeps, and the last twenty-eight.
 
 **The finding that unblocked twenty-one of them.** `ADD_EFFECT_TO_GRID` and
 `ADD_EFFECT_TO_CHARACTER` read as though they should do something to the board,
@@ -514,11 +527,39 @@ which in most cases is the single `SET_GEM` or `DELETE_GEM` the sparkle was
 decorating. This is the same conclusion that settled `ADD_LIGHTNING`.
 
 **Not presentation, unlike its neighbours.** `ADD_TEMP_RESISTANCE` sits beside
-these in the decompilation and looks similar, but is *not* an animation: its
-decompilation shows a real accumulating resistance field, and `SSAN` is the body
-that needs it. It is one of the two effects still blocking full coverage, along
-with `SCHG`'s untranscribed `EvaluateRows` and `SFBA`'s `SET_INPUT_DATA` target
-write-back.
+these in the decompilation and looks similar, but is *not* an animation, and it is
+the one that needed new model rather than a new body:
+
+```c
+iVar5 = <resolve combatant from arg 1>;
+piVar1 = (int *)(iVar5 + 0x94 + iVar2 * 4);
+*piVar1 = *piVar1 + iVar4;      // accumulate, no clamp, no expiry
+```
+
+Four ints at `combatant + 0x94`, indexed by the Lua mana id - which is the board's
+order, 1 Earth, 2 Fire, 3 Water, 4 Air, and *not* `element`'s. That transposition
+is the trap, and it is why it is `Combat.resistance` / `Combat.add_resistance`
+rather than a bare array that callers index. It is a real field and not a status
+effect because `GET_RESISTANCE` is a separate Lua API that other content reads.
+`SSAN` is the only spell that sets it: five points to one of the four elements,
+drawn at random.
+
+**Three model additions the last twenty-eight needed.** Each is a mechanic the
+scripts use and the combatant record did not have:
+
+| Addition | Why |
+| :--- | :--- |
+| `Combatant.resist` | `ADD_TEMP_RESISTANCE`; read back by `GET_RESISTANCE` |
+| `Combatant.gold` | `GET_GOLD(idx)` is per combatant, so `SSTL`'s transfer is between two holders |
+| `Combatant.is_monster` | `IS_MONSTER`; only `SRGN` reads it, to let a monster buy extra healing with its own Water |
+| `Combatant.next_spell_free` | `NOTIFY_OF_FREE_SPELL`, one byte at `+0x14`; read before the body runs, so it grants the spell *after* this one |
+
+**Three scripts compute a value they never spend.** `SWOP` builds
+`5 + Fire/8` for a message and deals no damage at all. `SSWM`'s message is built
+from `numSkulls`, which is not a local in that function and does not exist in
+scope. `SHBT` assigns a `doneMsg` global it never reads. All three are bugs in the
+scripts' *text* and none changes a mechanic, so they are recorded where they occur
+rather than given an effect they never had.
 
 **One deliberate divergence.** `SFCA`'s original is an unbounded
 `repeat ... until GET_GEM(x,y) ~= GEM_EMPTY`. It is not reachable in practice -
