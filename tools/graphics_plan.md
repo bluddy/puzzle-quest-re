@@ -123,6 +123,25 @@ shape of the original's: effects resolved through a **name-keyed asset table**
 `PLAY_SOUND` de-duplicating a sound already playing. A layer built like that is
 closer to the original than a generic engine would be.
 
+### Do not port the CRT shader from rails
+
+`rails` renders at 320x200 and upscales through `shaders/crt-hyllian.glsl`,
+`vga-1080p.glsl` and friends. **That is wrong here and must not be copied.**
+
+Railroad Tycoon is a DOS game, and scanlines and aperture grille are a period
+reference to how the hardware of the day actually displayed. Puzzle Quest is from
+2008 and postdates the CRT era entirely — the original's own presentation is flat,
+clean 2D, and that is what we are reproducing. Applying a CRT filter would be
+adding an anachronism the original never had.
+
+So: no CRT, no scanlines, no vignette, no fake-horizontal-blur. Sprites are drawn
+at their natural aspect with clean edges. If a raster effect is ever wanted, it
+should be one the original demonstrably had — and the presentation audit found
+none of the dropped calls was doing anything of the kind.
+
+The transferable parts of rails are the plumbing — context setup, sprite batcher,
+fixed-timestep loop — not its art direction.
+
 Rendering is not being reverse-engineered. The original is Uzzle Quest's own engine
 with PHYSFS for its assets; SDL2 and OpenGL are our choice for the port, and the
 layer should keep that boundary visible rather than pretend to be a

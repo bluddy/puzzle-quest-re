@@ -28,3 +28,9 @@
 (executable
  (name gl_probe)
  (libraries tsdl tgls.tgl3))
+
+; The windowed battle: the same Battle the ASCII runner drives, with the human's
+; two choices made by mouse rather than by read_line.
+(executable
+ (name pq_play_gfx)
+ (libraries puzzle_quest_lib pq_gfx tsdl))

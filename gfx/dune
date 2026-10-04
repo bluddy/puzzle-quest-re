@@ -1,0 +1,3 @@
+(library
+ (name pq_gfx)
+ (libraries puzzle_quest_lib tsdl tgls.tgl3))

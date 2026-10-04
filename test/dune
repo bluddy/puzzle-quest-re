@@ -2,3 +2,10 @@
  (names test_board test_ai test_score test_combat test_spell test_spell_hooks
          test_spell_effects test_status_effects test_battle test_battle_player test_item)
  (libraries puzzle_quest_lib))
+
+; The pure part of the graphics front: no context, no display. It lives in its
+; own stanza because pq_gfx pulls in tsdl and tgls, which the engine tests should
+; not have to link.
+(test
+ (name test_gfx_layout)
+ (libraries puzzle_quest_lib pq_gfx))

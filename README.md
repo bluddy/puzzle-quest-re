@@ -143,6 +143,12 @@ OpenGL ES, so the same code covers desktop and Android. The probe reports the
 driver it actually got - here a hardware 3.3 core context on Intel Iris Xe - and
 checks that a shader compiles, a texture uploads and an alpha-blended quad draws.
 
+A playable window exists: `dune exec bin/pq_play_gfx.exe` runs the same
+`Battle` as the ASCII runner with the mouse choosing instead of `read_line` -
+click a gem then an adjacent one to swap, or a button on the bar to cast. Gems
+are coloured quads for now; real sprite art is phase 2. There is no text yet and
+no CRT filter.
+
 `tools/graphics_plan.md` records the decision, what is reused from the rails
 project's engine, how Android differs (one GLSL version line, behind one module),
 and why the two earlier plans - SDL3, and SDL2 without OpenGL - were both wrong.
