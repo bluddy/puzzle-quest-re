@@ -404,9 +404,25 @@ cannot be using ordinary truthiness - if it were, `Std_AISpellcastingChance`
 returning 0 would still read as true and every one of the 130 hooks would always
 fire, which would make the entire system pointless. The comparison has to be
 numeric, and `> 0` is the only reading consistent with those three negatives being
-intended as vetoes. `Spell.ai_spellcasting_chance` implements that, so a negative
-modifier is a veto and a positive one raises the percentile the spell needs rather
-than making it more likely to happen sooner.
+intended as vetoes.
+
+**Two different numbers, and they are easy to conflate.** The hook's *return
+value* is a number where `> 0` means "yes", so -50 and -10 are suppressions. The
+*modifier* it passes to `Std_AISpellcastingChance` works the other way round:
+
+```ocaml
+let ai_spellcasting_chance ~(modifier : float) (ctx : ai_context) : bool =
+  if float_of_int ctx.ctx_percentile > 50.0 +. modifier then false
+  else ctx.ctx_evaluation <= 30
+```
+
+The percentile roll is 0..99 with **low being the lucky end**, so a modifier of 0
+casts on roughly half the turns that reach the spell, and a positive modifier
+casts *more* often, not less - `SFBA`'s flat 20 moves its threshold from 50 to 70.
+A negative modifier makes it rarer. An earlier version of this file said the
+opposite ("a positive one raises the percentile the spell needs rather than making
+it more likely to happen sooner"); the code above is what the port does and what
+the tests pin.
 
 This also means the extractor's first pattern had a blind spot worth recording:
 it required a non-negative literal, so `SCHV`, `SCLE` and `SSTL` (all -15 or -10)

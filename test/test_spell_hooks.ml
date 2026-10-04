@@ -12,11 +12,17 @@
    spelled out in each assertion.
 
    Expectations come from the Lua in [Assets/Spells/*.lua], not from the port,
-   which is why several read as counter-intuitive. A positive modifier *raises*
-   the percentile a spell needs; it does not make the spell happen sooner. Only
-   the sign of the resulting comparison matters. Assertions are kept to one line
-   each so a mistake in the arithmetic is visible rather than buried in
-   indentation. *)
+   which is why several read as counter-intuitive. Only the sign of the resulting
+   comparison matters.
+
+   A word on the direction, because it is easy to get backwards. The percentile
+   roll is 0..99 with {e low being the lucky end}, and the shared helper casts when
+   [percentile <= 50 + modifier]. So a positive modifier makes a spell cast {e
+   more} often, not less, and a modifier of 0 casts on about half the turns that
+   reach the spell. That is separate from the hook's own return value, which is a
+   number where [> 0] means yes and a negative is a suppression - [SMBU] -50,
+   [SSBL] and [SSTL] -10. Assertions are kept to one line each so a mistake in the
+   arithmetic is visible rather than buried in indentation. *)
 
 open Puzzle_quest_lib
 open Combat
