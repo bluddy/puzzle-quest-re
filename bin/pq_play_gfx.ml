@@ -71,25 +71,34 @@ let some_ev = Some ev
 (** Draw the current frame. Every piece of state the player can act on is on
     screen: the board, whose cells they may swap, and the spell bar, whose buttons
     they may press. *)
-let bar_geometry () =
+(* The spell bar's geometry, in the form gfx/input.ml interprets. Kept in one
+   place so the drawing and the click handling cannot disagree about where the
+   buttons are - they used to compute it separately, which is exactly the kind of
+   duplication that makes a button that is drawn but not clickable. *)
+let bar () : Input.bar =
   let n = List.length demo_spells in
   let bw = 120 and gap = 12 and bar_y = window_h - bar_h in
   let x0 = (window_w - (n * bw + ((n - 1) * gap))) / 2 in
-  (n, bw, gap, bar_y, x0)
+  { Input.count = n; button_w = bw; gap; top_y = bar_y; left_x = x0 }
 
+(** Draw the current frame. Everything the player can act on is on screen: the
+    board, whose cells they may swap, and the spell bar, whose buttons they may
+    press. *)
 let draw ?(present = true) () =
   let b = battle () in
   let lay = layout () in
+  let bg = bar () in
   Gl.begin_frame (ui ()).gl;
-  (* Each quad is emitted with the colour that run will be drawn with, so the run
+  (* Each quad is emitted with the colour its run will be drawn with, so the run
      list and the vertex buffer stay in step. *)
   let runs = ref [] in
   let emit dst col =
     let first = Gl.push_quad (ui ()).gl dst None col in
     runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col } ]
   in
-  let _, _, _, bar_y, x0 = bar_geometry () in
-  emit { Layout.x = 0; y = bar_y; w = window_w; h = bar_h } (Layout.rgb 20 22 30);
+  emit
+    { Layout.x = 0; y = bg.Input.top_y; w = window_w; h = bar_h }
+    (Layout.rgb 20 22 30);
   for y = 0 to lay.Layout.rows - 1 do
     for x = 0 to lay.Layout.cols - 1 do
       let g = Board.get_gem b.Battle.board { Board.x = x; y } in
@@ -102,27 +111,22 @@ let draw ?(present = true) () =
   | Some (x, y) ->
       let r = Layout.cell_rect lay x y in
       emit
-        { Layout.x = r.Layout.x + 4; y = r.Layout.y + 4;
-          w = r.Layout.w - 8; h = r.Layout.h - 8 }
+        { Layout.x = r.Layout.x + 4; y = r.Layout.y + 4; w = r.Layout.w - 8;
+          h = r.Layout.h - 8 }
         (Layout.rgba 255 255 255 80));
-  let n, bw, gap, _, _ = bar_geometry () in
   List.iteri
     (fun i (s : Spell.spell) ->
       let affordable = Spell.can_cast b.Battle.hero s in
       emit
-        { Layout.x = x0 + (i * (bw + gap)); y = bar_y + 20; w = bw; h = bar_h - 40 }
+        { Layout.x = bg.Input.left_x + (i * (bg.Input.button_w + bg.Input.gap));
+          y = bg.Input.top_y + 20; w = bg.Input.button_w; h = bar_h - 40 }
         (if affordable then Layout.rgb 70 120 200 else Layout.rgb 50 54 66))
     demo_spells;
-  ignore n;
   Gl.submit (ui ()).gl !runs;
   (* Reading the default framebuffer after a swap gives an undefined buffer, so a
      screenshot must render without presenting and read before the swap. *)
   if present then Gl.present (ui ()).gl
 
-(** Block until the player clicks. Returns [x, y].
-
-    Quitting is handled here rather than plumbed through: the original also treats
-    the window close as the end of the fight. *)
 let rec wait_click () =
   draw ();
   if Tsdl.Sdl.poll_event some_ev then begin
@@ -137,83 +141,85 @@ let rec wait_click () =
     wait_click ()
   end
 
-(* ------------------------------------------------------------------- hooks -- *)
-
-let bar_button_at mx my =
-  let n, bw, gap, bar_y, x0 = bar_geometry () in
-  if my < bar_y then None
-  else
-    let i = (mx - x0) / (bw + gap) in
-    if i < 0 || i >= n then None
-    else if mx - x0 - (i * (bw + gap)) > bw then None
-    else Some i
-
 let choose_spell spells : Spell.spell option =
   (* Only affordable, off-cooldown spells are live, so anything offered is a legal
-     cast. Spell.is_castable is the engine's own affordability test, the same one
-     the AI path uses. *)
+     cast. Spell.can_cast is the engine's own affordability test, the same one the
+     AI path uses. *)
   let usable =
     List.filter (Spell.can_cast (battle ()).Battle.hero) spells
   in
-  Printf.printf "\n  your turn - spell bar buttons, left to right:\n";
+  let bg = bar () in
+  Printf.printf "\n  your turn - click a button to cast, or click the board to\n\
+                 \  make a match without casting:\n";
   List.iteri
     (fun i (s : Spell.spell) -> Printf.printf "    %d) %s\n" (i + 1) s.Spell.id)
     usable;
   if usable = [] then
-    print_string "    (nothing affordable - click two adjacent gems)\n";
+    print_string "    (nothing affordable - just make a match)\n";
   flush stdout;
   let rec ask () =
     let mx, my = wait_click () in
-    match bar_button_at mx my with
-    | Some i when i < List.length usable ->
+    match Input.in_spell_prompt bg ~usable:(List.length usable) mx my with
+    | Input.Cast i when i < List.length usable ->
         let s : Spell.spell = List.nth usable i in
         Printf.printf "  cast %s\n" s.Spell.id;
         flush stdout;
         Some s
+    | Input.Cast _ ->
+        (* Unreachable while [usable] and the bar agree, but a mismatch must not
+           become an infinite loop. *)
+        ask ()
+    | Input.Decline ->
+        Printf.printf "  no spell - make a match\n";
+        flush stdout;
+        None
     | _ -> ask ()
   in
   ask ()
 
 let choose_swap (_legal : Board.swap list) : Board.swap option =
   let lay = layout () in
+  let bg = bar () in
+  let valid (ax, ay) (bx, by) =
+    Board.is_valid_swap (battle ()).Battle.board { Board.x = ax; y = ay }
+      { Board.x = bx; y = by }
+  in
   Printf.printf "  swap: click a gem, then an adjacent one\n";
   flush stdout;
   (ui ()).first_cell <- None;
   let rec ask () =
     let mx, my = wait_click () in
-    match bar_button_at mx my with
-    | Some _ ->
-        Printf.printf "  (that is the spell bar - press q to quit)\n";
+    let first = (ui ()).first_cell in
+    match Input.in_swap_prompt bg lay ~first ~valid mx my with
+    | Input.First_cell (x, y) ->
+        (ui ()).first_cell <- Some (x, y);
+        Printf.printf "  selected (%d,%d) - now click a neighbour\n" x y;
         flush stdout;
         ask ()
-    | None -> (
-        match Layout.hit lay mx my with
-        | None -> ask ()
-        | Some (x, y) -> (
-            match (ui ()).first_cell with
-            | None ->
-                (ui ()).first_cell <- Some (x, y);
-                ask ()
-            | Some (px, py) ->
-                let adjacent = abs (px - x) + abs (py - y) = 1 in
-                if not adjacent then (
-                  Printf.printf "  not adjacent\n";
-                  flush stdout;
-                  (ui ()).first_cell <- None;
-                  ask ())
-                else
-                  let p1 = { Board.x = px; y = py } and p2 = { Board.x = x; y } in
-                  if not (Board.is_valid_swap (battle ()).Battle.board p1 p2) then (
-                    Printf.printf "  that swap makes no match\n";
-                    flush stdout;
-                    (ui ()).first_cell <- None;
-                    ask ())
-                  else begin
-                    (ui ()).first_cell <- None;
-                    Printf.printf "  swap (%d,%d)-(%d,%d)\n" px py x y;
-                    flush stdout;
-                    Some { Board.from_pos = p1; Board.to_pos = p2 }
-                  end))
+    | Input.Swap (ax, ay, bx, by) ->
+        (ui ()).first_cell <- None;
+        Printf.printf "  swap (%d,%d)-(%d,%d)\n" ax ay bx by;
+        flush stdout;
+        Some
+          {
+            Board.from_pos = { Board.x = ax; y = ay };
+            Board.to_pos = { Board.x = bx; y = by };
+          }
+    | Input.No_match ->
+        (ui ()).first_cell <- None;
+        Printf.printf "  that swap makes no match\n";
+        flush stdout;
+        ask ()
+    | Input.Pass ->
+        Printf.printf "  ending the turn without a move\n";
+        flush stdout;
+        None
+    | Input.Miss -> ask ()
+    (* Neither of these can come out of the swap prompt: [Pass] covers every bar
+       click and [Cast] is unreachable while the bar and the drawing agree. They
+       are listed so a new variant fails loudly here rather than silently hanging
+       the player on an unhandled click. *)
+    | Input.Cast _ | Input.Decline -> ask ()
   in
   ask ()
 

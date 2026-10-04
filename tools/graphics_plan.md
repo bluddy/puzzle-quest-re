@@ -119,9 +119,10 @@ tree.
 ## Architecture
 
 ```
-  lib/gfx.ml        the presentation layer: the game's concepts -> draw calls
-  lib/gfx_gl.ml     the only file naming Tgl3./Tgles3. and picking the GLSL header
-  lib/gfx_assets.ml  Assets.zip -> textures, via imagelib
+  gfx/layout.ml      board geometry and gem colours - no SDL, no GL, pure
+  gfx/input.ml       what a click means, given which prompt is open - also pure
+  gfx/gl.ml          the only file naming Tgl3./Tgles3., picks the GLSL header
+  gfx/assets.ml      Assets.zip -> textures, via imagelib
   bin/pq_play_gfx.ml the playable window
 ```
 
@@ -130,6 +131,25 @@ shape of the original's: effects resolved through a **name-keyed asset table**
 (`Std_CastSpellEffect`), text messages laid out and clamped to the screen, and
 `PLAY_SOUND` de-duplicating a sound already playing. A layer built like that is
 closer to the original than a generic engine would be.
+
+### Why input handling is a pure module
+
+`gfx/input.ml` interprets a click given which prompt is open, with no SDL in it.
+That is not tidiness. The first version of the windowed front end had the spell
+prompt read clicks directly, and when a click was not on a spell button it simply
+asked again - so a player could not decline a spell, never reached the swap
+prompt, and no swap was ever possible. It presented as "clicks are not registered"
+while the clicks were arriving perfectly well.
+
+There was no way to catch that headlessly, because the logic was tangled into the
+event loop. Extracting it lets `test_gfx_input.exe` assert that a board click
+*e declines* the spell, that a bar click during a swap *ends the turn*, and that a
+non-adjacent click reselects rather than dead-ending - which is the right call for
+a click-based UI, as opposed to the original's drag.
+
+The drawing and the click handling also take the bar geometry from one place now.
+They used to compute it separately, which is exactly how you end up with a button
+that is drawn but not clickable.
 
 ### Do not port the CRT shader from rails
 

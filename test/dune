@@ -6,6 +6,6 @@
 ; The pure part of the graphics front: no context, no display. It lives in its
 ; own stanza because pq_gfx pulls in tsdl and tgls, which the engine tests should
 ; not have to link.
-(test
- (name test_gfx_layout)
+(tests
+ (names test_gfx_layout test_gfx_input)
  (libraries puzzle_quest_lib pq_gfx))
