@@ -50,7 +50,16 @@ let zero_mana = { earth = 0; fire = 0; air = 0; water = 0 }
     ceiling in a real late fight is comfortably above 20 - the AI hooks that scale
     a modifier by two or three times a pool ([SFBO], [SSOB], [SFSP]) assume pools
     in the twenties and thirties. Anything testing those should set an explicit
-    ceiling on the combatant rather than inherit this. *)
+    ceiling on the combatant rather than inherit this.
+
+    **Do not use this to clamp a loaded save.** Four real .pqhero files were
+    decoded with bin/pq_save_tool.exe, and one of them banks 31 Fire at level 5 -
+    more than this default. The quadruple in the save is the {e pool}, not the
+    ceiling (the values track play, not level: a fresh level-1 druid holds 1 in
+    each element), and the save carries no ceiling at all. So whoever wires
+    [Save_file.hero] into a combatant must derive the ceiling or raise it to at
+    least the loaded pool; clamping to [default_mana_limit] would silently
+    destroy 11 points of a real hero's Fire mana. *)
 let default_mana_limit = 20
 
 let zero_caps =

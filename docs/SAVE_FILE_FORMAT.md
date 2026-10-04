@@ -29,6 +29,48 @@ A `.pqhero` file (stored in `%USERPROFILE%\Documents\Puzzle Quest\Saves\<HeroNam
 
 ---
 
+## 1b. Verification against real files
+
+Everything in section 1 was checked byte-for-byte against four real saves
+(`Forton`, `Jusdor`, `quton`, `Vanoton`), all of which parse and decrypt cleanly
+with `bin/pq_save_tool.exe`. Two details worth recording that the prose above does
+not capture:
+
+- **The app name string is "Uzzle Quest"**, not "Puzzle Quest", in the raw bytes at
+  offset 0x28. The tool prints "Puzzle Quest", which means the parser normalises
+  it; the file itself says Uzzle, the publisher.
+- **Hero summaries live in 0x800-byte slots** as UTF-16 `"Name - Class (Level N)"`:
+  `Forton - Wizard (Level 7)`, `Jusdor - Druid (Level 5)`, `Quton - Wizard (Level 1)`,
+  `Vanoton - Druid (Level 1)`. This is how the four heroes were told apart without
+  touching the encrypted body, and it is the only place level and class appear in
+  plaintext.
+
+The body is **encrypted, not merely compressed**: 7.5-7.75 bits/byte measured, and
+no standard codec (zlib, raw deflate, gzip, bz2, lzma) matches it at any offset.
+
+### The mana quadruple is the pool, and there is no ceiling
+
+The reserves decode as:
+
+| hero | class | level | air | earth | fire | water |
+| --- | --- | --- | --- | --- | --- | --- |
+| Vanoton | PDRU | 1 | 1 | 1 | 1 | 1 |
+| quton | PWIZ | 1 | 10 | 10 | 7 | 7 |
+| Jusdor | PDRU | 5 | 30 | 7 | 31 | 3 |
+| Forton | PWIZ | 7 | 6 | 1 | 4 | 20 |
+
+A fresh level-1 druid holds 1 in every element and a level-5 druid holds 31 Fire,
+so this is current mana, not a maximum. **No ceiling is stored in the file at
+all.**
+
+That has a consequence worth stating loudly, because it is easy to get wrong:
+`lib/combat.ml`'s `default_mana_limit = 20` is a chosen battle-time default, and it
+is *not* a real character's ceiling. Whoever converts a `Save_file.hero` into a
+`Combat.combatant` must derive the ceiling or raise it to at least the loaded pool.
+Clamping to 20 would silently destroy 11 points of Jusdor's Fire mana.
+
+---
+
 ## 2. Encryption Pipeline & Key Discovery
 
 The game engine utilizes the legacy `WETSTD32.DLL` involution cipher library.

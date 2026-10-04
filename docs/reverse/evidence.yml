@@ -181,6 +181,106 @@ claims:
           band boundaries and their strict comparisons exactly.
     affects: [lib/spell.ml, lib/spell_effects.ml, lib/combat.ml]
 
+  - id: mana.save_stores_the_pool_not_the_ceiling
+    title: The mana quadruple in a save is the pool; no ceiling is stored at all
+    area: save
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      Settled empirically rather than by disassembly. Four real .pqhero files were
+      decoded with bin/pq_save_tool.exe, which already implements the payload
+      decryption, and their reserves are:
+
+      | hero | class | level | air | earth | fire | water |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | Vanoton | PDRU | 1 | 1 | 1 | 1 | 1 |
+      | quton | PWIZ | 1 | 10 | 10 | 7 | 7 |
+      | Jusdor | PDRU | 5 | 30 | 7 | 31 | 3 |
+      | Forton | PWIZ | 7 | 6 | 1 | 4 | 20 |
+
+      A fresh level-1 druid holds 1 in every element and a level-5 druid holds 31
+      Fire, so the field tracks what the player has banked rather than any
+      maximum - it is the pool. No ceiling is stored anywhere in the file.
+
+      This has a consequence the port must respect: Jusdor legitimately holds 31
+      Fire at level 5, so [mana.ceiling.base_value]'s 20 is too low to be a real
+      character's ceiling. Clamping a loaded save to that default would destroy
+      11 points of a real hero's mana. There is no save-to-combatant path yet, so
+      nothing is broken today, but lib/combat.ml now says so at the constant.
+    evidence:
+      - kind: code
+        ref: bin/pq_save_tool.ml
+        note: run against four real .pqhero files; all four parse and decrypt cleanly
+      - kind: code
+        ref: lib/combat.ml
+        note: default_mana_limit, with the load constraint recorded
+      - kind: doc
+        ref: docs/SAVE_FILE_FORMAT.md
+    affects: [lib/combat.ml, lib/save_file.ml, bin/pq_save_tool.ml]
+
+  - id: save.header_layout_verified
+    title: The .pqhero header is plaintext and carries per-hero name, class and level
+    area: save
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      `RGMH` magic, version 1, then a fixed 0x2028-byte header with the embedded
+      portrait PNG starting immediately after it, a GUID, and the app name
+      "Uzzle Quest" in UTF-16. Hero summaries sit in 0x800-byte slots as UTF-16
+      "Name - Class (Level N)" - which is how the four heroes were identified as
+      Wizard L7, Druid L5, Wizard L1 and Druid L1 without touching the encrypted
+      body.
+
+      The body after the PNG is encrypted, not merely compressed: 7.5-7.75
+      bits/byte, and no standard codec (zlib, raw deflate, gzip, bz2, lzma)
+      matches at any offset. lib/crypto.ml already implements the payload
+      transform, so this is a confirmation rather than a new capability.
+
+      The level-and-class pairing matters beyond the format: it confirms the save
+      carries both, which is the premise the level-derived ceiling hypothesis
+      needs.
+    evidence:
+      - kind: code
+        ref: lib/save_file.ml
+        note: header parse, cross-checked byte-for-byte against four real files
+      - kind: doc
+        ref: docs/SAVE_FILE_FORMAT.md
+    affects: [lib/save_file.ml, lib/crypto.ml]
+
+  - id: professions.contain_no_mana_data
+    title: Profession XML has no mana ceiling, so the ceiling is not class data
+    area: save
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      All four profession files - PDRU, PKNI, PWAR, PWIZ - contain exactly the tags
+      Profession, Text, Portraits, Portrait, Skill, Start, Campaign, Level, Sprite,
+      XP and Spell, and the string "mana" appears in none of them. They hold
+      starting skill levels, starting allocations and gold, the campaign city, life
+      per level, the XP table, and a level-to-spell table.
+
+      So the per-element ceiling is not class data. Combined with
+      SET_MAX_MANA being called once in the whole game and no ceiling being stored
+      in the save, the base value has to be computed in native code at load or
+      construction. That narrows quest.base_value_from_level considerably: it is
+      not in the assets, not in the save, and not in the scripts.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Professions/PWIZ.xml
+      - kind: xml
+        ref: game/Assets.zip!Assets/Professions/PDRU.xml
+      - kind: xml
+        ref: game/Assets.zip!Assets/Professions/PKNI.xml
+      - kind: xml
+        ref: game/Assets.zip!Assets/Professions/PWAR.xml
+    affects: [lib/spell.ml, lib/combat.ml]
+
   - id: mana.ceiling.base_value
     title: The per-element mana ceiling base is a chosen 20, not a recovered fact
     area: mana
