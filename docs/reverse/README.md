@@ -45,37 +45,72 @@ consumerless until the binary was scanned.
 ```sh
 python tools/scan_field_refs.py 0x390 0x391 0x392
 python tools/scan_field_refs.py 0x392 --context 20
+python tools/scan_field_refs.py --coverage-only      # map stats, no queries
 ```
 
 It reports reads and writes separately, because a field that is written but never
-read is a real finding rather than a gap. Two traps worth knowing:
+read is a real finding rather than a gap.
 
-- **`skipdata` is mandatory.** `.text` opens with import thunks and jump tables,
-  and `capstone`'s `disasm` stops at the first byte it cannot decode. Without
-  skipdata the scan covers a few hundred bytes and reports "no references" for
-  everything — a false negative indistinguishable from a real answer.
+### It walks the code, it does not sweep it
+
+A linear sweep of `.text` is not good enough. x86 has no reliable framing: once a
+sweep steps into a jump table or an embedded string it desynchronises, and every
+instruction after that point is decoded at the wrong alignment. A sweep can
+report "no references" for an offset that is read dozens of times, and the result
+is indistinguishable from a real answer.
+
+So the tool does recursive descent from function entry points, and iterates to a
+fixed point, because a function that reaches a region is itself often only
+reachable from elsewhere. Seeds, in order of how much they contribute:
+
+| seed | count | note |
+| --- | --- | --- |
+| `int3` padding | 5,855 | MSVC pads each function to 16 bytes with `0xCC`, so the byte after a run of `0xCC` is a function start. The main source. |
+| `jmp` targets | 3,173 | tail calls |
+| `vtable` runs | 999 | null-terminated runs of `.text` pointers in `.rdata`/`.data` |
+| `decompiled` | 149 | addresses already recovered into `docs/decompiled/` |
+| `export` | 70 | all PHYSFS - this image exports nothing of its own |
+| `call` targets | 217 | harvested during the walk |
+| `iat`, entrypoint | 1 | |
+
+Two things this image does **not** have, both of which I assumed before checking:
+an exception directory (`.pdata`/`.xdata` are absent, since 32-bit MSVC uses SEH
+rather than unwind tables), so there are no authoritative function boundaries;
+and useful exports - the `Engine_*` / `Lua_*` names in `docs/decompiled/` came
+from Ghidra, not from the export table, and several are **wrong**
+(`0x4839f0` is named `Engine_ADD_TEMP_SKILL` but is `SET_MAX_MANA`).
+
+### Coverage, and what is missing
+
+```
+functions found : 10,464
+.text           : 1,150,976 bytes
+covered         :   954,645  (82.9%)
+```
+
+Of the uncovered 196,331 bytes, ~80,000 is not code at all: `int3` padding,
+`switch` jump tables, and mixed data. So **89.1% of all non-padding bytes are
+instructions the walk reached.** The remaining ~116,000 bytes of genuinely missed
+code is in 1,524 ranges, 390 of them over 60 bytes, and the large ones start with
+`push -1` - the SEH prologue. They are exception landing pads, which are reached
+through scope tables rather than ordinary control flow; closing them means
+parsing `__except_handler3` scope records, and nothing so far has needed it.
+
+The tool prints this breakdown every run, so a negative answer always comes with
+its own denominator. A "no references" result is only as good as that number.
+
+### Two traps in reading a hit
+
 - **Stack displacements look like struct fields.** `fild dword ptr [esp + 0x390]`
   is a local variable. Read the base register before believing a hit.
+- **Check the access has the shape the field should have.** The mana ceiling is
+  four ints indexed by element, so it must appear as `[base + reg*4 + 0x84]`.
+  A scalar store to `+0x84` is some other class entirely.
 
-The tool prints its decode coverage as a percentage and warns below 50%, so a
-thin scan cannot quietly masquerade as a clean result.
-
-**It is only decisive for rare offsets.** `+0x390`-`+0x396` return 8-15 hits
-each and the answer is obvious. `+0x84` — the per-element mana ceiling — returns
-**283** hits across unrelated classes, and the two that look most promising are
-both wrong: a run of consecutive constants (`0x24`, `0x41`, `0x118`) in an
-SEH-framed UI constructor, and an indexed array clamped to 100 that was loaded
-from a string constant. Neither is a mana ceiling.
-
-For a common offset, grepping the displacement is the wrong technique. Start from
-a function that is known to touch the field and trace the **base pointer's
-provenance** instead, or look for a function that touches two related fields in
-one loop — the mana pools at `+0x74` and ceilings at `+0x84` are written together,
-and that co-occurrence is a far sharper signature than either offset alone.
-
-A useful sanity check on any hit: does the access have the *shape* the field
-should have? The ceiling is four ints indexed by element, so it must appear as
-`[base + reg*4 + 0x84]` with a plausible small range — not as a scalar store.
+That shape filter is what makes a common offset tractable. `+0x84` returns 244
+references across unrelated classes, but only **three** functions touch it in
+element-indexed form, and all three turn out to be known mana functions. For a
+busy offset, filter on shape before reading anything.
 
 ## Schema
 

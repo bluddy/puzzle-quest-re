@@ -103,6 +103,17 @@ claims:
       So the ceiling does not move on levelling during a battle. Something
       establishes the base when the hero is constructed or loaded, and that is
       open - see mana.ceiling.base_value.
+
+      Strengthened from a decompilation scan to a machine-code scan. Of the 244
+      instructions in the binary that reference +0x84, only **three** touch it in
+      the element-indexed form this field actually has, and all three are already
+      known: Engine_SET_MANA_AIR at 0x445c00 (reads the ceiling, clamps the pool
+      to it), Engine_ADD_MANA_AIR at 0x47a660, and 0x4839f0 itself. So no
+      undiscovered initialiser hides among the ~89% of .text that
+      tools/scan_field_refs.py reaches. The filter that makes this hold is the
+      access *shape* (see the trap list in docs/reverse/README.md): a common
+      offset is tractable only once you require the shape the field actually
+      has.
     evidence:
       - kind: decompiled
         ref: docs/decompiled/Lua_SET_MAX_MANA_AIR.c
@@ -113,6 +124,13 @@ claims:
         ref: docs/decompiled/Engine_ADD_TEMP_SKILL_4839f0.c
         quote: |
           *(int *)(param_1 + 0x84 + param_2 * 4) = param_3;
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          0x004839f0 stores the new ceiling unconditionally, then clamps the pool
+          to it - `mov [esi+ecx*4+0x84], eax` / `cmp edx, eax` /
+          `mov [esi+ecx*4+0x74], eax`. That clamp is why lowering a ceiling
+          destroys held mana, which is what lib/combat.ml set_max_mana implements.
       - kind: lua
         ref: game/Assets.zip!Assets/Spells/SLCO.lua
     affects: [lib/combat.ml, lib/spell_effects.ml]
@@ -138,6 +156,16 @@ claims:
       This is the largest open correctness question in the port. The evidence
       points at derivation rather than storage: the save record carries level and
       class_id but only one mana quadruple, and no ceiling.
+
+      The search for a writer has now gone as far as it usefully can. A
+      recursive-descent walk of 89% of the binary's non-padding code finds exactly
+      one function that writes the ceiling on a battle character
+      (mana.ceiling.only_written_by_set_max), and that is the spell-facing setter.
+      So the base is not set by code in this image that we can reach; it has to
+      arrive from outside - bulk-loaded from the save, or written during
+      quest-side construction that this battle binary does not contain. That is a
+      sharper question than "we have not found it yet", and it redirects the
+      search away from the battle engine entirely.
     evidence:
       - kind: code
         ref: lib/combat.ml
@@ -145,6 +173,11 @@ claims:
       - kind: decompiled
         ref: lib/save_file.ml
         note: one mana quadruple between cur_life and class_id
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          tools/scan_field_refs.py over 954,645 instruction bytes; +0x84 appears in
+          244 instructions, 3 of them element-indexed, all known mana functions.
     affects: [lib/combat.ml, lib/spell.ml, lib/spell_ai_manual.ml]
     notes: Settled by quest.base_value_from_level.
 
@@ -1247,6 +1280,14 @@ open_questions:
     would_be_settled_by:
       - The hero or party constructor that writes +0x84 outside the battle object.
       - Whether the save record's single mana quadruple is the pool or the ceiling.
+    notes: >
+      Search the binary no further for this one. A recursive-descent walk of 89%
+      of non-padding code finds exactly one writer of the ceiling on a battle
+      character, and it is the spell-facing setter. The base therefore arrives
+      from outside the code we can reach - bulk-loaded from the save, or set by
+      quest-side construction this battle binary does not contain. The next place
+      to look is the save loader and the party/hero builder, not the battle
+      engine.
     related: [mana.ceiling.base_value, mana.ceiling.only_written_by_set_max]
     status: open
 
