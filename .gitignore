@@ -7,6 +7,9 @@ __pycache__/
 # Game binaries and original assets (copyrighted materials)
 game/
 *.zip
+# Extracted from Assets.zip by tools/extract_gfx_assets.ps1 - same copyrighted
+# material, so regenerated rather than committed.
+assets/
 
 # Ghidra project files and caches
 ghidra_project/

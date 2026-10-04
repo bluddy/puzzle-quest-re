@@ -50,6 +50,7 @@ let fresh_board rng =
 
 type ui = {
   gl : Gl.context;
+  gem_sheet : Gl.texture option;
   mutable b : Battle.battle option;
   (* Fixed: the window is not resizable, so the board geometry never moves. *)
   layout : Layout.t;
@@ -96,13 +97,27 @@ let draw ?(present = true) () =
     let first = Gl.push_quad (ui ()).gl dst None col in
     runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col } ]
   in
+  (* A gem, drawn from the sheet when a frame was identified for it. The fallback
+     is the flat colour rather than a guessed sprite: drawing the wrong gem would
+     be worse than drawing an obvious placeholder. *)
+  let emit_gem x y g =
+    let dst = Layout.cell_rect lay x y in
+    match ((ui ()).gem_sheet, Assets.frame g) with
+    | Some sheet, Some uv ->
+        let first =
+          Gl.push_quad ~tex_size:(Assets.sheet_width, Assets.sheet_height)
+            (ui ()).gl dst (Some uv) (Layout.rgba 255 255 255 255)
+        in
+        runs := !runs @ [ { Gl.first; count = 6; tex = Some sheet; colour = Layout.rgba 255 255 255 255 } ]
+    | _ -> emit dst (Layout.gem_colour g)
+  in
   emit
     { Layout.x = 0; y = bg.Input.top_y; w = window_w; h = bar_h }
     (Layout.rgb 20 22 30);
   for y = 0 to lay.Layout.rows - 1 do
     for x = 0 to lay.Layout.cols - 1 do
       let g = Board.get_gem b.Battle.board { Board.x = x; y } in
-      emit (Layout.cell_rect lay x y) (Layout.gem_colour g)
+      emit_gem x y g
     done
   done;
   (* The pending first half of a swap, inset so it reads as a selection. *)
@@ -255,13 +270,28 @@ let () =
       ~skills:(skill 4) 1 "foe"
   in
   let gl = Gl.create ~title:"Puzzle Quest" ~width:window_w ~height:window_h in
+  (* The gem sheet is loaded once. If it is missing the board falls back to flat
+     colours, so a fresh checkout still runs - it just looks like the placeholder
+     it was. *)
+  let gem_sheet =
+    match Assets.sheet_path () with
+    | path when Sys.file_exists path ->
+        let px, w, h = Assets.load_rgba path in
+        Printf.printf "  gem sheet %s (%dx%d)\n" path w h;
+        Some (Gl.texture_of_bigarray ~w ~h px)
+    | path ->
+        Printf.printf
+          "  no gem sheet at %s - run tools/extract_gfx_assets.ps1 (flat colours)\n"
+          path;
+        None
+  in
   Printf.printf "renderer: %s\n  GL: %s\n" (Gl.renderer_name ()) (Gl.gl_version ());
   flush stdout;
   let lay =
     Layout.create ~cell ~cols:Board.default_width ~rows:Board.default_height
       ~window_w ~window_h
   in
-  u := Some { gl; b = None; layout = lay; first_cell = None };
+  u := Some { gl; gem_sheet; b = None; layout = lay; first_cell = None };
   let rules =
     { Battle.default_rules with
       difficulty = !diff;

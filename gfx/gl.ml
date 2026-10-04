@@ -172,6 +172,10 @@ let texture_of_rgba ?(filter = `Nearest) ~(w : int) ~(h : int) data =
     Tgl3.Gl.unsigned_byte (`Data data);
   t
 
+(** Upload an RGBA bigarray of [w * h * 4] bytes. *)
+let texture_of_bigarray ~(w : int) ~(h : int) (data : (char, B.int8_unsigned_elt) Tsdl.Sdl.bigarray) =
+  texture_of_rgba ~filter:`Linear ~w ~h data
+
 let destroy_texture (t : texture) =
   (* tgls takes a uint32 bigarray for the array forms, so a single-element one. *)
   let a = B.(Array1.create int32 c_layout 1) in
@@ -190,9 +194,16 @@ type run = { first : int; count : int; tex : texture option; colour : Layout.col
 let buf_set v i x = v.{i} <- x
 
 (** Append one quad. Returns the index of its first vertex, which the caller needs
-    to record the run it belongs to. *)
-let push_quad (win : context) (dst : Layout.rect) (uv : Layout.rect option)
-    (col : Layout.colour) : int =
+    to record the run it belongs to.
+
+    [uv] is a rectangle in the source image's own {e pixel} coordinates and is
+    normalised here, because GL texture coordinates run 0..1 across the whole
+    texture. Passing pixel values straight through compiles, runs, and draws
+    nothing at all - the sampler clamps outside 0..1 and the quad comes out black.
+    [tex_size] is the source image's dimensions; pass (0, 0) for a solid quad,
+    which has no texture and ignores it. *)
+let push_quad ?(tex_size = (0, 0)) (win : context) (dst : Layout.rect)
+    (uv : Layout.rect option) (col : Layout.colour) : int =
   if win.n_verts + 6 > max_quads * 4 then failwith "Pq_gfx: sprite batch overflow";
   let v = win.buf in
   let n = win.n_verts in
@@ -202,14 +213,13 @@ let push_quad (win : context) (dst : Layout.rect) (uv : Layout.rect option)
   let cy y = 1.0 -. (float_of_int y /. float_of_int win.height) *. 2.0 in
   let x0 = cx dst.x and x1 = cx (dst.x + dst.w) in
   let y0 = cy dst.y and y1 = cy (dst.y + dst.h) in
+  let tw, th = tex_size in
+  let nx v = if tw > 0 then float_of_int v /. float_of_int tw else 0.0 in
+  let ny v = if th > 0 then float_of_int v /. float_of_int th else 0.0 in
   let u0, v0, u1, v1 =
     match uv with
     | None -> (0.0, 0.0, 0.0, 0.0)
-    | Some r ->
-        ( float_of_int r.x,
-          float_of_int r.y,
-          float_of_int (r.x + r.w),
-          float_of_int (r.y + r.h) )
+    | Some r -> (nx r.x, ny r.y, nx (r.x + r.w), ny (r.y + r.h))
   in
   let emit i px py pu pv =
     let o = (n + i) * 4 in

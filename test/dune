@@ -7,5 +7,5 @@
 ; own stanza because pq_gfx pulls in tsdl and tgls, which the engine tests should
 ; not have to link.
 (tests
- (names test_gfx_layout test_gfx_input)
+ (names test_gfx_layout test_gfx_input test_gfx_assets)
  (libraries puzzle_quest_lib pq_gfx))

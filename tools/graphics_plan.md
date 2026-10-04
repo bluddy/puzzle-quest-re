@@ -86,6 +86,46 @@ The 63 JPGs are all backgrounds (`Skin_Backdrop_*.jpg`, `Cities.jpg`) and none a
 needed for a board, so PNG-only is enough to start. JPG can wait for a
 deliberate decision rather than blocking the first milestone.
 
+### Real gem art
+
+`Assets/Assets.xml` is the game's bitmap registry, and it names the gem frames:
+
+| tag | x | y | size |
+| --- | --- | --- | --- |
+| `img_gem_green` | 0 | 0 | 71x71 |
+| `img_gem_red` | 72 | 0 | 71x71 |
+| `img_gem_yellow` | 144 | 0 | 71x71 |
+| `img_gem_blue` | 216 | 0 | 71x71 |
+
+So the cells are **71x71 on a 72px pitch**, from `Assets/Skin/Skin_Gems_Grid.png`
+- not the 64px the placeholder board used. Their order is the engine's element
+order Earth, Fire, Air, Water, which is `Board.mana_element`'s order and *not* the
+order `Board.gem` lists its constructors in. That transposition is a standing trap
+here.
+
+Only those four are named. Skull, gold and the wildcard multipliers are not in
+the registry - the engine addresses them by raw coordinates - so `gfx/assets.ml`
+marks them **inferred**, read off the sheet by eye, and `frame` returns `None` for
+red skull and experience, which could not be identified at all. The caller then
+draws a flat colour rather than a guessed sprite, because the wrong sprite is
+worse than an obvious placeholder. `test_gfx_assets.exe` pins that distinction
+rather than treating recovered and inferred alike.
+
+Two things to know if you touch this:
+
+* **Texture coordinates are normalised 0..1**, so `Gl.push_quad` takes a source
+  rectangle in the source image's *pixels* and divides by the texture size. Passing
+  pixel values straight through compiles, runs, and draws a black quad, because the
+  sampler clamps outside the unit range. That was the whole board going black.
+* **PNG decoding is pure OCaml** via `imagelib`, which depends on `decompress`.
+  No ImageMagick - deliberately not rails' `imagelib.unix`, which shells out to
+  `convert`.
+
+The sheet is not committed. `tools/extract_gfx_assets.ps1` pulls it out of
+`Assets.zip` into `assets/gfx/`, which `.gitignore` excludes for the same reason
+`game/` is: it is copyrighted material. Without running it the board still works,
+on flat colours.
+
 ### Text: `tsdl-ttf`
 
 **Decision: `tsdl-ttf`** (opam 0.6, "SDL2_Ttf bindings to go with Tsdl"), which is

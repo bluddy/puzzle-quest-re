@@ -143,6 +143,16 @@ OpenGL ES, so the same code covers desktop and Android. The probe reports the
 driver it actually got - here a hardware 3.3 core context on Intel Iris Xe - and
 checks that a shader compiles, a texture uploads and an alpha-blended quad draws.
 
+Graphics assets are **not committed** - they are copyrighted Valusoft/Uzzle
+material, same as `game/Assets.zip`, and `.gitignore` says so. Extract the ones
+the battle screen needs once:
+
+```powershell
+powershell -File tools/extract_gfx_assets.ps1
+```
+
+Without it the board still runs, on flat colours.
+
 A playable window exists: `dune exec bin/pq_play_gfx.exe` runs the same
 `Battle` as the ASCII runner with the mouse choosing instead of `read_line` -
 click a gem then an adjacent one to swap, or a button on the bar to cast. Gems
