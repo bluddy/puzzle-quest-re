@@ -148,8 +148,23 @@ material, same as `game/Assets.zip`, and `.gitignore` says so. Extract the ones
 the battle screen needs once:
 
 ```powershell
-powershell -File tools/extract_gfx_assets.ps1
+python tools/extract_gfx_assets.py
 ```
+
+Python is the default because PowerShell script execution is gated by policy on
+some machines, and a build step you cannot run is one that will not be run.
+Two equivalents, if you prefer:
+
+```powershell
+# bsdtar, no script at all (Windows 10+ ships tar, which reads zips)
+tar -xf game\Assets.zip -C assets\gfx Assets/Skin/Skin_Gems_Grid.png
+
+# the PowerShell route, bypassing policy for this invocation only
+powershell -ExecutionPolicy Bypass -File tools/extract_gfx_assets.ps1
+```
+
+All three produce identical bytes; the extractor asserts nothing about the others
+being present.
 
 Without it the board still runs, on flat colours.
 

@@ -2,6 +2,16 @@
 .SYNOPSIS
   Pulls the graphics assets out of game/Assets.zip.
 
+.NOTES
+  tools/extract_gfx_assets.py is the default route, because PowerShell script
+  execution is gated by policy on some machines. Use this only if you prefer it,
+  and then bypass policy for the invocation:
+
+      powershell -ExecutionPolicy Bypass -File tools/extract_gfx_assets.ps1
+
+  All three routes - this, the Python one, and plain `tar -xf` - produce
+  identical bytes.
+
 .DESCRIPTION
   The port reads assets from plain files rather than opening Assets.zip itself,
   which is the same choice already made for the spell and status-effect tables:
