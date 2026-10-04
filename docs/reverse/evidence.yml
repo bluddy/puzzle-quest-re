@@ -979,19 +979,47 @@ claims:
     affects: [lib/spell_effects.ml, lib/battle.ml]
 
   - id: board.flag_pattern_45
-    title: Board flag +0x395 gates 4/5-of-a-kind pattern matching
+    title: Board flag +0x395 gates extra effects on runs of exactly 5 and exactly 4
     area: board
     verdict: mechanic
-    status: inferred
-    confidence: medium
+    status: recovered
+    confidence: high
     source_pass: original_reverse
     summary: >
-      Gates the 4- and 5-of-a-kind pattern match, which is a separate scoring path
-      from the ordinary run multiplier.
+      Confirmed in the binary. It has exactly two reads, and each sits directly
+      behind a size test on the match, which is what makes the claim specific
+      rather than a guess about a flag name:
+
+      - `0x0047cefe` follows `cmp ecx, 5` / `jl`. A run of five or more, with
+        the flag set, calls `0x4156f0` with element 3 and the constant 10.
+      - `0x0047d074` follows `cmp dword ptr [esi + 0xc], 4` / `jne`. Exactly
+        four, with the flag set, calls it with element 2 and the constant 9.
+
+      Both share one spelling: a singleton lookup through `0x4646e0` ->
+      `0x447c60` -> `0x446200` and a virtual call, then `0x4156f0` with `0x7d0`
+      (2000) and a stack buffer. So the two sizes are handled by one code path
+      parameterised by element and constant, and the flag decides whether either
+      runs at all.
+
+      What the effect *is* is still unidentified - the port does not implement
+      these two effects, only the flag. Note also that the size tests are
+      asymmetric: the five case is `>= 5` and the four case is `== 4`.
     evidence:
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          0x0047cefe `mov al, byte ptr [ebx + 0x395]` / `test` / `je`, guarded by
+          `cmp ecx, 5`; 0x0047d074 the same shape guarded by
+          `cmp dword ptr [esi + 0xc], 4`. Found with
+          tools/scan_field_refs.py 0x395.
       - kind: lua
-        ref: game/Assets.zip!Assets/Scripts/GridPatterns.lua
-    affects: [lib/board.ml]
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+        note: >
+          SetMultiplierEffects deliberately does NOT touch +0x395, which is how
+          the port knows the flag is independent of the other three.
+      - kind: code
+        ref: tools/scan_field_refs.py
+    affects: [lib/board.ml, lib/spell.ml]
 
   - id: board.isolation_is_orthogonal_only
     title: Skull isolation checks four neighbours, not eight

@@ -163,3 +163,15 @@ could never have found the consumers. Note that the scanner needs
 `skipdata` enabled; without it `disasm` stops at the first undecodable byte in
 `.text` and reports "no references" for every offset, which is a false negative
 that looks exactly like a real answer.
+
+`+0x395` is independent of that group and has its own two consumers:
+
+| offset | consumer | behaviour |
+| --- | --- | --- |
+| `+0x395` | `0x0047cefe` | `cmp ecx, 5` / `jl`, then the flag: a run of **5 or more** triggers an effect with element 3 and constant 10 |
+| `+0x395` | `0x0047d074` | `cmp dword ptr [esi + 0xc], 4` / `jne`, then the flag: **exactly 4** triggers an effect with element 2 and constant 9 |
+
+Both then call `0x4156f0` with `0x7d0` (2000) after the same singleton lookup, so
+one parameterised code path serves both sizes. The asymmetry is deliberate in the
+original: `>= 5` for the five case, `== 4` for the four case. The port carries the
+flag but not these two effects.

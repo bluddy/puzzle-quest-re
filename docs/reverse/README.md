@@ -60,6 +60,23 @@ read is a real finding rather than a gap. Two traps worth knowing:
 The tool prints its decode coverage as a percentage and warns below 50%, so a
 thin scan cannot quietly masquerade as a clean result.
 
+**It is only decisive for rare offsets.** `+0x390`-`+0x396` return 8-15 hits
+each and the answer is obvious. `+0x84` — the per-element mana ceiling — returns
+**283** hits across unrelated classes, and the two that look most promising are
+both wrong: a run of consecutive constants (`0x24`, `0x41`, `0x118`) in an
+SEH-framed UI constructor, and an indexed array clamped to 100 that was loaded
+from a string constant. Neither is a mana ceiling.
+
+For a common offset, grepping the displacement is the wrong technique. Start from
+a function that is known to touch the field and trace the **base pointer's
+provenance** instead, or look for a function that touches two related fields in
+one loop — the mana pools at `+0x74` and ceilings at `+0x84` are written together,
+and that co-occurrence is a far sharper signature than either offset alone.
+
+A useful sanity check on any hit: does the access have the *shape* the field
+should have? The ceiling is four ints indexed by element, so it must appear as
+`[base + reg*4 + 0x84]` with a plausible small range — not as a scalar store.
+
 ## Schema
 
 ### `claims`
