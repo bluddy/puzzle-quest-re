@@ -261,37 +261,101 @@ let refill_mana (c : combatant) : unit =
   c.mana <- c.max_mana
 
 
-(** Status effect definitions, parsed from the [Assets/StatusEffects/*.xml]
-    descriptors. [max_stack] is the [stack] attribute: how many copies can sit
-    on one character at once. *)
-type effect_def = {
-  def_id : string;
-  def_duration : int;
-  def_max_stack : int;
-  def_icon : int;
-  def_hooks : hooks;
+(** The bits of battle state a status effect can reach.
+
+    Only one thing so far, and it exists because [DISALLOW_SPELLS_THIS_TURN] is
+    cleared and re-set every turn rather than latched: Blinded's start-turn hook
+    raises it, so a character blinded last turn is free to cast this one. Putting
+    it here rather than on the combatant keeps the reset in one place - the top
+    of [run_start_of_turn_effects], immediately before the hooks run. *)
+type battle_state = {
+  mutable spells_disallowed : bool;
 }
 
-(** The 32 script hooks, in the order they appear in the table at
-    0x005239E8. [on_receive_damage] and friends return a modified value in
-    the original; the rest return unit. *)
+(** What a status effect hook is given instead of the Lua's [characterIdx].
+
+    The Lua passes integer indices into the battle's character array, which is
+    why `docs/COMBAT_FLOW.md` had to write `(!the_roster).(idx)` to make its
+    example compile. This model has no index-addressable roster - a battle is a
+    `combatant list` and effects run per combatant - so the hook is handed the
+    combatant itself, plus the things an index cannot give it:
+
+    - [ef_enemies], which is [GET_ENEMY(idx, 0..n-1)]. Three of the seventeen
+      need it: FireBombed and Hasted damage the character's enemies.
+    - [ef_target], which is [targetIdx]. Present only on the damage hooks, which
+      are the only ones the Lua passes both parties to.
+    - [ef_roll], because [PERCENTILE_CHANCE_SYNC] draws fresh per call. Favored
+      rolls once per point of experience received, so a single value per event
+      would be plainly wrong for it.
+    - [ef_battle], for [DISALLOW_SPELLS_THIS_TURN]. *)
+type status_context = {
+  ef_caster : combatant;
+  ef_enemies : combatant list;
+  ef_target : combatant option;
+  ef_roll : int -> int;
+  ef_battle : battle_state;
+}
+
+(** Status effect definitions, parsed from the [Assets/StatusEffects/*.xml]
+    descriptors by `tools/extract_status_effects.ps1`.
+
+    [id] is the identity the engine uses, and it is the {e only} field that
+    matters for matching. [name] is the Lua table's name ("Hidden",
+    "WallOfFired") and appears in no comparison anywhere in the game: the
+    constants in `Assets/Scripts/StandardConstants.lua` are string aliases for
+    the ids, so [STATUS_EFFECT_HIDDEN] is the string ["EHID"] and every
+    [HAS_STATUS_EFFECT] test is against that. [name] is kept so logs and test
+    failures read as English.
+
+    [stack] is how many copies of {e this} effect one combatant can carry.
+    [duration] of 0 does not mean "expired" - it means indefinite, and the three
+    effects that use it cancel themselves with [SET_STATUS_EFFECT_DURATION]. *)
+type effect_def = {
+  id : string;
+  name : string;
+  duration : int;
+  stack : int;
+  icon : int;
+  script : string;
+  hooks : hooks;
+}
+
+(** The status effect hooks.
+
+    The seven the seventeen scripts actually use take an [status_context]; the
+    other thirty are the quest and item scripting surface, which this port does
+    not reach, and keep the bare indices their Lua uses.
+
+    That split is deliberate rather than tidy. An index means nothing without the
+    battle's character array, so the seven that must actually run get the
+    combatants themselves. The rest are placeholders: nothing in the port calls
+    them, and giving them a context type would imply a caller that does not
+    exist. *)
 and hooks = {
   should_ai_cast_spell : (unit -> bool) option;
   on_cast_spell : (int -> unit) option;
   on_defeat : (int -> unit) option;
   on_enemy_cast_spell : (int -> unit) option;
-  on_extra_turn : (int -> unit) option;
-  on_give_damage : (int -> int -> int) option;
-  on_match4 : (int -> int -> int) option;
-  on_match5 : (int -> int -> int) option;
+  on_extra_turn : (status_context -> unit) option;
+      (** (characterIdx) -> () *)
+  on_give_damage : (status_context -> int -> int) option;
+      (** (ctx, damage) -> damage. [ctx]'s caster is [sourceIdx] and its target is
+          [targetIdx]. *)
+  on_match4 : (status_context -> unit) option;
+      (** (characterIdx) -> () *)
+  on_match5 : (status_context -> unit) option;
   on_query_resistance : (int -> element -> int) option;
-  on_query_skill : (int -> int -> int) option;
-  on_receive_damage : (int -> int -> int) option;
+  on_query_skill : (status_context -> skill -> int -> int) option;
+      (** (ctx, skillIdx, value) -> value *)
+  on_receive_damage : (status_context -> int -> int) option;
+      (** (ctx, damage) -> damage. [ctx]'s caster is [targetIdx]. *)
   on_receive_gold : (int -> int -> int) option;
   on_receive_mana : (int -> element -> int -> int) option;
-  on_receive_xp : (int -> int -> int) option;
+  on_receive_xp : (status_context -> int -> int) option;
+      (** (ctx, value) -> value *)
   on_start_battle : (int -> unit) option;
-  on_start_turn : (int -> int -> unit) option;
+  on_start_turn : (status_context -> int -> unit) option;
+      (** (ctx, turnNumber) -> () *)
   on_enter_location : (int -> unit) option;
   on_victory : (int -> unit) option;
   on_init : (unit -> unit) option;
@@ -306,13 +370,13 @@ and hooks = {
   on_query_progress : (int -> int) option;
   on_query_percentage : (int -> int) option;
   on_query_difficulty : (int -> int) option;
-    on_query_appearance : (int -> int) option;
-    on_end : (unit -> unit) option;
-    on_query_disappearance : (int -> int) option;
-    on_appear : (int -> unit) option;
-    on_disappear : (int -> unit) option;
-    on_complete : (int -> unit) option;
-    on_execute : (int -> unit) option;
+  on_query_appearance : (int -> int) option;
+  on_end : (unit -> unit) option;
+  on_query_disappearance : (int -> int) option;
+  on_appear : (int -> unit) option;
+  on_disappear : (int -> unit) option;
+  on_complete : (int -> unit) option;
+  on_execute : (int -> unit) option;
 }
 
 let no_hooks =
@@ -354,7 +418,9 @@ let no_hooks =
     on_disappear = None;
     on_complete = None;
     on_execute = None;
-  }
+}
+
+let new_battle_state () = { spells_disallowed = false }
 
 (** The status effect hooks, extracted from a record of arbitrary shape. The
     type varies per hook, so this is per-hook rather than a fold. *)
@@ -540,89 +606,196 @@ let request_extra_turn (t : turn_manager) : unit = t.extra_turn_pending <- true
 (* Status effects                                                      *)
 (* ------------------------------------------------------------------ *)
 
-(** [FUN_00475220]. The whole expiry rule: decrement, and report whether the
-    effect is still live. Already-expired effects stay expired. *)
+(** [FUN_00475220]. The whole expiry rule:
+
+    ```c
+    if (duration < 1) return 1;      // still alive
+    duration -= 1;
+    return duration > 0;
+    ```
+
+    The first line is the one that matters and it reads backwards from what you
+    would guess. A duration at or below zero returns 1 - {e alive} - not 0. So a
+    duration of 0 is not "expired", it is {e immortal}, and that is load-bearing:
+    Hidden, Wall of Fire and Wall of Thorns all ship with [duration = 0] in their
+    XML and cancel themselves by setting their own duration to 1, which finally
+    fails the [duration > 0] test on the following tick.
+
+    A negative duration is immortal by the same branch. Nothing in the game sets
+    one, so that is untested behaviour rather than a decision. *)
 let tick_duration (remaining : int) : bool * int =
-  if remaining < 1 then (false, remaining) else (remaining - 1 > 0, remaining - 1)
+  if remaining < 1 then (true, remaining) else (remaining - 1 > 0, remaining - 1)
 
 let active_effects (c : combatant) = c.effects
+
+(** [SET_STATUS_EFFECT_DURATION(idx, effectIdx, turns)].
+
+    Three of the seventeen scripts call this on {e themselves} to cancel: Hidden
+    when its owner is hit, Wall of Fire and Wall of Thorns when their pool runs
+    out. They pass 1 rather than 0, and that is the whole trick - it does not
+    remove the effect, it schedules it to lapse on the next tick, so the effect
+    keeps working for the rest of the turn it cancelled itself in.
+
+    That is also why those three carry [duration = 0] in their XML. Zero means
+    indefinite here, not expired; a duration of 0 would be dropped immediately by
+    [tick_duration]. *)
+let set_effect_duration (c : combatant) (id : string) (turns : int) : unit =
+  c.effects <- List.map (fun (eid, d) -> if eid = id then (eid, turns) else (eid, d)) c.effects
 
 (** Applies a status effect, respecting its stack limit.
 
     The [stack] attribute caps how many copies of {e this} effect one
     combatant can carry, not how many effects overall, so the count is taken
     over matching ids only. Reapplying an effect already present refreshes its
-    duration rather than adding a second copy. *)
+    duration rather than adding a second copy.
+
+    Five of the seventeen have [stack > 1] - Disease, Poison, FireBombed and
+    HandOfPowered at 2 or 4. Those stacks are what lets several Disease
+    applications sit at once, and each copy ticks down and runs its hook
+    separately. *)
 let apply_effect (def : effect_def) (c : combatant) : unit =
   let copies id = List.length (List.filter (fun (eid, _) -> eid = id) c.effects) in
-  if copies def.def_id > 0 then
+  if copies def.id > 0 then
     c.effects <-
-      List.map
-        (fun (id, d) -> if id = def.def_id then (id, def.def_duration) else (id, d))
-        c.effects
-  else if copies def.def_id < def.def_max_stack then
-    c.effects <- c.effects @ [ (def.def_id, def.def_duration) ]
+      List.map (fun (id, d) -> if id = def.id then (id, def.duration) else (id, d)) c.effects
+  else if copies def.id < def.stack then c.effects <- c.effects @ [ (def.id, def.duration) ]
 
-(** Runs one turn of effects on a combatant: the {e start} hooks fire, then
-    every duration ticks down, and lapsed effects are dropped.
+let def_of_id (defs : effect_def list) (id : string) : effect_def option =
+  List.find_opt (fun (d : effect_def) -> d.id = id) defs
+
+(** Builds the context a hook is called with. [enemies] is [GET_ENEMY(idx, n)]
+    for the character, [target] is [targetIdx] on the damage hooks, and [roll] is
+    a fresh draw per call because the percentile helpers draw per call. *)
+let status_ctx ~(caster : combatant) ~(enemies : combatant list)
+    ~(target : combatant option) ~(roll : int -> int) ~(battle : battle_state) :
+    status_context =
+  { ef_caster = caster; ef_enemies = enemies; ef_target = target; ef_roll = roll; ef_battle = battle }
+
+(** Runs one turn of effects on a combatant: the {e start} hooks fire, then every
+    duration ticks down, and lapsed effects are dropped.
 
     Hooks run before the tick, so an effect that expires this turn still takes
     effect - matching the original, where the countdown is consulted after the
-    turn's callbacks have run. *)
-let run_start_of_turn_effects (c : combatant) (defs : effect_def list) (turn : int) : unit =
-  let def_of_id id = List.find_opt (fun d -> d.def_id = id) defs in
+    turn's callbacks have run. Stacked copies each run and each tick.
+
+    The battle's per-turn spell latch is cleared here, immediately before the
+    hooks run. That ordering is what makes [DISALLOW_SPELLS_THIS_TURN] mean
+    "this turn": Blinded raises it on the way past, and anything that read it
+    before this point would be reading last turn's answer. *)
+let run_start_of_turn_effects (c : combatant) (defs : effect_def list) ~(turn : int)
+    ~(enemies : combatant list) ~(roll : int -> int) ~(battle : battle_state) : unit =
+  battle.spells_disallowed <- false;
+  let ctx = status_ctx ~caster:c ~enemies ~target:None ~roll ~battle in
   List.iter
     (fun (id, _) ->
-      match def_of_id id with
-      | Some d -> (
-          match d.def_hooks.on_start_turn with
-          | Some f -> f c.id turn
-          | None -> ())
+      match def_of_id defs id with
+      | Some d -> ( match d.hooks.on_start_turn with Some f -> f ctx turn | None -> ())
       | None -> ())
     c.effects;
   c.effects <-
     List.filter_map
       (fun (id, d) ->
-        match def_of_id id with
+        match def_of_id defs id with
         | None -> None
         | Some _ ->
             let live, d' = tick_duration d in
             if live then Some (id, d') else None)
       c.effects
 
-(** Runs the extra-turn hooks for every active effect. Hasted uses this to
-    deal its damage. *)
-let run_extra_turn_effects (c : combatant) (defs : effect_def list) : unit =
+(** Runs the extra-turn hooks for every active effect. Hasted uses this to deal
+    four damage to its owner's enemies. *)
+let run_extra_turn_effects (c : combatant) (defs : effect_def list) ~(enemies : combatant list)
+    ~(roll : int -> int) ~(battle : battle_state) : unit =
+  let ctx = status_ctx ~caster:c ~enemies ~target:None ~roll ~battle in
   List.iter
     (fun (id, _) ->
-      match List.find_opt (fun d -> d.def_id = id) defs with
-      | Some d -> (
-          match d.def_hooks.on_extra_turn with
-          | Some f -> f c.id
-          | None -> ())
+      match def_of_id defs id with
+      | Some d -> ( match d.hooks.on_extra_turn with Some f -> f ctx | None -> ())
       | None -> ())
     c.effects
 
-(** Applies damage through the receive-damage hooks, which may reduce or
-    amplify it. Returns the amount actually taken. *)
-let receive_damage (c : combatant) (defs : effect_def list) (amount : int) : int =
+(** [OnGiveDamage], folded over the attacker's active effects. [source] is the
+    attacker and [target] the defender, which is what lets Challenged ask whether
+    {e both} sides are challenged and Singing Blades drain the right character. *)
+let give_damage ~(attacker : combatant) ~(defender : combatant) (defs : effect_def list)
+    ~(enemies : combatant list) ~(roll : int -> int) ~(battle : battle_state)
+    (amount : int) : int =
+  let ctx = status_ctx ~caster:attacker ~enemies ~target:(Some defender) ~roll ~battle in
   List.fold_left
     (fun acc (id, _) ->
-      match List.find_opt (fun d -> d.def_id = id) defs with
-      | Some d -> (
-          match d.def_hooks.on_receive_damage with Some f -> f c.id acc | None -> acc)
+      match def_of_id defs id with
+      | Some d -> ( match d.hooks.on_give_damage with Some f -> f ctx acc | None -> acc)
       | None -> acc)
-    amount c.effects
+    amount attacker.effects
 
-(** Applies outgoing damage through the give-damage hooks. *)
-let give_damage (c : combatant) (defs : effect_def list) (amount : int) : int =
+(** [OnReceiveDamage], folded over the defender's active effects. The context's
+    caster is the {e defender} here, the mirror of [give_damage], because the Lua
+    passes [targetIdx] to the defender's own hook. *)
+let receive_damage ~(defender : combatant) ~(attacker : combatant) (defs : effect_def list)
+    ~(enemies : combatant list) ~(roll : int -> int) ~(battle : battle_state)
+    (amount : int) : int =
+  let ctx = status_ctx ~caster:defender ~enemies ~target:(Some attacker) ~roll ~battle in
   List.fold_left
     (fun acc (id, _) ->
-      match List.find_opt (fun d -> d.def_id = id) defs with
-      | Some d -> (
-          match d.def_hooks.on_give_damage with Some f -> f c.id acc | None -> acc)
+      match def_of_id defs id with
+      | Some d -> ( match d.hooks.on_receive_damage with Some f -> f ctx acc | None -> acc)
       | None -> acc)
-    amount c.effects
+    amount defender.effects
+
+(** [OnQuerySkill], folded over one character's active effects.
+
+    Fear halves and Enraged adds Fire to Battle, so the order matters: the fold
+    is the order the effects sit on the character, which is the order they were
+    applied. Enraged reads the Fire pool directly rather than going through the
+    fold, so it cannot compound with itself. *)
+let query_skill (c : combatant) (defs : effect_def list) ~(k : skill) ~(roll : int -> int)
+    ~(battle : battle_state) (value : int) : int =
+  let ctx = status_ctx ~caster:c ~enemies:[] ~target:None ~roll ~battle in
+  List.fold_left
+    (fun acc (id, _) ->
+      match def_of_id defs id with
+      | Some d -> ( match d.hooks.on_query_skill with Some f -> f ctx k acc | None -> acc)
+      | None -> acc)
+    value c.effects
+
+(** [OnMatch4] and [OnMatch5], which Vigiled is the only user of.
+
+    These return unit rather than a modified score, and that is worth being clear
+    about: [Item.hooks] types its own [on_match4] as returning an int, so the two
+    records disagree. Vigiled is the only status effect that implements either,
+    and it returns nothing:
+
+    ```lua
+    local function OnMatch4(characterIdx) ManaGain(characterIdx); end
+    ```
+
+    so the faithful transcription is a hook that does something and returns
+    nothing. Whether the engine then reads back nil as a zero contribution is not
+    recovered from here; unit reproduces "contributes nothing", which is what the
+    script does either way. *)
+let run_match_effects (c : combatant) (defs : effect_def list) ~(of_five : bool)
+    ~(enemies : combatant list) ~(roll : int -> int) ~(battle : battle_state) : unit =
+  let ctx = status_ctx ~caster:c ~enemies ~target:None ~roll ~battle in
+  List.iter
+    (fun (id, _) ->
+      match def_of_id defs id with
+      | None -> ()
+      | Some d ->
+          let h = if of_five then d.hooks.on_match5 else d.hooks.on_match4 in
+          (match h with Some f -> f ctx | None -> ()))
+    c.effects
+
+(** [OnReceiveXP], folded over the recipient's active effects. Favored turns a
+    share of the experience into healing. *)
+let receive_xp (c : combatant) (defs : effect_def list) ~(enemies : combatant list)
+    ~(roll : int -> int) ~(battle : battle_state) (value : int) : int =
+  let ctx = status_ctx ~caster:c ~enemies ~target:None ~roll ~battle in
+  List.fold_left
+    (fun acc (id, _) ->
+      match def_of_id defs id with
+      | Some d -> ( match d.hooks.on_receive_xp with Some f -> f ctx acc | None -> acc)
+      | None -> acc)
+    value c.effects
 
 (* ------------------------------------------------------------------ *)
 (* Helpers                                                             *)
@@ -634,7 +807,7 @@ let subtract_mana (c : combatant) (e : element) (amount : int) : unit =
 let status_names (c : combatant) = List.map fst c.effects
 
 let describe (t : turn_manager) : string =
-  let names = Array.map (fun c -> c.name) t.combatants in
+  let names = Array.map (fun (c : combatant) -> c.name) t.combatants in
   let order = String.concat " -> " (Array.to_list (Array.map (fun i -> names.(i)) t.turn_order)) in
   Printf.sprintf "round %d, slot %d (%s); order: %s" t.round t.current_slot
     names.(current_index t) order

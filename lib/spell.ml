@@ -430,16 +430,21 @@ let is_cast_legal (s : spell) (ctx : ai_context) : bool =
     per-spell hook is consulted in list order and the first that says yes wins,
     which is why spell order still matters even though the spells now get a
     vote. *)
-let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) (ctx : ai_context)
-    (spells : spell list) : spell option =
+let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) ?(spells_disallowed = false)
+    (ctx : ai_context) (spells : spell list) : spell option =
   let skip_chance = if difficulty = 0 then 50 else if difficulty = 1 then 25 else 0 in
   if skip_chance > 0 && roll 100 < skip_chance then None
   else
     List.find_opt
       (fun (s : spell) ->
         (* Order matters: the original checks what it can pay for first, then
-           the spell's own legality, then its preference. *)
-        can_cast ~spells_disallowed:false ctx.ctx_caster s
+           the spell's own legality, then its preference.
+
+           [spells_disallowed] is [DISALLOW_SPELLS_THIS_TURN], which Blinded
+           raises in its start-turn hook. It defaults to false because a bare
+           [ai_context] carries no battle state to read it from; [Battle] is the
+           only caller that knows, and it passes the flag. *)
+        can_cast ~spells_disallowed ctx.ctx_caster s
         && is_cast_legal s ctx
         && should_ai_cast s ctx)
       spells

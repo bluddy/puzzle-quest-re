@@ -98,6 +98,11 @@ type battle = {
   hero_spells : spell list;
   enemy_spells : spell list;
   effects : effect_def list;
+  (* The per-turn spell latch [DISALLOW_SPELLS_THIS_TURN] raises. It is battle state
+     rather than combatant state because it is about {e this turn}: cleared at the
+     top of every turn and set again by Blinded's start-turn hook. See
+     [Combat.battle_state]. *)
+  effect_state : battle_state;
   (* Equipped items, per side. These live on the battle rather than on the
      combatants because [Item] depends on [Combat], so a loadout cannot be named
      from inside [Combat] without a cycle. The battle is also the only thing that
@@ -162,7 +167,11 @@ let element_index (e : element) : int =
     [rules.hero_skill_cap] because the original clamps at 999 before computing
     the yield. *)
 let skill_of (c : combatant) (b : battle) (e : element) : int =
-  min b.rules.hero_skill_cap ((skill_in (skill_of_element e) c.skills))
+  let trained = min b.rules.hero_skill_cap ((skill_in (skill_of_element e) c.skills)) in
+  (* Fear halves and Enraged folds in the Fire pool, so the trained value is the
+     starting point rather than the answer. This is the only read of a skill that
+     goes through the status effects. *)
+  query_skill c b.effects ~k:(skill_of_element e) ~roll:b.rng ~battle:b.effect_state trained
 
 (** Credits mana and rolls for the extra turn, once per matched run.
 
@@ -243,9 +252,16 @@ let resolve_cascades (b : battle) (defender : combatant) : int =
     emit b (HeroicEffort attacker.name)
   end;
   (* Added to the battle's running totals rather than assigned: this is called
-     once per swap, and the original's ADD_GOLD and ADD_XP both accumulate. *)
+     once per swap, and the original's ADD_GOLD and ADD_XP both accumulate.
+
+     The xp total goes through [receive_xp] first, because Favored's
+     [OnReceiveXP] converts a share of it into healing on the spot rather than
+     into a later award. The battle total still gets the {e whole} amount: the
+     hook returns the value unchanged and only adds life, so nothing is lost
+     either way. *)
   b.gold <- b.gold + !gold;
-  b.xp <- b.xp + !xp;
+  b.xp <- b.xp + receive_xp attacker b.effects ~enemies:[ defender ] ~roll:b.rng
+      ~battle:b.effect_state !xp;
   !total
 
 (** Plays a swap for whichever side is acting, then resolves the cascade. *)
@@ -306,14 +322,16 @@ let attacker = attacker_of b defender in
            attacker's chain runs before the defender's, so a defender's
            reduction sees the already-amplified number. *)
         let outgoing =
-          give_damage attacker b.effects
+          give_damage ~attacker ~defender b.effects ~enemies:[ defender ] ~roll:b.rng
+            ~battle:b.effect_state
             (Item.fold_give_damage (loadout_of b attacker) ictx ~damage:dealt
                ~source:attacker.id ~target:defender.id
                ~f:(fun (i : Item.item) n -> Item.give_damage i ictx ~damage:n
                      ~source:attacker.id ~target:defender.id))
         in
         let taken =
-          receive_damage defender b.effects
+          receive_damage ~defender ~attacker b.effects ~enemies:[ attacker ] ~roll:b.rng
+            ~battle:b.effect_state
             (Item.fold_receive_damage (loadout_of b defender) ictx ~damage:outgoing
                ~source:attacker.id ~target:defender.id
                ~f:(fun (i : Item.item) n -> Item.receive_damage_hook i ictx ~damage:n
@@ -424,6 +442,7 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
   let percentile = b.rng 100 in
   let still_turn =
     match pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
+            ~spells_disallowed:b.effect_state.Combat.spells_disallowed
             (ai_context b actor defender ~percentile ~evaluation) spells with
     | None ->
         (* Nothing cast, so the turn is the caster's to use. *)
@@ -477,7 +496,8 @@ let take_turn (b : battle) : unit =
     let defender = if is_hero then b.enemy else b.hero in
     let spells = if is_hero then b.hero_spells else b.enemy_spells in
     emit b (TurnStart (b.tm.current_slot, (if is_hero then Hero else Enemy), actor.name));
-    run_start_of_turn_effects actor b.effects b.turns_elapsed;
+    run_start_of_turn_effects actor b.effects ~turn:b.turns_elapsed ~enemies:[ defender ]
+      ~roll:b.rng ~battle:b.effect_state;
     take_action b actor defender spells;
     if sweep_deaths b.tm then
       List.iter (fun c -> if c.life = 0 then emit b (Death c.name)) [ b.hero; b.enemy ];
@@ -547,6 +567,7 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
     hero_spells;
     enemy_spells;
     effects;
+    effect_state = { Combat.spells_disallowed = false };
     hero_items = (match hero_items with Some l -> l | None -> Item.new_loadout ());
     enemy_items = (match enemy_items with Some l -> l | None -> Item.new_loadout ());
   }

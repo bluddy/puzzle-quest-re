@@ -440,8 +440,8 @@ let () =
      The duration is long enough to outlast the fight: a short one would tick
      away mid-battle and the test would be measuring the expiry instead. *)
   let def =
-    { def_id = "ARMOUR"; def_duration = 999; def_max_stack = 1; def_icon = 0;
-      def_hooks = set_receive_damage no_hooks (fun _ amt -> amt / 2) }
+    { id = "ARMOUR"; name = "Armour"; duration = 999; stack = 1; icon = 0; script = "";
+      hooks = set_receive_damage no_hooks (fun _ amt -> amt / 2) }
   in
   let foe_life_after with_armour =
     let foe = Combat.make_combatant ~cunning:5 ~max_life:9000 ~life:9000 1 "foe" in
@@ -469,8 +469,8 @@ let () =
   (* A give-damage hook doubles what the attacker deals, and the two chains
      compose: the amplifier runs on the way out, the armour on the way in. *)
   let amp =
-    { def_id = "RAGE"; def_duration = 999; def_max_stack = 1; def_icon = 0;
-      def_hooks = set_give_damage no_hooks (fun _ amt -> amt * 2) }
+    { id = "RAGE"; name = "Rage"; duration = 999; stack = 1; icon = 0; script = "";
+      hooks = set_give_damage no_hooks (fun _ amt -> amt * 2) }
   in
   let hero = Combat.make_combatant ~max_life:4000 ~life:4000 0 "hero" in
   apply_effect amp hero;

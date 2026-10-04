@@ -260,8 +260,8 @@ let () =
      status hook inside the item fold meant it was skipped whenever the loadout
      was empty. *)
   let def =
-    { def_id = "RAGE"; def_duration = 999; def_max_stack = 1; def_icon = 0;
-      def_hooks = Combat.set_give_damage Combat.no_hooks (fun _ n -> n * 2) }
+    { id = "RAGE"; name = "Rage"; duration = 999; stack = 1; icon = 0; script = "";
+      hooks = Combat.set_give_damage Combat.no_hooks (fun _ n -> n * 2) }
   in
   let hero = fighter 0 "hero" in
   apply_effect def hero;
