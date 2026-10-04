@@ -132,7 +132,21 @@ dune exec bin/pq_save_tool.exe -- info "<path_to_save>.pqhero"
 dune exec bin/pq_save_tool.exe -- board-sim
 ```
 
-### Graphics (SDL3)
+### Graphics (SDL2)
+
+```powershell
+dune exec bin/sdl2_probe.exe
+```
+
+The graphics front is SDL2 through `tsdl`, using SDL2's own 2D renderer rather than
+OpenGL for now - SDL picks OpenGL on desktop and **OpenGL ES on Android**, so the
+same drawing code covers both targets. `bin/sdl2_probe.exe` proves SDL2 initialises
+and gets an accelerated renderer on this machine. `tools/graphics_plan.md` records
+why, what has to be bound by hand (`SDL2_image` for PNG/JPG, which neither library
+decodes), and when GLES becomes worth it.
+
+The SDL3 path was verified working too and is documented in
+`tools/sdl3_readiness.md`; `bin/sdl3_probe.exe` still passes.
 
 The bindings are a pinned git dependency rather than an opam package:
 

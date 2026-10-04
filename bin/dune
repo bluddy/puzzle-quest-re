@@ -15,3 +15,10 @@
 (executable
  (name sdl3_probe)
  (libraries sdl3))
+
+; The graphics front, phase 1: SDL2's own 2D renderer, no OpenGL yet. SDL picks
+; the backend per platform - OpenGL on desktop, OpenGL ES on Android - which is
+; the whole reason for not writing GL directly yet. See tools/graphics_plan.md.
+(executable
+ (name sdl2_probe)
+ (libraries tsdl))
