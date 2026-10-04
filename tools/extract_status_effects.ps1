@@ -86,7 +86,7 @@ foreach ($id in $ids) {
   $d = $entries[$id]
   $rows.Add(('  {{ id = "{0}"; name = "{1}"; duration = {2}; stack = {3}; icon = {4};' -f `
     $d.id, $d.name, $d.duration, $d.stack, $d.icon))
-  $rows.Add(('    script = "{0}" }}' -f $d.script))
+  $rows.Add(('    script = "{0}"; hooks = no_hooks }};' -f $d.script))
 }
 
 $hdr = @(
@@ -110,8 +110,14 @@ $hdr = @(
   '    Three of these have [duration = 0], which is not "expired immediately" but'
   '    "indefinite": Hidden, WallOfFired and WallOfThornsed each cancel themselves'
   '    by setting their own remaining duration to 1, which lapses on the next'
-  '    tick. Spells that apply them pass 0 as well, so the two agree.'
-  '*)'
+  '    tick. Spells that apply them pass 0 as well, so the two agree. This is'
+  '    [Combat.tick_duration]''s first branch, [if (duration < 1) return 1].'
+  ''
+  '    Every [hooks] here is [no_hooks]. The behaviour lives in the companion'
+  '    .lua and is hand-ported into [Status_effect_hooks], which is what'
+  '    [Status_effect_hooks.descriptors] is for - it maps over this list and'
+  '    attaches the bodies. Keeping generation independent of the port means a'
+  '    transcription mistake cannot corrupt the data half. *)'
   ''
   'open Combat'
   ''
@@ -130,7 +136,10 @@ $tail = @(
   '  List.find_opt (fun (d : effect_def) -> d.id = id) descriptors'
   '  |> Option.map (fun (d : effect_def) -> d.name)'
 )
-$all = @($hdr) + @($rows) + @($tail)
+$all = New-Object System.Collections.Generic.List[string]
+foreach ($line in $hdr) { $all.Add($line) }
+foreach ($line in $rows) { $all.Add($line) }
+foreach ($line in $tail) { $all.Add($line) }
 $path = 'lib\status_effect_data.ml'
 [System.IO.File]::WriteAllLines((Join-Path (Get-Location) $path), $all, (New-Object System.Text.UTF8Encoding($false)))
 

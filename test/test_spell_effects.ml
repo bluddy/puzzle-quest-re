@@ -227,26 +227,26 @@ let () =
   let empty = board_with Spell.GGreen 0 in
   let c = caster () and f = foe () in
   run "SHID" ~caster:c ~foe:f (ref empty);
-  check "SHID applies Hidden to the caster" (has_status c "Hidden");
+  check "SHID applies Hidden to the caster" (has_status c "EHID");
   let c2 = caster () and f2 = foe () in
   run "SWOF" ~caster:c2 ~foe:f2 (ref empty);
-  check "SWOF applies WallOfFired to the caster" (has_status c2 "WallOfFired");
+  check "SWOF applies WallOfFired to the caster" (has_status c2 "EWOF");
   let c3 = caster () and f3 = foe () in
   run "SWOT" ~caster:c3 ~foe:f3 (ref empty);
-  check "SWOT applies WallOfThornsed to the caster" (has_status c3 "WallOfThornsed");
+  check "SWOT applies WallOfThornsed to the caster" (has_status c3 "EWOT");
   check "none of the three touched the enemy" (f3.effects = []);
 
   (* SHOP carries a real duration of six. *)
   let c4 = caster () and f4 = foe () in
   run "SHOP" ~caster:c4 ~foe:f4 (ref empty);
-  check "SHOP applies HandOfPowered to the caster" (has_status c4 "HandOfPowered");
+  check "SHOP applies HandOfPowered to the caster" (has_status c4 "EHOP");
   check "SHOP uses the script's duration of 6"
-    (List.assoc_opt "HandOfPowered" c4.effects = Some 6);
+    (List.assoc_opt "EHOP" c4.effects = Some 6);
 
   (* SFBM is the one debuff, and it lands on the enemy rather than the caster. *)
   let c5 = caster () and f5 = foe () in
   run "SFBM" ~caster:c5 ~foe:f5 (ref empty);
-  check "SFBM debuffs the enemy, not the caster" (has_status f5 "FireBombed");
+  check "SFBM debuffs the enemy, not the caster" (has_status f5 "EFBO");
   check "SFBM leaves the caster clean" (c5.effects = [])
 
 (* ------------------------------------------------------------------ *)
@@ -396,8 +396,8 @@ let () =
   let f3 = foe () in
   run "SBRP" ~caster:c3 ~foe:f3 (ref (board_with Spell.GGreen 0));
   check "SBRP deals the Air pool" (f3.life = 90);
-  check "SBRP diseases the enemy, since EDIS is Disease" (has_status f3 "Disease");
-  check "SBRP does not poison" (not (has_status f3 "Poison"));
+  check "SBRP diseases the enemy, since EDIS is Disease" (has_status f3 "EDIS");
+  check "SBRP does not poison" (not (has_status f3 "EPOI"));
   check "SBRP does not touch the caster" (c3.effects = []);
 
   (* SBRZ is the Earth body and it is the one that poisons. *)
@@ -405,7 +405,7 @@ let () =
   let f4 = foe () in
   run "SBRZ" ~caster:c4 ~foe:f4 (ref (board_with Spell.GGreen 0));
   check "SBRZ deals the Earth pool" (f4.life = 90);
-  check "SBRZ poisons the enemy, since EPOI is Poison" (has_status f4 "Poison");
+  check "SBRZ poisons the enemy, since EPOI is Poison" (has_status f4 "EPOI");
 
   (* Shape 2: a flat five and an extra turn. *)
   let c4 = caster ~mana:{ Combat.earth = 0; fire = 0; air = 3; water = 0 } () in
@@ -530,7 +530,7 @@ let () =
     let c = caster ~mana:{ Combat.earth = 0; fire = 0; air = air; water = 0 } () in
     let b = ref (board_with Spell.GGreen 0) in
     run "SFAV" ~caster:c ~foe:(foe ()) b;
-    List.assoc "Favoreded" c.effects
+    List.assoc "EFAV" c.effects
   in
   check "SFAV at 5 Air is the bare 8, since 5/6 truncates to 0" (dur_for 5 = 8);
   check "SFAV at 6 Air is 9" (dur_for 6 = 9);
@@ -538,13 +538,13 @@ let () =
   (* The status lands on the caster for SFAV. *)
   let c = caster ~mana:{ Combat.earth = 0; fire = 0; air = 6; water = 0 } () in
   run "SFAV" ~caster:c ~foe:(foe ()) (ref (board_with Spell.GGreen 0));
-  check "SFAV buffs the caster" (has_status c "Favoreded");
+  check "SFAV buffs the caster" (has_status c "EFAV");
   (* SHWL is the same shape but debuffs the enemy, and banks four Earth first. *)
   let c2 = caster () in
   let e2 = foe () in
   run "SHWL" ~caster:c2 ~foe:e2 (ref (board_with Spell.GGreen 0));
-  check "SHWL fears the enemy, not the caster" (has_status e2 "Fear");
-  check "SHWL does not fear the caster" (not (has_status c2 "Fear"));
+  check "SHWL fears the enemy, not the caster" (has_status e2 "EFEA");
+  check "SHWL does not fear the caster" (not (has_status c2 "EFEA"));
   check "SHWL banks four Earth" (Combat.mana c2 Combat.Earth = 4)
 
 let () =
@@ -1025,19 +1025,19 @@ let () =
   (* SCOU wipes the caster's statuses and nothing else; SCLM wipes both sides.
      Both then pay an extra turn at ten Water banked. *)
   let c = caster ~mana:(mana 0 0 0 10) () and f = foe () in
-  c.effects <- [ ("Hidden", 3) ];
-  f.effects <- [ ("Fear", 2) ];
+  c.effects <- [ ("EHID", 3) ];
+  f.effects <- [ ("EFEA", 2) ];
   run "SCOU" ~caster:c ~foe:f (ref (board_with Spell.GGreen 0));
   check "SCOU clears the caster's statuses" (c.effects = []);
-  check "SCOU leaves the enemy alone" (f.effects = [ ("Fear", 2) ]);
+  check "SCOU leaves the enemy alone" (f.effects = [ ("EFEA", 2) ]);
   check "SCOU takes an extra turn at 10 Water" (c.extra_turns = 1);
   let c2 = caster ~mana:(mana 0 0 0 9) () and f2 = foe () in
-  c2.effects <- [ ("Hidden", 3) ];
+  c2.effects <- [ ("EHID", 3) ];
   run "SCOU" ~caster:c2 ~foe:f2 (ref (board_with Spell.GGreen 0));
   check "SCOU takes none at 9 Water" (c2.extra_turns = 0);
   let c3 = caster ~mana:(mana 0 0 0 10) () and f3 = foe () in
-  c3.effects <- [ ("Hidden", 3) ];
-  f3.effects <- [ ("Fear", 2) ];
+  c3.effects <- [ ("EHID", 3) ];
+  f3.effects <- [ ("EFEA", 2) ];
   run "SCLM" ~caster:c3 ~foe:f3 (ref (board_with Spell.GGreen 0));
   check "SCLM clears both sides" (c3.effects = [] && f3.effects = []);
   check "SCLM takes an extra turn at 10 Water" (c3.extra_turns = 1)
@@ -1245,8 +1245,8 @@ let () =
   let f = foe () in
   Spell_effects.effect_swop
     (fx ~caster:(caster ~mana:(mana 0 24 0 0) ()) ~foe:f (solid_board ()));
-  check "SWOP fears the enemy for eight" (has_status f "Fear");
-  check "SWOP blinds the enemy for six" (has_status f "Blind");
+  check "SWOP fears the enemy for eight" (has_status f "EFEA");
+  check "SWOP blinds the enemy for six" (has_status f "EBLI");
   check "SWOP misses three turns" (match List.assoc_opt "Missed" f.effects with Some n -> n = 3 | None -> false);
   check "SWOP deals no damage, though it computes some" (f.life = 100)
 
@@ -1455,8 +1455,8 @@ let () =
      the combatant, not the spell, and is read before the body runs, so it grants
      the spell {e after} this one. *)
   let c = caster ~mana:(mana 1 2 3 4) () and f = foe ~mana:(mana 0 0 0 0) () in
-  c.effects <- [ ("Hidden", 3) ];
-  f.effects <- [ ("Missed", 5); ("Fear", 2) ];
+  c.effects <- [ ("EHID", 3) ];
+  f.effects <- [ ("Missed", 5); ("EFEA", 2) ];
   Spell_effects.effect_schv (fx ~roll:(fun _ -> 0) ~caster:c ~foe:f (solid_board ()));
   check "SCHV refills the caster's pools to their ceiling, which is 20 by default"
     (Combat.mana c Combat.Earth = Combat.default_mana_limit

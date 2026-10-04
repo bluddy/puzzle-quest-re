@@ -537,9 +537,14 @@ let run (b : battle) : battle =
   emit b (BattleEnd outcome);
   b
 
+(** [effects] defaults to the seventeen real status effects rather than to none.
+    It has to: a battle where nothing implements a status effect is a battle where
+    Poison does not tick and Hidden does not double anything, which is a silent
+    wrong answer rather than an absent feature. A caller that wants the table
+    inert says [~effects:[]]. *)
 let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
-    ?(enemy_spells = []) ?(effects = []) ?hero_items ?enemy_items
-    (board : board) (hero : combatant) (enemy : combatant) : battle =
+    ?(enemy_spells = []) ?(effects = Status_effect_hooks.descriptors) ?hero_items
+    ?enemy_items (board : board) (hero : combatant) (enemy : combatant) : battle =
   if hero.id = enemy.id then invalid_arg "Battle.create: combatants need distinct ids";
   (* [IS_MONSTER(idx)] is a property of the character rather than of the spell, so
      it is set here rather than asked of every fixture: a [Battle] is one hero

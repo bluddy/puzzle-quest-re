@@ -68,7 +68,7 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
 #### B. RPG Mechanics, Stats & Combat Flow
 * [x] **Combatants**: Hero vs Enemy. Health at `+0x64`/`+0x70`, level at `+0x68`, four mana pools at `+0x74`, cunning at skill slot 5. Modelled in `lib/combat.ml`.
 * [x] **Turn Sequence**: Turn order is a rotation of the roster seeded by the highest Cunning, so the scan only picks who leads. Banked extra turns replay the matcher. Ported in `lib/combat.ml`; see [`COMBAT_FLOW.md`](COMBAT_FLOW.md).
-* [x] **Status Effects**: Data read from `Assets/StatusEffects/*.xml`; expiry is a decrement-and-test with no separate removal path. Effect behaviour is a Lua table of named callbacks in the original.
+* [x] **Status Effects**: Data read from `Assets/StatusEffects/*.xml` by `tools/extract_status_effects.ps1` into `lib/status_effect_data.ml`; behaviour hand-ported from the companion `.lua` into `lib/status_effect_hooks.ml`. **All 17 scripts ported**, none left unported. Expiry is a decrement-and-test with no separate removal path, and `FUN_00475220`'s first branch (`if (duration < 1) return 1`) makes a duration of 0 *indefinite*, which is what Hidden, Wall of Fire and Wall of Thorns rely on. Effects are keyed by XML id, never by script name — see `docs/COMBAT_FLOW.md` §5.
 * [x] **The scripting surface**: 37 named hooks at `0x005239E8`. See below.
 * [x] **Spell resolution**: `HANDLE_SPELL_COST` and `IS_SPELL_CASTABLE` recovered. Castability is a per-pool comparison; the air check is gated on the "spells disallowed this turn" flag. See [`SPELLS.md`](SPELLS.md).
 * [x] **Mana yield**: `(skill + 100) * run_multiplier * 0.01`, skill capped at 999, multipliers 1/2/3 for 3/4/5-of-a-kind.

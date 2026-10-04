@@ -78,6 +78,8 @@ chooser, which is implemented but off by default.
   * `spell_ai.ml`: Per-spell `ShouldAICastSpell` hooks. Generated.
   * `spell_ai_manual.ml`: Hand-ported hooks that read the board.
   * `spell_effects.ml`: Per-spell `CastSpell` bodies — all 129 of them.
+  * `status_effect_data.ml`: Status effect descriptors from the game's XML. Generated.
+  * `status_effect_hooks.ml`: The 17 status effect scripts, hand-ported.
   * `score.ml`: End-of-battle score, both solo and co-op paths.
   * `battle.ml`: Headless battle loop wiring board, AI, combat, and spells together.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).

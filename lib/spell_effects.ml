@@ -306,10 +306,25 @@ let set_multiplier_effects (fx : effect_context) (on : bool) : unit =
 
 (** [ADD_STATUS_EFFECT_AND_DURATION(idx, id, dur)].
 
+    **[id] is the XML id, not the script's name.** The spell scripts pass
+    ["EHID"] for Hidden and [STATUS_EFFECT_HIDDEN] is a string alias for exactly
+    that; the Lua table is called [Hidden] and nothing in the game ever compares a
+    table name. So the ids here are what a descriptor in
+    [Status_effect_data] is keyed on, and a friendly name would match nothing.
+
+    This file used to store the friendly names - ["Hidden"], ["Poison"],
+    ["Favoreded"], and three spellings of Blind. That was invisible until the
+    descriptors existed to be matched against, at which point every one of the
+    seventeen was inert.
+
     A duration of 0 is not "no duration" in the original: [SHID], [SWOF] and
-    [SWOT] all pass 0 for effects that clearly persist, so it has to be a
-    sentinel meaning indefinite rather than a bug in the scripts. It is stored as
-    0 here and the turn manager is what has to honour it. *)
+    [SWOT] all pass 0 for effects that clearly persist. [Combat.tick_duration]
+    reads it as indefinite, and those three - the only ones with 0 in their XML -
+    cancel themselves by setting their remaining duration to 1.
+
+    Reapplying refreshes rather than stacking, which is [Combat.apply_effect]'s
+    rule too. Four of the seventeen have [stack > 1], so a second copy from a
+    different source is representable but these bodies never produce one. *)
 let apply_status (target : combatant) (id : string) (duration : int) : unit =
   match List.find_opt (fun (existing, _) -> existing = id) target.effects with
   | Some _ -> (
@@ -557,18 +572,19 @@ let effect_sfsk fx =
 (** The three self-buffs, all of which pass a duration of 0. That is the original's
     own value, not a placeholder here: the effects plainly persist, so 0 has to
     mean indefinite. *)
-let effect_shid fx = receive_status fx.fx_caster "Hidden" 0
-let effect_swof fx = receive_status fx.fx_caster "WallOfFired" 0
-let effect_swot fx = receive_status fx.fx_caster "WallOfThornsed" 0
+let effect_shid fx = receive_status fx.fx_caster "EHID" 0
+let effect_swof fx = receive_status fx.fx_caster "EWOF" 0
+let effect_swot fx = receive_status fx.fx_caster "EWOT" 0
 
 (** SHOP: Hand of Powered on the caster, for six turns. One of the few bodies that
     passes a real duration. *)
-let effect_shop fx = receive_status fx.fx_caster "HandOfPowered" 6
+let effect_shop fx = receive_status fx.fx_caster "EHOP" 6
 
-(** SFBM: Fire Bombed on the {e enemy}, for twelve turns. The only body that uses
-    a status id that is not one of the [STATUS_EFFECT_] constants - it is the raw
-    string "EFBO", which is the status effect file name without its suffix. *)
-let effect_sfbm fx = inflict_status fx "FireBombed" 12
+(** SFBM: Fire Bombed on the {e enemy}, for twelve turns. The only body whose
+    status has no [STATUS_EFFECT_] constant - the script writes the raw string
+    ["EFBO"], which [StandardConstants.lua] simply omits. The id is still the
+    id, so it still matches a descriptor. *)
+let effect_sfbm fx = inflict_status fx "EFBO" 12
 
 (** SIST: charge itself, then explode every Earth gem on the board. The sweep is
     bracketed by [SetMultiplierEffects] so the explosions cannot also pay a
@@ -715,15 +731,15 @@ let effect_ssob fx = pool_into_damage ~elem:Earth fx
 let effect_ssos fx = pool_into_damage ~elem:Air fx
 
 (* SBRP is the Air body plus Disease on the enemy for 20 turns. The status is
-   applied after the drain, and the Lua uses the raw "EDIS" file name. *)
+   applied after the drain. *)
 let effect_sbrp fx =
   pool_into_damage ~elem:Air fx;
-  inflict_status fx "Disease" 20
+  inflict_status fx "EDIS" 20
 
-(* SBRZ is the Earth body plus Poison for 20 turns, under the raw name "EPOI". *)
+(* SBRZ is the Earth body plus Poison for 20 turns. *)
 let effect_sbrz fx =
   pool_into_damage ~elem:Earth fx;
-  inflict_status fx "Poison" 20
+  inflict_status fx "EPOI" 20
 
 (* ------------------------------------------------------------------ *)
 (* Shape 2: bank a little mana and take another turn                     *)
@@ -885,7 +901,7 @@ let effect_scto fx =
 (** SDBO blinds the enemy for two turns and takes five from its Air and Fire. Only
     two of the four pools, which is the spell's identity. *)
 let effect_sdbo fx =
-  inflict_status fx "Blinded" 2;
+  inflict_status fx "EBLI" 2;
   (match fx.fx_enemies with
   | e :: _ ->
       subtract_mana e Air 5;
@@ -989,30 +1005,30 @@ let scaled_status ~(base : int) ~(elem : element) ~(divisor : int) ~(name : stri
   if on_caster then receive_status fx.fx_caster name dur
   else inflict_status fx name dur
 
-let effect_sfav fx = scaled_status ~base:8 ~elem:Air ~divisor:6 ~name:"Favoreded" ~on_caster:true fx
-let effect_sfsh fx = scaled_status ~base:8 ~elem:Fire ~divisor:3 ~name:"FireShielded" ~on_caster:true fx
-let effect_shas fx = scaled_status ~base:10 ~elem:Air ~divisor:5 ~name:"Hasted" ~on_caster:true fx
-let effect_spau fx = scaled_status ~base:8 ~elem:Air ~divisor:5 ~name:"PaladinsAuraed" ~on_caster:true fx
-let effect_svig fx = scaled_status ~base:8 ~elem:Water ~divisor:5 ~name:"Vigiled" ~on_caster:true fx
-let effect_slig fx = scaled_status ~base:2 ~elem:Air ~divisor:8 ~name:"Blinded" ~on_caster:false fx
-let effect_ssbl fx = scaled_status ~base:5 ~elem:Air ~divisor:2 ~name:"SingingBladesed" ~on_caster:true fx
+let effect_sfav fx = scaled_status ~base:8 ~elem:Air ~divisor:6 ~name:"EFAV" ~on_caster:true fx
+let effect_sfsh fx = scaled_status ~base:8 ~elem:Fire ~divisor:3 ~name:"EFSH" ~on_caster:true fx
+let effect_shas fx = scaled_status ~base:10 ~elem:Air ~divisor:5 ~name:"EHAS" ~on_caster:true fx
+let effect_spau fx = scaled_status ~base:8 ~elem:Air ~divisor:5 ~name:"EPAU" ~on_caster:true fx
+let effect_svig fx = scaled_status ~base:8 ~elem:Water ~divisor:5 ~name:"EVIG" ~on_caster:true fx
+let effect_slig fx = scaled_status ~base:2 ~elem:Air ~divisor:8 ~name:"EBLI" ~on_caster:false fx
+let effect_ssbl fx = scaled_status ~base:5 ~elem:Air ~divisor:2 ~name:"ESBL" ~on_caster:true fx
 (* SHWL also banks four Earth for the caster before the fear, so it is not purely
    a status body. That is the whole of its difference from the eleven. *)
 let effect_shwl fx =
   add_mana fx.fx_caster Earth 4;
-  scaled_status ~base:5 ~elem:Air ~divisor:5 ~name:"Fear" ~on_caster:false fx
+  scaled_status ~base:5 ~elem:Air ~divisor:5 ~name:"EFEA" ~on_caster:false fx
 
 (* SSPT inflicts two statuses off one duration: Blind and Poison, both
    3 + Water/12. *)
 let effect_sspt fx =
   let dur = 3 + (Combat.mana fx.fx_caster Water / 12) in
-  inflict_status fx "Blinded" dur;
-  inflict_status fx "Poison" dur
+  inflict_status fx "EBLI" dur;
+  inflict_status fx "EPOI" dur
 
 (* SRBI deals a flat 4 and then inflicts Disease for 5 + Water/5. *)
 let effect_srbi fx =
   inflict_damage fx 4;
-  scaled_status ~base:5 ~elem:Water ~divisor:5 ~name:"Disease" ~on_caster:false fx
+  scaled_status ~base:5 ~elem:Water ~divisor:5 ~name:"EDIS" ~on_caster:false fx
 
 (* ------------------------------------------------------------------ *)
 (* Shape 7: the flat bodies                                              *)
@@ -1039,7 +1055,7 @@ let effect_slco fx =
 (** SDST deals the caster's whole Fire pool as damage and poisons for eight. *)
 let effect_sdst fx =
   inflict_damage fx (Combat.mana fx.fx_caster Fire);
-  inflict_status fx "Poison" 8
+  inflict_status fx "EPOI" 8
 
 (** SFBO deals four plus a ninth of the caster's Fire. The Lua goes through
     [Std_InflictDamageWithAnimEffect], which is [Std_InflictDamage] with an
@@ -1066,14 +1082,14 @@ let effect_ssgz fx =
 (** SENR takes an extra turn and enrages the caster for eight. *)
 let effect_senr fx =
   extra_turn fx.fx_caster;
-  receive_status fx.fx_caster "Enraged" 8
+  receive_status fx.fx_caster "EENR" 8
 
 (** SCHL challenges {e both} sides for six, then takes an extra turn if the caster
     has 15 or more Air. Challenging the caster as well as the enemy is not a
     typo in the port; the Lua does both. *)
 let effect_schl fx =
-  inflict_status fx "Challenged" 6;
-  receive_status fx.fx_caster "Challenged" 6;
+  inflict_status fx "ECHA" 6;
+  receive_status fx.fx_caster "ECHA" 6;
   if Combat.mana fx.fx_caster Air >= 15 then extra_turn fx.fx_caster
 
 (** SVAM deals five plus a tenth of the caster's Fire, capped at the enemy's
@@ -1806,8 +1822,8 @@ let effect_sstu fx =
     The script then computes [local damage = 5 + (GET_MANA_FIRE(idxCaster)/8)] and
     uses it for nothing but a message. There is no damage in this spell. *)
 let effect_swop fx =
-  inflict_status fx "Fear" 8;
-  inflict_status fx "Blind" 6;
+  inflict_status fx "EFEA" 8;
+  inflict_status fx "EBLI" 6;
   List.iter (fun e -> miss_turns e 3) fx.fx_enemies
 
 (** [SFOF] and [STHU] are the plain board-wide damage bodies, and [STRM] is the

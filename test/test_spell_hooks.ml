@@ -222,23 +222,23 @@ let () =
 
 (* The names below are the StatusEffects file names. They are not the
    STATUS_EFFECT_ constants with the prefix stripped: the game appends a
-   participle to most of them, so HASTE is the file "Hasted" and WALLOFFIRE is
-   "WallOfFired". *)
+   participle to most of them, so HASTE is the file "EHAS" and WALLOFFIRE is
+   "EWOF". *)
 let () =
   check "SCHL refuses when the caster is already Challenged"
-    (not (Spell_ai_manual.hook_schl (ctx ~caster:(affected [ ("Challenged", 3) ]) ())));
+    (not (Spell_ai_manual.hook_schl (ctx ~caster:(affected [ ("ECHA", 3) ]) ())));
   check "SCHL fires when it is not, and needs a percentile of 50"
-    (Spell_ai_manual.hook_schl (ctx ~caster:(affected [ ("Enraged", 3) ]) ~percentile:50 ()));
+    (Spell_ai_manual.hook_schl (ctx ~caster:(affected [ ("EENR", 3) ]) ~percentile:50 ()));
   check "SENR refuses when already Enraged"
-    (not (Spell_ai_manual.hook_senr (ctx ~caster:(affected [ ("Enraged", 3) ]) ())));
+    (not (Spell_ai_manual.hook_senr (ctx ~caster:(affected [ ("EENR", 3) ]) ())));
   check "SENR fires when it is not"
-    (Spell_ai_manual.hook_senr (ctx ~caster:(affected [ ("Hidden", 3) ]) ~percentile:50 ()));
+    (Spell_ai_manual.hook_senr (ctx ~caster:(affected [ ("EHID", 3) ]) ~percentile:50 ()));
   check "SHAS refuses when already Hasted"
-    (not (Spell_ai_manual.hook_shas (ctx ~caster:(affected [ ("Hasted", 3) ]) ())));
+    (not (Spell_ai_manual.hook_shas (ctx ~caster:(affected [ ("EHAS", 3) ]) ())));
   check "SHID refuses when already Hidden"
-    (not (Spell_ai_manual.hook_shid (ctx ~caster:(affected [ ("Hidden", 3) ]) ())));
+    (not (Spell_ai_manual.hook_shid (ctx ~caster:(affected [ ("EHID", 3) ]) ())));
   check "an unrelated effect does not block SHID"
-    (Spell_ai_manual.hook_shid (ctx ~caster:(affected [ ("Poison", 3) ]) ~percentile:50 ()))
+    (Spell_ai_manual.hook_shid (ctx ~caster:(affected [ ("EPOI", 3) ]) ~percentile:50 ()))
 
 (* SCOU reads GET_NUM_STATUS_EFFECTS rather than a named effect, so any effect at
    all is enough to trigger its -50. *)
@@ -246,13 +246,13 @@ let () =
   check "SCOU fires on an empty caster at a percentile of 50"
     (Spell_ai_manual.hook_scou (ctx ~caster:(hero ()) ~percentile:50 ()));
   check "SCOU refuses when carrying anything, however little"
-    (not (Spell_ai_manual.hook_scou (ctx ~caster:(affected [ ("Poison", 2) ]) ~percentile:99 ())))
+    (not (Spell_ai_manual.hook_scou (ctx ~caster:(affected [ ("EPOI", 2) ]) ~percentile:99 ())))
 
 (* SWOF vetoes on the wall already being up, then grades the caster's Fire at a
    single step: 20 above fourteen, nothing at or below it. *)
 let () =
   check "SWOF refuses when the wall is already up"
-    (not (Spell_ai_manual.hook_swof (ctx ~caster:(affected [ ("WallOfFired", 3) ]) ())));
+    (not (Spell_ai_manual.hook_swof (ctx ~caster:(affected [ ("EWOF", 3) ]) ())));
   check "SWOF rewards Fire of 15"
     (Spell_ai_manual.hook_swof (ctx ~caster:(fire 15) ~percentile:70 ()));
   check "SWOF gives nothing at exactly 14"
@@ -262,7 +262,7 @@ let () =
    than a small penalty, and otherwise asks with a positive 25. *)
 let () =
   check "SSBL refuses when Singing Blades is up"
-    (not (Spell_ai_manual.hook_ssbl (ctx ~caster:(affected [ ("SingingBladesed", 3) ]) ())));
+    (not (Spell_ai_manual.hook_ssbl (ctx ~caster:(affected [ ("ESBL", 3) ]) ())));
   check "SSBL fires otherwise, and needs only a percentile of 25"
     (Spell_ai_manual.hook_ssbl (ctx ~caster:(hero ()) ~percentile:25 ()))
 
@@ -270,7 +270,7 @@ let () =
    enemy makes the roll have to be *higher*, from 50 to 90. It is a penalty on both
    sides of the comparison, which is easy to read backwards. *)
 let () =
-  let scared = affected [ ("Fear", 3) ] in
+  let scared = affected [ ("EFEA", 3) ] in
   check "SHWL needs a percentile of 90 against a Frightened foe"
     (Spell_ai_manual.hook_shwl (ctx ~enemy:scared ~percentile:90 ()));
   check "SHWL does not fire at 89 against one"
@@ -283,7 +283,7 @@ let () =
 (* SSPT is the same idea with a smaller penalty, but applied to the modifier:
    Blinding a Blinded enemy lowers the threshold from 50 to 35. *)
 let () =
-  let blinded = affected [ ("Blinded", 2) ] in
+  let blinded = affected [ ("EBLI", 2) ] in
   check "SSPT needs 35 against a Blinded foe"
     (Spell_ai_manual.hook_sspt (ctx ~enemy:blinded ~percentile:35 ()));
   check "SSPT does not fire at 36 against one"

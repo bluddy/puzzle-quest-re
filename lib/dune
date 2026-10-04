@@ -11,6 +11,8 @@
    spell
    spell_effects
    combat
+  status_effect_data
+  status_effect_hooks
   ai
   score
   battle

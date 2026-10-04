@@ -398,8 +398,8 @@ let veto_if_caster_has ~(name : string) (ctx : ai_context) : bool =
   if Combat.has_status ctx.ctx_caster name then false
   else ai_spellcasting_chance_i ~modifier:0 ctx
 
-let hook_schl = veto_if_caster_has ~name:"Challenged"
-let hook_shas = veto_if_caster_has ~name:"Hasted"
+let hook_schl = veto_if_caster_has ~name:"ECHA"
+let hook_shas = veto_if_caster_has ~name:"EHAS"
 
 (** SHWL: Fearing a Frightened enemy is heavily discouraged. The Lua subtracts 40
     from the percentile and then tests the usual [chance < 50] veto, so Fear makes
@@ -410,16 +410,16 @@ let hook_shas = veto_if_caster_has ~name:"Hasted"
     SSPT is the same idea with a smaller penalty: Blinding a Blinded enemy costs
     15 off the {e modifier}, which lowers the threshold from 50 to 35. *)
 let hook_shwl ctx =
-  let chance = if Combat.has_status ctx.ctx_enemy "Fear" then ctx.ctx_percentile - 40 else ctx.ctx_percentile in
+  let chance = if Combat.has_status ctx.ctx_enemy "EFEA" then ctx.ctx_percentile - 40 else ctx.ctx_percentile in
   chance >= 50 && ctx.ctx_evaluation <= 30
 
 let hook_sspt ctx =
-  ai_spellcasting_chance_i ~modifier:(if Combat.has_status ctx.ctx_enemy "Blinded" then -15 else 0) ctx
+  ai_spellcasting_chance_i ~modifier:(if Combat.has_status ctx.ctx_enemy "EBLI" then -15 else 0) ctx
 
 (** SWOF: vetoes on the caster already having the wall, then grades the caster's
     own Fire pool at a single step: 20 above fourteen, nothing at or below it. *)
 let hook_swof ctx =
-  if Combat.has_status ctx.ctx_caster "WallOfFired" then false
+  if Combat.has_status ctx.ctx_caster "EWOF" then false
   else ai_spellcasting_chance_i
            ~modifier:(if Combat.mana ctx.ctx_caster Combat.Fire > 14 then 20 else 0) ctx
 
@@ -427,7 +427,7 @@ let hook_swof ctx =
     the caster has Singing Blades, rather than vetoing with 0, and otherwise asks
     with a positive modifier of 25. *)
 let hook_ssbl ctx =
-  if Combat.has_status ctx.ctx_caster "SingingBladesed" then false
+  if Combat.has_status ctx.ctx_caster "ESBL" then false
   else ai_spellcasting_chance_i ~modifier:25 ctx
 
 (** SCTO's siblings SSTL, SCHV and SCLE are pure constant modifiers and used to be
@@ -470,8 +470,8 @@ let veto_first_then_gate ~(name : string) (ctx : ai_context) : bool =
   if Combat.has_status ctx.ctx_caster name then false
   else evaluate_gate ~adjust:(fun _ p -> p) ~specific:(fun _ _ -> true) ctx
 
-let hook_senr = veto_first_then_gate ~name:"Enraged"
-let hook_shid = veto_first_then_gate ~name:"Hidden"
+let hook_senr = veto_first_then_gate ~name:"EENR"
+let hook_shid = veto_first_then_gate ~name:"EHID"
 
 (** SCHM and SRFC are the same shape with different gem kinds. Both count a gem
     over the whole board, veto if the count is four or under, veto if the caster is

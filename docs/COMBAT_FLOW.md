@@ -333,13 +333,22 @@ inventory.
 | `FUN_00475220` expiry | `Combat.tick_duration` |
 | hook dispatch `FUN_00475340` | `Combat.hooks` record |
 | the 37-name table | `Combat.all_hook_names` |
-| `Assets/StatusEffects/*.xml` | `Combat.effect_def` |
-| the two base-game effect scripts | `test_combat.ml` `disease` and `hasted` |
+| `Assets/StatusEffects/*.xml` | `lib/status_effect_data.ml`, generated |
+| `Assets/StatusEffects/*.lua` | `lib/status_effect_hooks.ml`, all seventeen |
 
 The turn order and handoff are ported faithfully, including the modulo rotation,
 the pre-advance extra-turn branch, and the order of the defeat check against the
 extra-turn check. Those orderings are observable and a port that "tidied" them
 would diverge.
+
+### The seventeen scripts
+
+`tools/extract_status_effects.ps1` generates the descriptors from the XML; the
+behaviour is hand-ported into `lib/status_effect_hooks.ml`, each entry keeping
+its Lua alongside. Tests in `test/test_status_effects.ml`. Unlike
+`lib/item_hooks.ml`, which leaves several items unported because they need
+machinery this port lacks, **all seventeen are ported** - none of them turned out
+to need anything the battle loop does not already have.
 
 Two details the tests pin because getting them wrong is easy:
 
@@ -350,7 +359,7 @@ consumed in the drain and resolves the other on their next turn. This is
 `sweep_deaths` and `drain_extra_turns` in the port, and it is bounded by the
 roster size so a roster where everyone has turns banked still terminates.
 
-The **stack limit is per effect, not overall.** `def_max_stack` caps copies of
+The **stack limit is per effect, not overall.** `stack` caps copies of
 one effect id; a combatant may carry four Diseases and a Hasted at once. An
 earlier draft counted all effects together, which silently capped a character at
 one disease regardless of its `stack="4"`.
@@ -358,6 +367,65 @@ one disease regardless of its `stack="4"`.
 Effect hooks run *before* the duration tick, so an effect fires on the turn it
 expires and is dropped after. That is what the original does, since the
 countdown is consulted only after the turn's callbacks have run.
+
+### What the port had wrong before
+
+Three findings, all of which were invisible until the descriptors existed to be
+matched against.
+
+**Status effects were keyed by the wrong name.** The engine identifies a status
+effect by its XML id. `STATUS_EFFECT_HIDDEN` is a string alias for `"EHID"`, and
+every `HAS_STATUS_EFFECT` and `ADD_STATUS_EFFECT` is a comparison against that
+string; the Lua table is called `Hidden` and nothing in the game ever compares a
+table name. The spell layer had been storing the friendly names - `"Hidden"`,
+`"Poison"`, `"Favoreded"`, and three different spellings of Blind - so with a real
+descriptor table in place, **every one of the seventeen was inert**. The same
+mistake was in seven of the AI hooks, which test `HAS_STATUS_EFFECT` themselves.
+
+**The expiry rule was inverted.** `FUN_00475220` reads
+
+```c
+if (duration < 1) return 1;      // still alive
+duration -= 1;
+return duration > 0;
+```
+
+so a duration at or below zero is reported **alive**. That is load-bearing: the
+three effects with `duration = 0` - Hidden, Wall of Fire, Wall of Thorns - are
+indefinite, and each cancels itself with `SET_STATUS_EFFECT_DURATION` to 1, which
+is the only thing that ever removes it. The port had it backwards, so those
+three would have been dropped the turn they were applied.
+
+**`Not presentation` was not checked.** `WallOfFired.lua` lists `OnReceiveDamage`
+before `OnStartTurn`, and the start-turn half - which is what pays two Fire a
+turn to keep the wall standing - was missed on the first pass. A wall written
+without it is free to stand forever. The test suite caught it.
+
+### Hooks take a context, not an index
+
+The Lua passes `characterIdx`, an index into the battle's character array, which
+is why §4 above had to write `(!the_roster).(idx)` to make its own example
+compile. There is no such array here: a battle is a `combatant list` and effects
+run per combatant. `Combat.status_context` hands the hook the combatant, its
+enemies (`GET_ENEMY(idx, n)`), the target on the damage hooks, and a fresh roll -
+`PERCENTILE_CHANCE_SYNC` draws per call, and Favored draws once per *point* of
+experience received, so a shared value would be plainly wrong for it.
+
+Only the seven hooks the seventeen scripts use take a context. The other thirty
+are the quest and item scripting surface, which this port does not reach, and
+keep their bare indices.
+
+### Two scripts whose comments are wrong
+
+Both are transcribed as the code reads, since the code is what the game runs:
+
+| Script | Header says | Code does |
+| :--- | :--- | :--- |
+| `Vigiled` | "gain 5 of each mana" | adds **3** |
+| `Disease` | "-1 every mana", code names only Air | subtracts from **all four** |
+
+A third, `SWOP` in the spell scripts, computes `5 + Fire/8` for a message and
+deals no damage at all.
 
 ---
 
