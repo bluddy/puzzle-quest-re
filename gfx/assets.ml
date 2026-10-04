@@ -19,8 +19,38 @@
     the registry. Skull, red skull, gold, experience and the wildcard multipliers
     are {e not}: the engine addresses them by raw coordinates, so their positions
     here are read off the sheet by eye and are marked inferred. [frame] returns
-    [None] for the two that could not be identified at all, and the caller falls
-    back to a flat colour rather than drawing the wrong sprite.
+    [None] where no frame could be identified at all, and the caller falls back to
+    a flat colour rather than drawing the wrong sprite.
+
+    Row 0 is the base gems, and it is seven cells of seven, in this order:
+
+    | cell | sprite            | gem                      |
+    | ---- | ----------------- | ------------------------ |
+    | 0    | green orb         | [Board.Mana Board.Earth] |
+    | 1    | red orb           | [Board.Mana Board.Fire]  |
+    | 2    | yellow orb        | [Board.Mana Board.Air]   |
+    | 3    | blue orb          | [Board.Mana Board.Water] |
+    | 4    | bone skull        | [Board.Skull]            |
+    | 5    | purple star       | [Board.Experience]       |
+    | 6    | gold coins        | [Board.Gold]             |
+
+    Two of those deserve their reasoning kept, because the obvious reading is
+    wrong for one of them.
+
+    **The purple star is experience**, not a wildcard or a mana gem. That is
+    corroborated rather than eyeballed: [Spell.GStar] is documented in
+    [lib/spell.ml] as "the purple star, id 7 on the board", and the only
+    star-shaped sprite in row 0 is a purple one. So the position is still
+    inferred, but the identification is not.
+
+    **Row 0 cell 4 is the plain skull, and there is no red skull in this sheet.**
+    Cell 4 looks like a red skull - bone with glowing red eyes and a red mark on
+    the forehead - which is exactly why it is worth saying. Rows 4 and 5 hold
+    five more skulls that are visibly the {e same} sprite with "+5" and a red halo
+    drawn over them. Those are the skull {e multiplier} overlays the game paints
+    when a skull gem gains bonus power, not a distinct gem kind. So the sheet
+    contains one skull, and [Board.RedSkull] has no frame here at all: its art, if
+    it is drawn as a sprite, lives in another skin file.
 
     The colour-to-element mapping is also an inference, though a well-supported
     one: the sheet's row order is green, red, yellow, blue, which is the engine's
@@ -90,6 +120,9 @@ let frame_rect : Board.gem -> (Layout.rect * provenance) option = function
   | Board.Mana Board.Air -> Some ({ Layout.x = 144; y = 0; w = cell; h = cell }, Named "img_gem_yellow")
   | Board.Mana Board.Water -> Some ({ Layout.x = 216; y = 0; w = cell; h = cell }, Named "img_gem_blue")
   | Board.Skull -> Some ({ Layout.x = 288; y = 0; w = cell; h = cell }, Inferred)
+  (* The purple star, row 0 cell 5. See the module comment: identified as
+     experience by [Spell.GStar], positioned by eye. *)
+  | Board.Experience -> Some ({ Layout.x = 360; y = 0; w = cell; h = cell }, Inferred)
   | Board.Gold -> Some ({ Layout.x = 432; y = 0; w = cell; h = cell }, Inferred)
   (* Row 1 holds seven multiplier badges, x2 through x8, which is exactly the
      range [Board.Wildcard] carries. *)
@@ -97,8 +130,10 @@ let frame_rect : Board.gem -> (Layout.rect * provenance) option = function
       Some
         ( { Layout.x = (n - 2) * pitch; y = pitch; w = cell; h = cell },
           Inferred )
+  (* No red skull in this sheet: the only skull sprite here is the plain one, and
+     the red-glowing skulls on rows 4 and 5 are that same sprite with a "+5"
+     multiplier overlay. See the module comment before adding a guess here. *)
   | Board.RedSkull -> None
-  | Board.Experience -> None
   | Board.Wildcard _ -> None
   | Board.Empty -> None
 

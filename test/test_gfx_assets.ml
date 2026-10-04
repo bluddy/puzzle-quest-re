@@ -68,6 +68,12 @@ let () =
 
 let () =
   (* Provenance is the point of this file. *)
+  let at x y = Some (x, y, Assets.cell, Assets.cell) in
+  let r g =
+    match Assets.frame g with
+    | Some f -> Some (f.Layout.x, f.Layout.y, f.Layout.w, f.Layout.h)
+    | None -> None
+  in
   let named g =
     match Assets.provenance_of g with Some (Assets.Named _) -> true | _ -> false
   in
@@ -82,15 +88,43 @@ let () =
         (match Assets.provenance_of g with
         | Some Assets.Inferred -> true
         | _ -> false))
-    [ Board.Skull; Board.Gold; Board.Wildcard 4 ];
+    [ Board.Skull; Board.Gold; Board.Experience; Board.Wildcard 4 ];
   (* Unidentified frames must be absent, so the caller falls back to a flat colour
-     rather than drawing a sprite that might be something else entirely. *)
+     rather than drawing a sprite that might be something else entirely.
+     [Board.Experience] used to be on this list and no longer is: it is the purple
+     star at 360,0, corroborated by [Spell.GStar] being documented as "the purple
+     star, id 7". *)
   List.iter
     (fun g ->
       check
         (Printf.sprintf "%s has no frame yet" (Layout.gem_letter g))
         (Assets.frame g = None))
-    [ Board.RedSkull; Board.Experience; Board.Empty ];
+    [ Board.Empty ];
+  (* This sheet contains no red skull. Rows 4 and 5 look like red skulls but are
+     the plain skull with a "+5" multiplier and a red halo painted over it, so
+     there is only one skull sprite here and RedSkull's art lives elsewhere.
+     Leaving it [None] is the honest answer; guessing would be worse. *)
+  check "X has no frame in this sheet" (Assets.frame Board.RedSkull = None);
+  check "and RedSkull is absent, not merely inferred"
+    (Assets.provenance_of Board.RedSkull = None);
+  check "the experience gem has a frame" (Assets.frame Board.Experience <> None);
+  check_opt "experience is the purple star at 360,0"
+    (r Board.Experience) (at 360 0);
+  (* Row 0 is exactly seven cells of seven - green, red, yellow, blue, skull,
+     purple star, gold. All placed, and all in distinct columns, or one gem would
+     silently render as another. *)
+  let row0 =
+    [ Board.Mana Board.Earth; Board.Mana Board.Fire; Board.Mana Board.Air;
+      Board.Mana Board.Water; Board.Skull; Board.Experience; Board.Gold ]
+  in
+  let cols =
+    List.filter_map
+      (fun g -> match Assets.frame g with Some f -> Some f.Layout.x | None -> None)
+      row0
+  in
+  check "all seven row 0 gems are placed" (List.length cols = 7);
+  check "and occupy distinct columns"
+    (List.length (List.sort_uniq compare cols) = 7);
   check "a wildcard outside 2..8 has no frame" (Assets.frame (Board.Wildcard 9) = None);
   check "a 1x wildcard has no frame" (Assets.frame (Board.Wildcard 1) = None);
   (* Wildcards 2..8 are the seven multiplier badges on row 1. *)
