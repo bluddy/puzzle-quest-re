@@ -49,6 +49,27 @@ and outcome =
   | Draw
   | Stalemate
 
+(** A human at the keyboard.
+
+    This is deliberately two hooks and nothing more. The recovered engine has no
+    player input at all - both sides are driven by [Spell.pick_ai_spell] and the
+    board evaluator - so rather than bolt a front end onto that, the only thing
+    replaced is {e selection}: which spell to cast and which swap to make.
+    Everything after the choice is untouched, so a human turn goes through the
+    same cost charge, cooldown tick, keeps-turn test and effect body as a
+    machine one.
+
+    The hooks deliberately do not take the [battle]. That would make [player] and
+    [battle] mutually recursive, and it is not needed: a front end that wants to
+    show the board closes over a [battle ref] it fills in after [create] returns.
+
+    [choose_spell] receives only the spells that are actually available, and
+    returning [None] holds the spell and falls through to the swap. *)
+type player = {
+  choose_spell : spell list -> spell option;
+  choose_swap : swap list -> swap option;
+}
+
 type rules = {
   difficulty : int;  (** 0-4, from Spell.difficulty_for_levels; see that function *)
   hero_level : int;
@@ -63,6 +84,9 @@ type rules = {
      is what needs proving. *)
   heroic_effort_depth : int;
   ai_weights : Ai.weights;
+  (* [None] - the default - leaves the recovered AI in charge of both decisions,
+     which is what every faithful test and the headless runner rely on. *)
+  player : player option;
 }
 
 let default_rules =
@@ -76,6 +100,7 @@ let default_rules =
     hero_skill_cap = 999;
     heroic_effort_depth = 5;
     ai_weights = Ai.default_weights;
+    player = None;
   }
 
 type battle = {
@@ -264,93 +289,137 @@ let resolve_cascades (b : battle) (defender : combatant) : int =
       ~battle:b.effect_state !xp;
   !total
 
-(** Plays a swap for whichever side is acting, then resolves the cascade. *)
-let play_move (b : battle) (defender : combatant) : unit =
-  let e =
-    evaluate_board ~weights:b.rules.ai_weights ~rng:b.rng ~difficulty:b.rules.difficulty
-      ~hero:{ level = b.rules.hero_level; level_cap = b.rules.hero_level_cap }
-      (ai_view b)
-  in
-  match (e.has_valid_move, e.best) with
-  | true, Some c ->
-      (* The candidate comes back in the AI's coordinates, which put row 0
-         above the board. Undo the same shift [ai_view] applied, otherwise every
-         swap lands one row low. *)
-      let sx = c.cand_x and sy = c.cand_y - 1 in
-      let src = { x = sx; y = sy } in
-      let dst =
-        match c.cand_direction with
-        | Horizontal -> { x = sx + 1; y = sy }
-        | Vertical -> { x = sx; y = sy + 1 }
-      in
-      b.board <- swap_gems b.board src dst;
-      emit b (Swap (sx, sy, c.cand_direction));
-      let dealt = resolve_cascades b defender in
-      if dealt > 0 then begin
-        (* Two chains run, and within each the attacker's side is the inner one.
+(** Plays a swap for whichever side is acting, then resolves the cascade.
 
-           The order matters and is not arbitrary. For a given combatant the
-           original runs GIVE_DAMAGE before RECEIVE_DAMAGE, so an item that
-           amplifies what it deals and an item that reduces what it takes compose
-           as amplify-then-reduce rather than the other way round. Across the two
-           combatants it runs the attacker's chain first, so the defender's
-           receive hooks see the already-amplified number. *)
-let attacker = attacker_of b defender in
-        let ictx =
-          Item.
-            {
-              ic_board = Some b.board;
-              ic_percentile = b.rng 100;
-              ic_roll = b.rng;
-              ic_attacker = Some attacker;
-              ic_defender = Some defender;
-              ic_hero = b.hero;
-              ic_enemy = b.enemy;
-            }
-        in
-        (* Items first, then status effects, each as its own chain.
-
-           The {e relative} order of an item hook against a status-effect hook is
-           not recovered: the original dispatches both through the same
-           name-based callback table, and nothing in the binary or the scripts
-           fixes whether a character's worn item runs before or after the status
-           effects on it. Items are placed first here on the assumption that
-           equipment is the more persistent modifier, and this comment is the
-           record of that being a choice rather than a recovery.
-
-           What {e is} recovered is the order across the two combatants: the
-           attacker's chain runs before the defender's, so a defender's
-           reduction sees the already-amplified number. *)
-        let outgoing =
-          give_damage ~attacker ~defender b.effects ~enemies:[ defender ] ~roll:b.rng
-            ~battle:b.effect_state
-            (Item.fold_give_damage (loadout_of b attacker) ictx ~damage:dealt
-               ~source:attacker.id ~target:defender.id
-               ~f:(fun (i : Item.item) n -> Item.give_damage i ictx ~damage:n
-                     ~source:attacker.id ~target:defender.id))
-        in
-        let taken =
-          receive_damage ~defender ~attacker b.effects ~enemies:[ attacker ] ~roll:b.rng
-            ~battle:b.effect_state
-            (Item.fold_receive_damage (loadout_of b defender) ictx ~damage:outgoing
-               ~source:attacker.id ~target:defender.id
-               ~f:(fun (i : Item.item) n -> Item.receive_damage_hook i ictx ~damage:n
-                     ~source:attacker.id ~target:defender.id))
-        in
-        defender.life <- max 0 (defender.life - taken);
-        (* The defeat sweep keys off the flag, not the life total, so it has to
-           be raised here or nobody is ever reported dead. *)
-        if defender.life < 1 then defender.is_dead <- true;
-        emit b (Damage (defender.name, taken))
-      end
+    [defender] is the combatant whose turn it is - the naming is the engine's,
+    not mine, and [attacker_of] is what turns it round. *)
+let rec play_move (b : battle) (defender : combatant) : unit =
+  (* [defender] is the combatant being attacked, not the one attacking. That
+     naming is easy to get wrong and getting it wrong is silent: the whole
+     function behaves reasonably either way, it just asks the wrong side whether
+     it is human. [attacker_of] is what turns it round, and the mover is the
+     attacker. *)
+  let mover = attacker_of b defender in
+  let is_hero = mover.Combat.id = b.hero.Combat.id in
+  match (b.rules.player, is_hero) with
+  | Some p, true ->
+      (* A human picks from the legal swaps rather than from the evaluator's
+         favourite. [find_all_legal_moves] applies the same legality test the
+         AI's [has_valid_move] uses, so a swap the human is offered is one the
+         engine would have accepted; only the ranking is skipped. *)
+      (match p.choose_swap (find_all_legal_moves b.board) with
+      | Some m ->
+          b.board <- swap_gems b.board m.from_pos m.to_pos;
+          (* [swap] carries two positions rather than a direction, and the event
+             wants the direction, so derive it. A legal swap is always
+             orthogonal, so one of the two is strictly greater. *)
+          emit b
+            (Swap
+               ( m.from_pos.x,
+                 m.from_pos.y,
+                 if m.to_pos.x > m.from_pos.x then Horizontal else Vertical ));
+          play_swap_result b defender
+      | None ->
+          (* Declining the swap ends the turn without one, which is what a player
+             means by passing. *)
+          ())
   | _ ->
-      (* No legal move. The original regenerates the board and calls it Mana Burn;
-         see [Board.reshuffle], which also explains why filling empty cells is
-         not enough. *)
-      b.mana_burns <- b.mana_burns + 1;
-      emit b ManaBurn;
-      b.board <- reshuffle ~rng:b.rng b.board;
-      emit b Refilled
+      let e =
+        evaluate_board ~weights:b.rules.ai_weights ~rng:b.rng
+          ~difficulty:b.rules.difficulty
+          ~hero:{ level = b.rules.hero_level; level_cap = b.rules.hero_level_cap }
+          (ai_view b)
+      in
+      (match (e.has_valid_move, e.best) with
+      | true, Some c ->
+          (* The candidate comes back in the AI's coordinates, which put row 0
+             above the board. Undo the same shift [ai_view] applied, otherwise
+             every swap lands one row low. *)
+          let sx = c.cand_x and sy = c.cand_y - 1 in
+          let src = { x = sx; y = sy } in
+          let dst =
+            match c.cand_direction with
+            | Horizontal -> { x = sx + 1; y = sy }
+            | Vertical -> { x = sx; y = sy + 1 }
+          in
+          b.board <- swap_gems b.board src dst;
+          emit b (Swap (sx, sy, c.cand_direction));
+          play_swap_result b defender
+      | _ ->
+          (* No legal move. The original regenerates the board and calls it Mana
+             Burn; see [Board.reshuffle], which also explains why filling empty
+             cells is not enough. *)
+          b.mana_burns <- b.mana_burns + 1;
+          emit b ManaBurn;
+          b.board <- reshuffle ~rng:b.rng b.board;
+          emit b Refilled)
+
+(** Resolves the cascade after a swap is on the board and runs the damage chain.
+
+    Split out of [play_move] so the human and AI paths share it exactly. The only
+    thing that differs between a human turn and a machine one is which swap was
+    chosen; everything from here on is the recovered code path. *)
+and play_swap_result (b : battle) (defender : combatant) : unit =
+  let dealt = resolve_cascades b defender in
+  if dealt > 0 then begin
+    (* Two chains run, and within each the attacker's side is the inner one.
+
+       The order matters and is not arbitrary. For a given combatant the original
+       runs GIVE_DAMAGE before RECEIVE_DAMAGE, so an item that amplifies what it
+       deals and an item that reduces what it takes compose as amplify-then-reduce
+       rather than the other way round. Across the two combatants it runs the
+       attacker's chain first, so the defender's receive hooks see the
+       already-amplified number. *)
+    let attacker = attacker_of b defender in
+    let ictx =
+      Item.
+        {
+          ic_board = Some b.board;
+          ic_percentile = b.rng 100;
+          ic_roll = b.rng;
+          ic_attacker = Some attacker;
+          ic_defender = Some defender;
+          ic_hero = b.hero;
+          ic_enemy = b.enemy;
+        }
+    in
+    (* Items first, then status effects, each as its own chain.
+
+       The {e relative} order of an item hook against a status-effect hook is not
+       recovered: the original dispatches both through the same name-based
+       callback table, and nothing in the binary or the scripts fixes whether a
+       character's worn item runs before or after the status effects on it. Items
+       are placed first here on the assumption that equipment is the more
+       persistent modifier, and this comment is the record of that being a choice
+       rather than a recovery.
+
+       What {e is} recovered is the order across the two combatants: the
+       attacker's chain runs before the defender's, so a defender's reduction
+       sees the already-amplified number. *)
+    let outgoing =
+      give_damage ~attacker ~defender b.effects ~enemies:[ defender ] ~roll:b.rng
+        ~battle:b.effect_state
+        (Item.fold_give_damage (loadout_of b attacker) ictx ~damage:dealt
+           ~source:attacker.id ~target:defender.id
+           ~f:(fun (i : Item.item) n ->
+             Item.give_damage i ictx ~damage:n ~source:attacker.id
+               ~target:defender.id))
+    in
+    let taken =
+      receive_damage ~defender ~attacker b.effects ~enemies:[ attacker ] ~roll:b.rng
+        ~battle:b.effect_state
+        (Item.fold_receive_damage (loadout_of b defender) ictx ~damage:outgoing
+           ~source:attacker.id ~target:defender.id
+           ~f:(fun (i : Item.item) n ->
+             Item.receive_damage_hook i ictx ~damage:n ~source:attacker.id
+               ~target:defender.id))
+    in
+    defender.life <- max 0 (defender.life - taken);
+    (* The defeat sweep keys off the flag, not the life total, so it has to be
+       raised here or nobody is ever reported dead. *)
+    if defender.life < 1 then defender.is_dead <- true;
+    emit b (Damage (defender.name, taken))
+  end
 
 (** Builds the context the AI spell hooks are evaluated against.
 
@@ -440,10 +509,26 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
      reasoned about. *)
   let evaluation = board_evaluation b in
   let percentile = b.rng 100 in
+  (* Only {e selection} changes for a human. [ShouldAICastSpell] is deliberately
+     not consulted: it is the engine's opinion about whether a machine would cast
+     this, and a player is entitled to disagree with it. What the player is
+     offered is filtered by [can_cast] - affordable, off cooldown, and not
+     suppressed - which is the same legality the affordability filter applies on
+     the AI path. *)
+  let chosen =
+    match (b.rules.player, actor.Combat.id = b.hero.Combat.id) with
+    | Some p, true ->
+        let disallowed = b.effect_state.Combat.spells_disallowed in
+        p.choose_spell
+          (List.filter (fun (s : spell) -> can_cast ~spells_disallowed:disallowed actor s)
+             spells)
+    | _ ->
+        pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
+          ~spells_disallowed:b.effect_state.Combat.spells_disallowed
+          (ai_context b actor defender ~percentile ~evaluation) spells
+  in
   let still_turn =
-    match pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
-            ~spells_disallowed:b.effect_state.Combat.spells_disallowed
-            (ai_context b actor defender ~percentile ~evaluation) spells with
+    match chosen with
     | None ->
         (* Nothing cast, so the turn is the caster's to use. *)
         emit b (SpellHeld actor.name);

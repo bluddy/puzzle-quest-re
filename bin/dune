@@ -5,3 +5,7 @@
 (executable
  (name pq_battle)
  (libraries puzzle_quest_lib))
+
+(executable
+ (name pq_play)
+ (libraries puzzle_quest_lib))

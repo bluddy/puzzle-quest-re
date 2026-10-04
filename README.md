@@ -87,6 +87,7 @@ chooser, which is implemented but off by default.
 * `bin/`: CLI utilities:
   * `pq_save_tool.ml`: Save file inspector, PNG extractor, and interactive board simulator.
   * `pq_battle.ml`: Plays a seeded headless battle and prints the trace or a summary.
+* `pq_play.ml`: The same battle with you on the hero's turns.
 * `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
@@ -137,6 +138,30 @@ dune exec bin/pq_battle.exe -- --seed 7 --hero-skill 200
 dune exec bin/pq_battle.exe -- --seed 7 --trace --board
 ```
 The same seed always produces the same fight, so a trace is reproducible.
+
+### Play It Yourself
+```powershell
+dune exec bin/pq_play.exe -- --seed 7
+dune exec bin/pq_play.exe -- --seed 7 --hero-mana 20 --spell SBAV --spell SBRA
+dune exec bin/pq_play.exe -- --list
+```
+You take the hero's turns; the monster is driven by the recovered AI. On your
+turn:
+
+* **cast** by number, from the spells you can currently afford;
+* **swap** two adjacent squares by coordinate, e.g. `c3 d3` - checked against the
+  same legality test the AI's move generator uses, so an illegal swap is
+  rejected rather than silently doing nothing;
+* `l` lists the legal swaps, `p` passes your turn, `q` quits.
+
+Casting a spell that ends your turn skips the swap, because in the original a
+spell that consumes the turn means no swap happens that turn either.
+
+Only the *choice* is yours. Everything after it - the cost charge, the cooldown
+tick, the keeps-turn test, the effect body, the cascade, the damage chain - is the
+recovered code path, so the hooks are two callbacks on `Battle.rules.player` and
+default to `None`, which leaves the AI in charge of both decisions. Every
+headless run and faithful test is unaffected.
 
 ### Watch the AI Decide Spells
 ```powershell
