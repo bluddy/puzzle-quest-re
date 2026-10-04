@@ -9,3 +9,9 @@
 (executable
  (name pq_play)
  (libraries puzzle_quest_lib))
+
+; The graphics front. sdl3 is a pinned git dependency (see README), and it binds
+; 40 of the 42 SDL3 calls a board renderer needs; see tools/sdl3_readiness.md.
+(executable
+ (name sdl3_probe)
+ (libraries sdl3))

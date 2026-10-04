@@ -132,6 +132,23 @@ dune exec bin/pq_save_tool.exe -- info "<path_to_save>.pqhero"
 dune exec bin/pq_save_tool.exe -- board-sim
 ```
 
+### Graphics (SDL3)
+
+The bindings are a pinned git dependency rather than an opam package:
+
+```sh
+opam pin add sdl3 https://github.com/sanette/ocaml-sdl3.git
+opam install sdl3
+$env:SDL3_LIBRARY = "C:\Program Files (x86)\Steam\SDL3.dll"
+dune exec bin/sdl3_probe.exe
+```
+
+`bin/sdl3_probe.exe` checks that SDL3 actually loads and can open a window on this
+machine. `tools/sdl3_readiness.md` records what was verified, how complete the
+bindings are for this game (40 of the 42 calls a board renderer needs), and the
+one real gap - nothing in SDL3 core decodes a PNG, and the game's art is 226 PNGs
+and 63 JPGs.
+
 ### Play a Headless Battle
 ```powershell
 dune exec bin/pq_battle.exe -- --seed 7 --hero-skill 200
