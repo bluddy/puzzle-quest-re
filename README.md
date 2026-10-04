@@ -98,7 +98,8 @@ chooser, which is implemented but off by default.
   * [`SAVE_FILE_FORMAT.md`](docs/SAVE_FILE_FORMAT.md): Detailed `.pqhero` format and crypto specification.
   * [`LUA_API.md`](docs/LUA_API.md): Catalog of 191 native C functions registered to Lua.
   * [`DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md): Engine memory layouts and structures.
-* `tools/`: Python and Ghidra scripts for DRM unpacking, decompilation, and symbol extraction.
+  * [`reverse/`](docs/reverse/README.md): **Evidence database** — every claim the port rests on, with its source, its confidence, and what would refute it. Run `python tools/validate_evidence.py --report`.
+* `tools/`: Python and Ghidra scripts for DRM unpacking, decompilation, symbol extraction, and evidence validation.
 * `game/`: Original game binaries and assets (not tracked in git).
 
 ---

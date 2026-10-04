@@ -1,0 +1,880 @@
+# Reverse-engineering evidence database.
+#
+# What this is for: every claim the port rests on, with the evidence it rests on,
+# and how sure we are. Before this file those three things lived apart - a claim
+# in a source comment, the decompilation in docs/decompiled/, and the confidence
+# in a hand-written table at the bottom of a markdown file. Nothing joined them,
+# so nothing could be queried and nothing could be checked.
+#
+# Two failures in the port would have been caught by this file existing:
+#
+#   * Status effects were keyed by their Lua table name rather than their XML id,
+#     in the spell layer and in seven AI hooks. The claim lived in a comment; the
+#     constants that contradict it lived in Assets.zip; nothing joined them.
+#   * The status effect expiry rule was inverted, and two tests asserted the wrong
+#     behaviour. A claim with a confidence and no evidence is what let that
+#     harden.
+#
+# Format notes:
+#   * evidence[].ref is a repo-relative path and is checked by
+#     tools/validate_evidence.py. A claim cannot cite a file that is not there.
+#   * Assets paths are cited as game/Assets.zip!Assets/... because that is where
+#     they actually live; the validator understands that prefix and looks inside.
+#   * `verdict: presentation` claims are the ones dropped from the port. They all
+#     carry `audited`, and an unaudited one is an unproven assumption. Count them
+#     with tools/validate_evidence.py --report.
+#
+# Conventions:
+#   area      where the claim lives
+#   verdict   mechanic   wrong if you get it wrong; the simulation is wrong
+#             presentation  cosmetic; safe to drop, but only if that is proven
+#   status    recovered  read directly out of the binary or the assets
+#             inferred    reasoned from recovered facts, not itself read
+#             assumed     a choice, with no evidence behind it
+#             refuted     evidence says otherwise; kept so it is not re-derived
+#             open        not known
+#   confidence high | medium | low
+#   audited   (presentation only) true if the call was actually decompiled
+#   source_pass  which body of work established it, so a stale claim is visible
+
+schema: 1
+
+claims:
+
+  # ---------------------------------------------------------------- mana ----
+
+  - id: mana.pool_and_ceiling_offsets
+    title: Mana pool at character+0x74, per-element ceiling at +0x84
+    area: mana
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: mana
+    summary: >
+      Four consecutive ints per character hold the current pools, and four more
+      hold the ceilings. The element index is the Lua mana id, which is the
+      board's gem order (1 Earth, 2 Fire, 3 Water, 4 Air) and not `element`'s
+      order - that transposition is the standing trap in this area.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_SET_MANA_AIR_445c00.c
+        fn: Engine_SET_MANA_AIR_445c00
+        quote: |
+          iVar1 = *(int *)(param_1 + 0x84 + param_2 * 4);
+          if (param_3 < iVar1) { iVar1 = param_3; }
+          *(int *)(param_1 + 0x74 + param_2 * 4) = iVar1;
+    affects: [lib/combat.ml, lib/spell.ml]
+    notes: See combat.resistance for the same transposition done once, in one place.
+
+  - id: mana.set_clamps_to_ceiling
+    title: SET_MANA_<E> stores the smaller of the requested value and the ceiling
+    area: mana
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: mana
+    summary: >
+      A spell can ask for more mana than the pool holds and gets the ceiling
+      instead. Several scripts rely on this, and `Battle.credit_run` depends on
+      the consequence: a pool can never exceed its cap, which is what makes the
+      AI's "is the pool full" test mean anything.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_SET_MANA_AIR_445c00.c
+        fn: Engine_SET_MANA_AIR_445c00
+      - kind: code
+        ref: lib/combat.ml
+        note: Combat.set_mana
+    affects: [lib/combat.ml, lib/spell_effects.ml]
+
+  - id: mana.ceiling.only_written_by_set_max
+    title: Inside a battle, the only writer of the ceiling is SET_MAX_MANA_<E>
+    area: mana
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: >
+      SET_MAX_MANA_AIR resolves its arguments and writes +0x84 directly, with no
+      clamping. A scan of all 346 decompiled files finds no other writer of that
+      field on a battle character apart from the tutorial monster spawn. The one
+      script that calls it is SLCO, which raises the Fire ceiling by twelve.
+
+      So the ceiling does not move on levelling during a battle. Something
+      establishes the base when the hero is constructed or loaded, and that is
+      open - see mana.ceiling.base_value.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Lua_SET_MAX_MANA_AIR.c
+        fn: Lua_SET_MAX_MANA_AIR
+        quote: |
+          Engine_ADD_TEMP_SKILL_4839f0(2,uVar3);   // misnamed; writes +0x84
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEMP_SKILL_4839f0.c
+        quote: |
+          *(int *)(param_1 + 0x84 + param_2 * 4) = param_3;
+      - kind: lua
+        ref: game/Assets.zip!Assets/Spells/SLCO.lua
+    affects: [lib/combat.ml, lib/spell_effects.ml]
+    notes: >
+      The decompiler reuses ADD_TEMP_SKILL_4839f0 as the symbol here and there.
+      It is a dispatch helper, not the skill function. Several other .c files in
+      docs/decompiled carry the same misnaming, which is a standing trap when
+      reading a quote without its caller.
+
+  - id: mana.ceiling.base_value
+    title: The per-element mana ceiling base is a chosen 20, not a recovered fact
+    area: mana
+    verdict: mechanic
+    status: assumed
+    confidence: low
+    source_pass: mana
+    summary: >
+      `default_mana_limit = 20` was picked so that every threshold the scripts
+      test (8, 10, 12, 14, 15, 20) stays reachable. If the real base is a
+      function of level and class, then every spell and every AI hook comparing
+      `GET_MANA_* >= N` is being judged against the wrong number.
+
+      This is the largest open correctness question in the port. The evidence
+      points at derivation rather than storage: the save record carries level and
+      class_id but only one mana quadruple, and no ceiling.
+    evidence:
+      - kind: code
+        ref: lib/combat.ml
+        note: default_mana_limit
+      - kind: decompiled
+        ref: lib/save_file.ml
+        note: one mana quadruple between cur_life and class_id
+    affects: [lib/combat.ml, lib/spell.ml, lib/spell_ai_manual.ml]
+    notes: Settled by quest.base_value_from_level.
+
+  - id: mana.yield.formula
+    title: Mana yield is (skill + 100) * run_multiplier * 0.01, capped at 999
+    area: mana
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      Established in the original pass from constants at 0x5217B4 and 0x51E4C8.
+      The yield is a float in the original because the extra turn roll truncates
+      it, and 10.99 versus 10 is observable.
+    evidence:
+      - kind: doc
+        ref: docs/SPELLS.md
+        note: section 3
+    affects: [lib/spell.ml, lib/battle.ml]
+
+  - id: mana.temp_resistance
+    title: ADD_TEMP_RESISTANCE accumulates into four ints at character+0x94
+    area: mana
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: spell_effects
+    summary: >
+      A bare accumulate with no clamp and no expiry of its own. It is a real
+      field rather than a status effect because GET_RESISTANCE is a separate Lua
+      API that other content reads. SSAN is the only script that sets it: five
+      points to one of the four elements, drawn at random.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Lua_ADD_TEMP_RESISTANCE.c
+        fn: Lua_ADD_TEMP_RESISTANCE
+        quote: |
+          piVar1 = (int *)(iVar5 + 0x94 + iVar2 * 4);
+          *piVar1 = *piVar1 + iVar4;
+    affects: [lib/combat.ml, lib/status_effect_hooks.ml]
+
+  # ------------------------------------------------------- status effects ----
+
+  - id: status.keyed_by_xml_id
+    title: A status effect is identified by its XML id, never by its script name
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: >
+      STATUS_EFFECT_HIDDEN is a string alias for "EHID", and every
+      HAS_STATUS_EFFECT and ADD_STATUS_EFFECT is a comparison against that
+      string. The Lua table is called Hidden and nothing in the game ever
+      compares a table name.
+
+      The port had it wrong in the spell layer (storing "Hidden", "Poison",
+      "Favoreded" and three spellings of Blind) and in seven AI hooks. With no
+      descriptor table in place this was invisible; the moment one existed, all
+      seventeen effects were inert.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardConstants.lua
+        quote: |
+          STATUS_EFFECT_HIDDEN 	= "EHID";
+          STATUS_EFFECT_WALLOFFIRE	= "EWOF";
+      - kind: xml
+        ref: game/Assets.zip!Assets/StatusEffects/Hidden.xml
+        note: id="EHID", duration="0", stack="1"
+      - kind: code
+        ref: lib/status_effect_data.ml
+    affects: [lib/spell_effects.ml, lib/spell_ai_manual.ml, lib/status_effect_data.ml]
+
+  - id: status.expiry.zero_is_alive
+    title: The expiry countdown reports a duration at or below zero as ALIVE
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: >
+      FUN_00475220 reads `if (duration < 1) return 1`. The port had this
+      inverted, which would have dropped the three indefinite effects on the turn
+      they were applied. Two tests asserted the wrong behaviour, which is how it
+      stayed wrong.
+    evidence:
+      - kind: doc
+        ref: docs/COMBAT_FLOW.md
+        note: section 3 quotes the recovered rule
+      - kind: code
+        ref: lib/combat.ml
+        note: tick_duration
+    affects: [lib/combat.ml, test/test_combat.ml]
+
+  - id: status.cancel_by_setting_duration_to_one
+    title: A self-cancelling effect sets its own remaining duration to 1
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: >
+      Three scripts cancel themselves this way - Hidden when its owner is hit,
+      Wall of Fire and Wall of Thorns when their pool empties. It is not a
+      removal: the effect keeps working for the rest of the turn in which it
+      cancelled itself, and the next countdown drops it. The asymmetry matters -
+      a wall broken by damage mid-turn survives to the tick, and a wall broken by
+      its own start-turn hook is gone before the turn begins.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/StatusEffects/Hidden.lua
+        quote: |
+          local idx = GET_STATUS_EFFECT_INDEX(targetIdx,STATUS_EFFECT_HIDDEN);
+          SET_STATUS_EFFECT_DURATION(targetIdx,idx,1);
+      - kind: code
+        ref: lib/combat.ml
+        note: set_effect_duration
+    affects: [lib/combat.ml, lib/status_effect_hooks.ml]
+
+  - id: status.walls_bleed_two_per_turn
+    title: Wall of Fire and Wall of Thorns cost two of their pool a turn to stand
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: >
+      Easy to miss because the script lists OnReceiveDamage first and
+      OnStartTurn second. A wall written without the start-turn half is free to
+      stand indefinitely, which is exactly what the first pass produced. Caught
+      by the new suite.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/StatusEffects/WallOfFired.lua
+        quote: |
+          local function OnStartTurn(characterIdx,turnNumber)
+              SUBTRACT_MANA_FIRE(characterIdx,2);
+              if (GET_MANA_FIRE(characterIdx) <= 0) then ... end
+          end
+    affects: [lib/status_effect_hooks.ml]
+
+  - id: status.scripts_count
+    title: The base game ships 17 status effect scripts
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: All 17 are ported; none was left unported.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/status_effects
+      - kind: code
+        ref: lib/status_effect_hooks.ml
+        note: known_unported is empty
+
+  - id: status.vigiled_adds_three_not_five
+    title: Vigiled's header says 5 mana per pool; the code adds 3
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: Transcribed as the code reads. The header is stale.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/StatusEffects/Vigiled.lua
+        quote: |
+          --	VIGILED
+          --		On a Match4/5, gain 5 of each mana
+          local function ManaGain(characterIdx)
+              ADD_MANA_AIR(characterIdx,3);   -- not 5
+    affects: [lib/status_effect_hooks.ml]
+
+  - id: status.disease_drains_all_four
+    title: Disease's header names only Air; the code drains all four pools
+    area: status_effects
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: Transcribed as the code reads.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/StatusEffects/Disease.lua
+        quote: |
+          SUBTRACT_MANA_AIR(characterIdx,1);
+          SUBTRACT_MANA_EARTH(characterIdx,1);
+          SUBTRACT_MANA_FIRE(characterIdx,1);
+          SUBTRACT_MANA_WATER(characterIdx,1);
+
+  # ------------------------------------------------------- presentation ----
+
+  - id: pres.add_lightning
+    title: ADD_LIGHTNING is pixel-space only
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: spell_effects
+    summary: Draws a bolt between two cells. No gem, life or mana is touched.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_LIGHTNING_414d20.c
+    affects: [lib/spell_effects.ml]
+
+  - id: pres.add_effect_to_grid
+    title: ADD_EFFECT_TO_GRID is a sparkle on one cell
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: spell_effects
+    summary: >
+      Resolves the cell's pixel coordinates and makes one animeffect call. This
+      reading is what unblocked 21 spell bodies, since in most of them the whole
+      mechanic was the single SET_GEM or DELETE_GEM the sparkle decorated.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_EFFECT_TO_GRID_4b51d0.c
+        quote: |
+          iVar2 = sStack_1c + 0x24;   // the cell's pixel coordinates
+          iVar1 = sStack_1a + 0x24;
+          FUN_004bddc0(iVar1, iVar2); // one animeffect call
+    affects: [lib/spell_effects.ml]
+
+  - id: pres.add_effect_to_character
+    title: ADD_EFFECT_TO_CHARACTER is a sparkle on a character
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: spell_effects
+    summary: >
+      The character-space twin of ADD_EFFECT_TO_GRID: resolves the target's
+      position and makes one animeffect call. Nothing else.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_EFFECT_TO_CHARACTER_4b0690.c
+    affects: [lib/spell_effects.ml]
+
+  - id: pres.animeffect_to_grid_and_character
+    title: ADD_ANIMEFFECT_TO_GRID / _CHARACTER assumed cosmetic - NOT AUDITED
+    area: render
+    verdict: presentation
+    status: assumed
+    confidence: low
+    audited: false
+    source_pass: none
+    summary: >
+      Dropped from the port on the strength of the name. Never decompiled. If any
+      of them turns out to carry a mechanic, the spells that call it are wrong -
+      and there are several.
+    evidence: []
+    affects: [lib/spell_effects.ml]
+    notes: Settled by audit.animeffect_family.
+
+  - id: pres.std_spell_effect_family
+    title: Std_CastSpellEffect / Std_EnemySpellEffect / Std_GridSpellEffect / Std_CasterSpellEffect assumed cosmetic - NOT AUDITED
+    area: render
+    verdict: presentation
+    status: assumed
+    confidence: low
+    audited: false
+    source_pass: none
+    summary: >
+      Four names, all taking a SPELLFX_* constant and usually a message. Dropped
+      throughout the spell layer without a decompilation. High call volume, so
+      this is the largest unaudited surface.
+    evidence: []
+    affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
+
+  - id: pres.add_text_message
+    title: ADD_TEXT_MESSAGE* assumed cosmetic - NOT AUDITED
+    area: ui
+    verdict: presentation
+    status: assumed
+    confidence: low
+    audited: false
+    source_pass: none
+    summary: >
+      The *argument* is always cosmetic, but two scripts compute a value purely to
+      format it into one - SWOP's damage and SSWM's numSkuffs, which is an
+      undefined global. The call itself was never decompiled.
+    evidence: []
+    affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
+
+  - id: pres.play_sound
+    title: PLAY_SOUND assumed cosmetic - NOT AUDITED
+    area: render
+    verdict: presentation
+    status: assumed
+    confidence: low
+    audited: false
+    source_pass: none
+    summary: >
+      Two spell sounds, called from a spell that deals no damage. Dropped on the
+      strength of the name.
+    evidence: []
+    affects: [lib/spell_effects.ml]
+
+  # -------------------------------------------------------------- spells ----
+
+  - id: spells.castspell.coverage
+    title: All 129 battle spells have a ported CastSpell body
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: spell_effects
+    summary: >
+      SARC is excluded: it is the spell-research mini-game descriptor rather than
+      a battle spell. Counted two ways, against the dispatch table and against the
+      real spell table, so a body registered under an id no spell uses cannot
+      read as progress.
+    evidence:
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: effect_of_spell_ids
+      - kind: code
+        ref: test/test_spell_effects.ml
+    affects: [lib/spell_effects.ml]
+
+  - id: spells.ai.coverage
+    title: All 129 ShouldAICastSpell hooks are ported
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: spell_effects
+    summary: >
+      53 generated by tools/extract_spell_ai.ps1, 76 hand-written. SCHG and SFBA
+      were the last two and were long recorded as unobtainable; both helpers are
+      local functions in the spells' own scripts.
+    evidence:
+      - kind: code
+        ref: lib/spell_ai_manual.ml
+      - kind: lua
+        ref: game/Assets.zip!Assets/Spells/SCHG.lua
+        note: EvaluateRows is ten lines below CastSpell
+    affects: [lib/spell_ai.ml, lib/spell_ai_manual.ml]
+
+  - id: spells.ai_returns_number
+    title: A ShouldAICastSpell hook returns a number; > 0 means cast
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      Not a boolean. Std_AISpellcastingChance returns 0 or 1 and three hooks
+      return negatives (SMBU -50, SSBL and SSTL -10), which are suppressions.
+    evidence:
+      - kind: code
+        ref: lib/spell.ml
+        note: should_ai_cast
+    affects: [lib/spell.ml, lib/spell_ai_manual.ml]
+
+  - id: spells.ai_modifier_direction
+    title: A positive modifier makes a spell cast MORE often
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: spell_effects
+    summary: >
+      The percentile roll is 0..99 with low being the lucky end, and the shared
+      helper casts when `percentile <= 50 + modifier`. The port's prose said the
+      opposite in three places while the code was right. The two numbers are easy
+      to conflate: the hook's return value, where > 0 means yes and a negative is
+      a suppression, and the modifier, where the sign runs the other way.
+    evidence:
+      - kind: code
+        ref: lib/spell.ml
+        quote: |
+          let ai_spellcasting_chance ~(modifier : float) (ctx : ai_context) : bool =
+            if float_of_int ctx.ctx_percentile > 50.0 +. modifier then false
+            else ctx.ctx_evaluation <= 30
+    affects: [lib/spell.ml, lib/spell_ai_manual.ml]
+
+  - id: spells.handle_spell_cost
+    title: HANDLE_SPELL_COST subtracts the spell's own cost and sets a flag
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      Floors at zero and sets the spell's cost_charged flag, which suppresses the
+      normal charge. Ten spells open with "Charge the mana first"; paying first
+      would charge SIST's 60 mana twice, and 120 is not a number the game could
+      intend.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_HANDLE_SPELL_COST_4622c0.c
+    affects: [lib/battle.ml, lib/spell_effects.ml]
+
+  - id: spells.notify_of_free_spell
+    title: NOTIFY_OF_FREE_SPELL sets one byte at +0x14, making the next spell free
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: spell_effects
+    summary: >
+      A latch on the combatant, not a modifier on the spell, and read *before* the
+      body runs - so a body that sets it is granting the spell after this one.
+      Separate from cost_charged, which a spell sets by paying for itself.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Lua_NOTIFY_OF_FREE_SPELL.c
+        fn: Lua_NOTIFY_OF_FREE_SPELL
+        quote: |
+          iVar1 = Engine_HANDLE_SPELL_COST_4622c0();
+          iVar1[0x14] = 1;
+    affects: [lib/combat.ml, lib/battle.ml, lib/spell_effects.ml]
+
+  - id: spells.swop_computes_damage_it_never_spends
+    title: SWOP computes 5 + Fire/8 and deals no damage
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: spell_effects
+    summary: A bug in the script's message, not a mechanic. Recorded so it is not "fixed".
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Spells/SWOP.lua
+    affects: [lib/spell_effects.ml]
+
+  # --------------------------------------------------------------- board ----
+
+  - id: board.run_multiplier
+    title: Run-size multiplier is 1 / 2 / 3 for 3 / 4 / 5-of-a-kind
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      A 3-run scores 1x, a 4-run 2x and a 5-run 3x, applied to every gem in the
+      run. The same three tiers the AI scores a move with.
+    evidence:
+      - kind: doc
+        ref: docs/SPELLS.md
+    affects: [lib/board.ml, lib/spell.ml]
+
+  - id: board.flag_wildcard
+    title: Board flag +0x390 enables wildcard generation
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      SetMultiplierEffects(false) clears all three board flags at once, which is
+      why one call covers a script's three separate SET_*_ENABLED(0) lines.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+        note: SetMultiplierEffects
+    affects: [lib/board.ml, lib/spell.ml]
+
+  - id: board.flag_extra_turn
+    title: Board flag +0x391 enables the stat-based extra turn
+    area: board
+    verdict: mechanic
+    status: inferred
+    confidence: medium
+    source_pass: original_reverse
+    summary: >
+      Gates the per-match roll for a stat-based extra turn. Seeded from the battle's
+      initial value rather than hardcoded on.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+    affects: [lib/board.ml, lib/battle.ml]
+
+  - id: board.flag_skull_scaling
+    title: Board flag +0x392 scales skull damage - no consumer found
+    area: board
+    verdict: mechanic
+    status: open
+    confidence: low
+    source_pass: original_reverse
+    summary: >
+      Modelled in the port with nothing reading it. Until a consumer is found,
+      either the offset is wrong or a mechanic is missing. See
+      quest.skull_scaling_consumer.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+    affects: [lib/board.ml]
+
+  - id: board.flag_pattern_45
+    title: Board flag +0x395 gates 4/5-of-a-kind pattern matching
+    area: board
+    verdict: mechanic
+    status: inferred
+    confidence: medium
+    source_pass: original_reverse
+    summary: >
+      Gates the 4- and 5-of-a-kind pattern match, which is a separate scoring path
+      from the ordinary run multiplier.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridPatterns.lua
+    affects: [lib/board.ml]
+
+  - id: board.gem_ids
+    title: Gem ids are 1 Earth, 2 Fire, 3 Water, 4 Air, 5 Skull, 15 Red Skull
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      The reverse of the character element order for the last two, which is the
+      standing transposition trap across mana, status effects and the AI.
+    evidence:
+      - kind: code
+        ref: test/test_board.ml
+    affects: [lib/board.ml, lib/spell.ml, lib/combat.ml]
+
+  # -------------------------------------------------------------- combat ----
+
+  - id: combat.turn_order
+    title: Turn order is a rotation of the roster seeded by the highest Cunning
+    area: combat
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: turn_manager
+    summary: >
+      The roster rotates; the scan only decides who leads. An unbroken tie keeps
+      the first combatant in roster order.
+    evidence:
+      - kind: doc
+        ref: docs/COMBAT_FLOW.md
+    affects: [lib/combat.ml, lib/battle.ml]
+
+  - id: combat.extra_turn_chance
+    title: Extra turn chance is gained/100, rolled per element per match
+    area: combat
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: Identified from a playtesting observation and then confirmed in the binary.
+    evidence:
+      - kind: doc
+        ref: docs/SPELLS.md
+        note: section 4, FUN_0047D4F0
+    affects: [lib/spell.ml, lib/battle.ml]
+
+  - id: combat.stack_limit_per_effect
+    title: The stack attribute caps copies of one effect, not effects overall
+    area: combat
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: status_effects
+    summary: >
+      Four of the seventeen stack above 1. An earlier draft counted all effects
+      together, silently capping a character at one Disease despite stack="4".
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/StatusEffects/Disease.xml
+        note: stack="4"
+    affects: [lib/combat.ml]
+
+  - id: combat.hook_table_37
+    title: 37 hook names at 0x005239E8 are the complete scripting surface
+    area: combat
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      The strings run out at 0x00523C3C, where a Lua argument-type error message
+      begins, so 37 is the real count and not a scan artifact.
+    evidence:
+      - kind: code
+        ref: lib/combat.ml
+        note: all_hook_names
+      - kind: doc
+        ref: docs/LUA_API.md
+    affects: [lib/combat.ml, lib/item.ml]
+
+  - id: combat.is_spell_castable
+    title: Castability is a per-pool comparison; the air check is gated
+    area: combat
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      The air pool is only tested when the "spells disallowed this turn" flag is
+      set, which is how a status effect suppresses casting. That flag is what
+      Blinded raises.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_IS_SPELL_CASTABLE_474b40.c
+    affects: [lib/spell.ml, lib/combat.ml]
+
+# ------------------------------------------------------------ open questions ----
+
+open_questions:
+
+  - id: quest.base_value_from_level
+    question: What sets the per-element mana ceiling at hero construction, and does it scale with level?
+    why_it_matters: >
+      Every spell and every AI hook that tests GET_MANA_* against a number is
+      being judged against a ceiling that is currently a chosen 20. If the real
+      value is f(level, class), a large fraction of the AI's decisions are wrong
+      in a way no test would catch.
+    would_be_settled_by:
+      - The hero or party constructor that writes +0x84 outside the battle object.
+      - Whether the save record's single mana quadruple is the pool or the ceiling.
+    related: [mana.ceiling.base_value, mana.ceiling.only_written_by_set_max]
+    status: open
+
+  - id: quest.skull_scaling_consumer
+    question: What reads board flag +0x392?
+    why_it_matters: >
+      It is modelled with no consumer. Either the offset is mislabelled or a
+      mechanic is missing from the board resolution.
+    would_be_settled_by:
+      - A cross-reference sweep on the flag byte in the decompiler output.
+    related: [board.flag_skull_scaling]
+    status: open
+
+  - id: audit.animeffect_family
+    question: Is any dropped presentation call secretly mechanical?
+    why_it_matters: >
+      Three of the seventeen status effects were inert before this pass, and the
+      expiry rule was inverted with two tests asserting it. The same failure mode
+      is live for every unaudited presentation call, and the port has to render
+      these eventually, so the work is not wasted either way.
+    would_be_settled_by:
+      - Decompiling ADD_ANIMEFFECT_TO_GRID, ADD_ANIMEFFECT_TO_CHARACTER, the four
+        Std_*SpellEffect names, ADD_TEXT_MESSAGE* and PLAY_SOUND.
+    related:
+      - pres.animeffect_to_grid_and_character
+      - pres.std_spell_effect_family
+      - pres.add_text_message
+      - pres.play_sound
+    status: open
+
+  - id: asset.status_effect_id_mismatches
+    question: Why does EFBO have no STATUS_EFFECT_ constant, and EDOO a constant with no XML?
+    why_it_matters: >
+      Benign so far - spells pass the raw string and the id is still the id - but
+      it means the two tables are not redundant and neither can be generated from
+      the other.
+    would_be_settled_by:
+      - Nothing further needed; recorded so it is not treated as a bug to fix.
+    related: [status.keyed_by_xml_id]
+    status: refuted
+    resolution: >
+      Not a defect. Spells pass the raw string and the id is still the id, so the
+      two tables are complementary rather than redundant, and neither can be
+      generated from the other.
+
+  - id: spell.sfba_target_writeback
+    question: How does SFBA's SET_INPUT_DATA target reach CastSpell?
+    why_it_matters: >
+      The scoring is ported; the write-back is not. In a headless port the target
+      comes from the spell's input_type, which is the human's aim - correct for a
+      player, wrong for an AI casting it.
+    would_be_settled_by:
+      - Deciding where an AI's chosen cell is meant to live.
+    related: [spells.ai.coverage]
+    status: open
+
+# --------------------------------------------------------- port decisions ----
+
+# Choices we made, not facts about the game. Kept apart so that changing our
+# mind about one does not look like new evidence about the original.
+
+port_decisions:
+
+  - id: port.hooks_take_context
+    decision: Status effect hooks take a Combat.status_context, not a character index
+    rationale: >
+      The Lua passes characterIdx into the battle's character array. There is no
+      such array here - a battle is a combatant list - and three of the seventeen
+      need GET_ENEMY anyway. Only the seven hooks the scripts use take a context;
+      the other thirty keep their indices because nothing calls them.
+    supersedes: null
+    date: 2026-10-04
+
+  - id: port.match_hooks_return_unit
+    decision: OnMatch4 / OnMatch5 are typed unit, not int
+    rationale: >
+      Item.hooks types its own on_match4 as returning an int, so the two records
+      disagree. Vigiled is the only implementer and its Lua returns nothing.
+      Whether the engine reads nil back as a zero contribution is not recovered.
+    supersedes: null
+    date: 2026-10-04
+
+  - id: port.sfca_loop_cap
+    decision: SFCA's unbounded repeat loop is capped at 1000 attempts
+    rationale: >
+      The only deliberate divergence from the original. Unreachable in practice -
+      boards are refilled before spell effects, and four 3x3 explosions remove at
+      most 36 of 64 cells - but it cannot terminate as written.
+    supersedes: null
+    date: 2026-10-04
+
+  - id: port.headless_first
+    decision: The port was built headless and animation-free
+    rationale: >
+      A deliberate fast path, not the destination. The target is a playable
+      product, so the presentation layer has to be reversed eventually. This
+      decision is superseded in intent, not reversed in fact - the mechanic layer
+      is what made the presentation layer tractable.
+    supersedes: null
+    date: 2026-10-04
+    status: superseded_in_intent
+
+  - id: port.presentation_dropped
+    decision: Presentation calls are dropped rather than implemented
+    rationale: >
+      Valid while headless. Needs revisiting for a playable build, at which point
+      the audit in audit.animeffect_family is the first step rather than an
+      alternative to it.
+    supersedes: port.headless_first
+    date: 2026-10-04
+    status: open
