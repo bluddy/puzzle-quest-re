@@ -481,6 +481,32 @@ let () =
     (not (run Spell_ai_manual.hook_scon dominated 0 0))
 
 let () =
+  (* Std_GetDifficulty: five bands from the gap between hero and task level. The
+     boundaries are the whole function, so they are checked on both sides. A hero
+     ten levels above the task is band 0; eight or more below is band 4. *)
+  let d hero task = Spell.difficulty_for_levels ~hero_level:hero ~task_level:task in
+  check "a task seven below the hero is the easiest band" (d 10 3 = 0);
+  check "and so is one twenty below" (d 10 (-10) = 0);
+  check "six below is the next band up, so the boundary is strict" (d 10 4 = 1);
+  check "eight below is the top of band 1" (d 10 8 = 1);
+  check "nine below is band 2, so the boundary is strict there too" (d 10 9 = 2);
+  check "level with the hero is band 2" (d 10 10 = 2);
+  check "twelve above is still band 2" (d 10 12 = 2);
+  check "thirteen above is band 3" (d 10 13 = 3);
+  check "four above is band 3" (d 10 14 = 3);
+  check "seventeen above is still band 3" (d 10 17 = 3);
+  check "eighteen above is the top band" (d 10 18 = 4);
+  check "nine above is the top band" (d 10 19 = 4);
+  check "and so is any distance below that" (d 10 99 = 4);
+  check "the bands are contiguous, so every level maps somewhere"
+    (List.for_all (fun t -> d 10 t >= 0 && d 10 t <= 4) [ -50; -6; -5; 0; 9; 10; 13; 14; 18; 19; 500 ]);
+  check "and it is monotonic: a higher task is never easier"
+    (let rec go prev t =
+         t > 60 || (d 10 t >= prev && go (d 10 t) (t + 1))
+       in
+      go 0 (-60))
+
+let () =
   (* Coverage, so the port's size is stated rather than guessed. The generated
      count went from 49 to 53 when the extractor learned to accept a signed
      literal, which picked up SCHV, SCLE and SSTL, plus SSNK's bare [return 1].

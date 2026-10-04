@@ -390,64 +390,201 @@ claims:
     affects: [lib/spell_effects.ml]
 
   - id: pres.animeffect_to_grid_and_character
-    title: ADD_ANIMEFFECT_TO_GRID / _CHARACTER assumed cosmetic - NOT AUDITED
+    title: ADD_ANIMEFFECT_TO_GRID / _TO_CHARACTER are pixel-space only
     area: render
     verdict: presentation
-    status: assumed
-    confidence: low
-    audited: false
-    source_pass: none
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: presentation_audit
     summary: >
-      Dropped from the port on the strength of the name. Never decompiled. If any
-      of them turns out to carry a mechanic, the spells that call it are wrong -
-      and there are several.
-    evidence: []
-    affects: [lib/spell_effects.ml]
-    notes: Settled by audit.animeffect_family.
+      Audited. Both resolve a screen position and hand it to one "play this
+      effect" call. Neither reads nor writes life, mana, gems or status effects.
+
+      The grid form computes the cell's pixel coordinates directly:
+      `*param_3 = param_1 * 0x4a + 0x29` and `*param_4 = param_2 * 0x4a + 0x2f`,
+      i.e. a 74-pixel tile grid with a 41/47 origin. The character form asks for
+      the character's screen point as two shorts and then subtracts two fields at
+      +0x3cc and +0x3d0, which is the camera or scroll offset.
+
+      What state they *do* touch is a lazily allocated animation-slot cache
+      (DAT_00583100, a 0x24-byte object keyed by handle) - an allocation, not a
+      game rule. The character index is used only to pick the right slot, so the
+      effect lands on the right character without affecting the simulation.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Lua_ADD_ANIMEFFECT_TO_GRID.c
+        fn: Lua_ADD_ANIMEFFECT_TO_GRID
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_ANIMEFFECT_TO_GRID_47b3a0.c
+        quote: |
+          *param_3 = param_1 * 0x4a + 0x29;   // 74px tiles, x
+          *param_4 = param_2 * 0x4a + 0x2f;   // 74px tiles, y
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_ANIMEFFECT_TO_CHARACTER_47b370.c
+        quote: |
+          *param_4 = param_2 - *(int *)(param_1 + 0x3cc);   // camera offset
+          *param_5 = param_3 - *(int *)(param_1 + 0x3d0);
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_ANIMEFFECT_TO_GRID_483380.c
+        note: lazily allocates the per-effect slot object
+    affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
+    notes: >
+      Needed for rendering, and now cheap: the tile pitch is 74px and the origin
+      offsets are 41 and 47.
 
   - id: pres.std_spell_effect_family
-    title: Std_CastSpellEffect / Std_EnemySpellEffect / Std_GridSpellEffect / Std_CasterSpellEffect assumed cosmetic - NOT AUDITED
+    title: The four Std_*SpellEffect helpers are asset lookups and nothing else
     area: render
     verdict: presentation
-    status: assumed
-    confidence: low
-    audited: false
-    source_pass: none
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: presentation_audit
     summary: >
-      Four names, all taking a SPELLFX_* constant and usually a message. Dropped
-      throughout the spell layer without a decompilation. High call volume, so
-      this is the largest unaudited surface.
-    evidence: []
+      Audited, and it needed no decompilation: all four are Lua, in
+      Assets/Scripts/StandardUtilityScripts.lua. They were assumed to be C
+      natives, which is why this one sat unaudited for so long.
+
+      Each takes a SPELLFX_* constant, resolves it to an asset name through
+      Std_GetSpellFXAsset, resolves a sound through Std_GetSpellSoundAsset, and
+      then calls ADD_ANIMEFFECT_TO_CHARACTER / ADD_ANIMEFFECT_TO_GRID and
+      PLAY_SOUND. That is the whole body. No life, no mana, no gems, no status
+      effects.
+
+      Std_CastSpellEffect has one special case, SPELLFX_DEFAULT, which skips the
+      lookup and plays Spell0 + Spell1 on the caster with a fixed sound.
+      Std_EnemySpellEffect calls GET_ENEMY only to aim the animation at the enemy.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        quote: |
+          function Std_GridSpellEffect(x,y,typ,useSound)
+              local spellfx = Std_GetSpellFXAsset(typ);
+              local soundfx = Std_GetSpellSoundAsset(typ);
+              if (spellfx ~= "") then ADD_ANIMEFFECT_TO_GRID(x,y,spellfx); end
+              if (soundfx ~= "" and useSound==1) then PLAY_SOUND(soundfx); end
+          end
     affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
+    notes: >
+      useSound is compared `== 1`, so a truthy non-1 is silent. Two scripts pass
+      0 and two pass 1; transcribing as `== 1` rather than as truthiness is what
+      the file says.
+
+  - id: render.spell_fx_asset_table
+    title: Std_GetSpellFXAsset maps 21 SPELLFX constants to animeffect names
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: presentation_audit
+    summary: >
+      A plain if/elseif chain from SPELLFX_* to a string asset name, read
+      directly. This is the table a renderer needs and it costs nothing to
+      transcribe - there is no lookup to reverse.
+
+      SPELLFX_HURLGOBLIN maps to the same asset as SPELLFX_FIREBALL
+      ("SpellFireball"), which is the kind of copy-paste the file invites.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        note: Std_GetSpellFXAsset
+    affects: []
+    notes: Not yet transcribed to OCaml; no renderer exists to consume it.
+
+  - id: render.spell_sound_asset_table
+    title: Std_GetSpellSoundAsset maps SPELLFX constants to sound names
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: presentation_audit
+    summary: >
+      The same shape as the FX table. Several constants share a sound - NECRO,
+      FROST, WATER and SYMBOL are all "snd_spellalter" - so the mapping is many
+      to one.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        note: Std_GetSpellSoundAsset
+    affects: []
 
   - id: pres.add_text_message
-    title: ADD_TEXT_MESSAGE* assumed cosmetic - NOT AUDITED
+    title: ADD_TEXT_MESSAGE / _MESSAGE2 / _TO_CHARACTER / _TO_CHARACTER2 are UI layout
     area: ui
     verdict: presentation
-    status: assumed
-    confidence: low
-    audited: false
-    source_pass: none
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: presentation_audit
     summary: >
-      The *argument* is always cosmetic, but two scripts compute a value purely to
-      format it into one - SWOP's damage and SSWM's numSkuffs, which is an
-      undefined global. The call itself was never decompiled.
-    evidence: []
+      Audited. All four are floating-point-text layout. They validate their
+      arguments, compute a position, and add a text object.
+
+      The positioning is "centre it, then keep it on screen":
+      `iVar7 = width_of_line + DAT_0059a4c8 / 2` centres horizontally against a
+      global screen width, and the y term stacks by line height. ADD_TEXT_MESSAGE2
+      differs only by `+ 0x24` against ADD_TEXT_MESSAGE's `- 0x28`, i.e. a
+      different vertical offset in the message stack - which is why
+      Std_Healing and Std_Healing2 are mechanically identical despite looking
+      different in the spell scripts.
+
+      The recursion in Engine_ADD_TEXT_MESSAGE_4bc4c0 is a bounding-box walk up
+      the message list, summing each entry's width at +0xc while the parent
+      pointer at +0x28 is non-null.
+
+      **Correction.** This function's `(list_end - list_start) / 0x3c` was read
+      earlier in this project as a timer. It is not: it is the number of 60-unit
+      slots in the message stack, used to find the last element's base offset.
+      Nothing timed.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Lua_ADD_TEXT_MESSAGE.c
+        fn: Lua_ADD_TEXT_MESSAGE
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEXT_MESSAGE_4bc4c0.c
+        quote: |
+          if (*(int *)(param_1 + 0x28) != 0) {          // parent pointer
+            iVar1 = Engine_ADD_TEXT_MESSAGE_4bc4c0();   // walk up the stack
+            return (uint)*(ushort *)(param_1 + 0xc) + iVar1;   // + this width
+          }
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEXT_MESSAGE_415120.c
+        note: screen clamping against DAT_0059a4c8 with a 20px margin
     affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
+    notes: >
+      Two scripts compute a value purely to format it into one of these -
+      SWOP's damage and SSWM's numSkulls, the latter an undefined global. That is
+      a bug in their text and changes no mechanic.
 
   - id: pres.play_sound
-    title: PLAY_SOUND assumed cosmetic - NOT AUDITED
+    title: PLAY_SOUND looks a named sound up and plays it, skipping one already playing
     area: render
     verdict: presentation
-    status: assumed
-    confidence: low
-    audited: false
-    source_pass: none
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: presentation_audit
     summary: >
-      Two spell sounds, called from a spell that deals no damage. Dropped on the
-      strength of the name.
-    evidence: []
-    affects: [lib/spell_effects.ml]
+      Audited. Looks the name up in a map under a global manager, and calls a
+      virtual play method - but only if that entry is not already the active one:
+
+      ```c
+      piVar2 = FUN_004b28c0(local_4,&param_1);            // name -> entry
+      if ((*piVar2 != *(int *)(iVar1 + 8)) && ...) {       // not already playing
+        (**(code **)(*piVar2 + 0x28))();                  // play
+      }
+      ```
+
+      So it de-duplicates: a sound already sounding is not restarted. Nobody
+      should model that as "play every time" when the audio layer is written.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_PLAY_SOUND_4b38a0.c
+        fn: Engine_PLAY_SOUND_4b38a0
+    affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
 
   # -------------------------------------------------------------- spells ----
 
@@ -577,6 +714,144 @@ claims:
       - kind: lua
         ref: game/Assets.zip!Assets/Spells/SWOP.lua
     affects: [lib/spell_effects.ml]
+
+  - id: ai.difficulty_from_levels
+    title: Std_GetDifficulty derives the difficulty band from the hero/task level gap
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: presentation_audit
+    summary: >
+      Five bands, not three. `Battle.rules.difficulty` was a hand-set field
+      documented as "0 easy, 1 normal, 2+ hard", which was a guess at a value the
+      game computes: an encounter's difficulty is the gap between the hero's level
+      and the task's.
+
+          taskLevel < heroLevel - 6   -> 0
+          taskLevel < heroLevel - 1   -> 1
+          taskLevel < heroLevel + 3   -> 2
+          taskLevel < heroLevel + 8   -> 3
+          otherwise                  -> 4
+
+      Every comparison is strict, so for a hero of 10 the bands are task levels
+      3 and below, 4-8, 9-12, 13-17, and 18 and above.
+
+      This is the quest-to-battle bridge and the only thing that decides what
+      `Battle.rules.difficulty` is. That value gates the AI's spell skip
+      (`pick_ai_spell`, 50/25/0 percent by band) and the board evaluator's
+      jitter, so getting it wrong makes every fight the wrong difficulty.
+
+      Ported as `Spell.difficulty_for_levels`. It lives in spell.ml rather than a
+      quest module because there is no quest module yet and that is its only
+      consumer.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        quote: |
+          function Std_GetDifficulty(heroLevel,taskLevel)
+              if (taskLevel < heroLevel-6) then return 0;
+              elseif (taskLevel < heroLevel-1) then return 1;
+              elseif (taskLevel < heroLevel+3) then return 2;
+              elseif (taskLevel < heroLevel+8) then return 3;
+              end
+              return 4;
+          end
+      - kind: code
+        ref: lib/spell.ml
+        note: difficulty_for_levels
+    affects: [lib/spell.ml, lib/battle.ml]
+
+  - id: ai.spellcasting_chance_confirmed_from_lua
+    title: Std_AISpellcastingChance confirms the modifier's sign from source
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: presentation_audit
+    summary: >
+      Independent confirmation of `spells.ai_modifier_direction`, which until now
+      rested on reading the port's own OCaml back to itself.
+
+          if (chance > 50 + modifier) then return 0;
+          if (evaluation > 30) then return 0;
+          return 1;
+
+      So a positive modifier raises the threshold and the spell casts *more*
+      often - the opposite of what three documents in this project claimed. The
+      prose was corrected in 2d37977 on the strength of the code; this is the
+      original agreeing.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        quote: |
+          function Std_AISpellcastingChance(modifier)
+              local evaluation = EVALUATE_BOARD();
+              local chance = PERCENTILE_CHANCE_SYNC();
+              if (chance > 50 + modifier) then return 0;
+              if (evaluation > 30) then return 0;
+              return 1;
+          end
+    affects: [lib/spell.ml, lib/spell_ai.ml, lib/spell_ai_manual.ml]
+
+  - id: gold.per_character_confirmed
+    title: Gold is per character, confirmed by Std_LoseGold / Std_GainGold
+    area: combat
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: presentation_audit
+    summary: >
+      `SUBTRACT_GOLD(idx, amt)` and `ADD_GOLD(idx, amt)` both take a character
+      index. That confirms `Combatant.gold`, the field added for SSTL, and
+      confirms SSTL's direction: `Std_LoseGold(amt, idxEnemy)` then
+      `Std_GainGold(amt, idxCaster)`, so the gold moves from the enemy to the
+      caster and the battle-wide total is not what moves.
+
+      Both helpers also pop a text message; that part is presentation.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        quote: |
+          function Std_LoseGold(amt,idx)
+              SUBTRACT_GOLD(idx,amt);
+              local msg = GET_TEXT_FORMAT_INT("[SPELL_EFFECT_GOLDLOSS]",amt);
+              ADD_TEXT_MESSAGE_TO_CHARACTER(idx, msg,2,MESSAGE_ORANGE);
+          end
+    affects: [lib/combat.ml, lib/spell_effects.ml]
+
+  - id: scripts.std_helpers_are_lua
+    title: The Std_* helpers are Lua in Assets/Scripts, not C natives
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: presentation_audit
+    summary: >
+      Worth recording as its own claim, because getting it wrong cost real time.
+      Every `Std_` helper - Std_InflictDamage, Std_Healing, Std_CastSpellEffect,
+      Std_AISpellcastingChance, Std_GetDifficulty and the rest - is a global Lua
+      function in `Assets/Scripts/StandardUtilityScripts.lua`, not a native.
+
+      They were assumed to be natives, which put four of them on a decompilation
+      work queue that would never have paid off. There are only five `.lua` files
+      under Assets/Scripts and they total about 28KB; all of them are now read.
+
+      The natives are the `ADD_*`, `SET_*`, `GET_*` names, which is the split the
+      LUA_API.md table records.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+        note: 9026 bytes, 386 lines
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridPatterns.lua
+    affects: [lib/spell_effects.ml, lib/status_effect_hooks.ml]
+    notes: >
+      GridPatterns.lua is 10KB and still unread. It is where the 4/5-of-a-kind
+      pattern rules live, so it is the next place to look for
+      board.flag_pattern_45.
 
   # --------------------------------------------------------------- board ----
 
@@ -784,17 +1059,41 @@ open_questions:
     question: Is any dropped presentation call secretly mechanical?
     why_it_matters: >
       Three of the seventeen status effects were inert before this pass, and the
-      expiry rule was inverted with two tests asserting it. The same failure mode
-      is live for every unaudited presentation call, and the port has to render
-      these eventually, so the work is not wasted either way.
+      expiry rule was inverted with two tests asserting it, so the failure mode
+      was live.
     would_be_settled_by:
-      - Decompiling ADD_ANIMEFFECT_TO_GRID, ADD_ANIMEFFECT_TO_CHARACTER, the four
-        Std_*SpellEffect names, ADD_TEXT_MESSAGE* and PLAY_SOUND.
+      - Nothing further. All four groups are audited and all four are cosmetic.
     related:
       - pres.animeffect_to_grid_and_character
       - pres.std_spell_effect_family
       - pres.add_text_message
       - pres.play_sound
+    status: refuted
+    resolution: >
+      Audited 2026-10-04. None of them touches life, mana, gems or status effects.
+      The one that needed no decompilation - the Std_* family - turned out to be
+      Lua, and reading it also produced three new recovered claims and one new
+      mechanic (Std_GetDifficulty).
+
+  - id: quest.difficulty_consumers
+    question: Where else does Std_GetDifficulty feed in besides the spell skip?
+    why_it_matters: >
+      It sets Battle.rules.difficulty, which gates pick_ai_spell's skip and the
+      board evaluator's jitter. Both are ported, but the quest layer that would
+      choose taskLevel does not exist yet, so nothing computes it in practice.
+    would_be_settled_by:
+      - The quest/task table, once extracted from Assets/Quests.
+    related: [ai.difficulty_from_levels]
+    status: open
+
+  - id: quest.grid_patterns_unread
+    question: What are the 4/5-of-a-kind pattern rules in GridPatterns.lua?
+    why_it_matters: >
+      10KB of Lua that has never been read. It is where +0x395's pattern matching
+      is defined, and it is the largest single unread asset in the project.
+    would_be_settled_by:
+      - Reading game/Assets.zip!Assets/Scripts/GridPatterns.lua.
+    related: [board.flag_pattern_45]
     status: open
 
   - id: asset.status_effect_id_mismatches

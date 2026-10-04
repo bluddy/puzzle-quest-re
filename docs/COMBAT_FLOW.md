@@ -427,6 +427,53 @@ Both are transcribed as the code reads, since the code is what the game runs:
 A third, `SWOP` in the spell scripts, computes `5 + Fire/8` for a message and
 deals no damage at all.
 
+### The presentation audit
+
+Every presentation call the port drops is now decompiled and recorded in
+[`reverse/evidence.yml`](reverse/evidence.yml). The result: **none of them is
+mechanical.** `tools/validate_evidence.py --report` prints the count of calls
+still resting on an unproven assumption, and it is zero.
+
+| Call | What it does |
+| :--- | :--- |
+| `ADD_ANIMEFFECT_TO_GRID` | computes the cell's pixel position (`tile*74 + 41/47`) and plays one effect |
+| `ADD_ANIMEFFECT_TO_CHARACTER` | reads the character's screen point, subtracts the camera offset at `+0x3cc`/`+0x3d0`, plays one effect |
+| `Std_CastSpellEffect` and its three siblings | resolve a `SPELLFX_*` constant to an asset name and a sound name, then call the two above and `PLAY_SOUND` |
+| `ADD_TEXT_MESSAGE*` | floating-point-text layout: centre against a global screen width, stack by line height, clamp with a 20px margin |
+| `PLAY_SOUND` | name lookup, then a virtual play call - and only if that entry is not already the active sound |
+
+Two things came out of the audit that are worth more than the audit itself.
+
+**The `Std_*` helpers are Lua, not C natives.** They are global functions in
+`Assets/Scripts/StandardUtilityScripts.lua`. They had been assumed to be natives,
+which put four of them on a decompilation work queue that would never have paid
+off. The file is 386 lines and all of it is now read. There are only five `.lua`
+files under `Assets/Scripts` and they total about 28KB.
+
+**`Std_GetDifficulty` is a mechanic that was missing.** Encounter difficulty is
+computed from the gap between hero level and task level, in five bands:
+
+```
+taskLevel < heroLevel - 6   -> 0
+taskLevel < heroLevel - 1   -> 1
+taskLevel < heroLevel + 3   -> 2
+taskLevel < heroLevel + 8   -> 3
+otherwise                  -> 4
+```
+
+`Battle.rules.difficulty` had been a hand-set field described as "0 easy, 1
+normal, 2+ hard" — a guess at a value the game actually derives. Since it gates
+both the AI's spell skip and the board evaluator's jitter, that guess was making
+every fight the wrong difficulty. It is now `Spell.difficulty_for_levels`, and
+it is the quest-to-battle bridge: the quest layer picks `taskLevel`, this turns
+it into the number the battle loop uses.
+
+Reading the same file also confirmed two things from source rather than by
+inference: `Std_AISpellcastingChance` reads `if (chance > 50 + modifier)`, so a
+positive modifier makes a spell cast *more* often — the original agreeing with
+the correction made in `SPELLS.md` — and `Std_LoseGold`/`Std_GainGold` take a
+character index, which confirms gold is per character.
+
 ---
 
 ## 6. Confidence

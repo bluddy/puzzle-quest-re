@@ -206,7 +206,11 @@ def report(doc: dict, stats: dict, claims: list, questions: list, decisions: lis
                  if c.get("verdict") == "presentation" and c.get("audited") is False]
     assumed = [c["id"] for c in claims if c.get("status") == "assumed"]
     open_c = [c["id"] for c in claims if c.get("status") == "open"]
-    refuted = [c["id"] for c in claims if c.get("status") == "refuted"]
+    # Refuted questions count too. A question answered "no, it is fine" is the most
+    # valuable kind of entry: it is what stops the same worry being re-derived.
+    refuted = ([("claim " + c["id"]) for c in claims if c.get("status") == "refuted"]
+               + [("question " + q["id"]) for q in questions if q.get("status") == "refuted"])
+    resolved_q = [q["id"] for q in questions if q.get("status") == "refuted"]
 
     def table(title: str, pairs: list[tuple[str, int]]) -> None:
         print(f"\n{title}")
@@ -241,13 +245,20 @@ def report(doc: dict, stats: dict, claims: list, questions: list, decisions: lis
     for cid in sorted(open_c):
         print(f"  - {cid}")
 
-    print(f"\nclaims with status=refuted ({len(refuted)}):")
-    for cid in sorted(refuted) or ["  (none - keep refuted claims so they are not re-derived"]:
+    print(f"\nSETTLED by evidence, kept so they are not re-derived ({len(refuted)}):")
+    for cid in sorted(refuted):
+        print(f"  - {cid}")
+    if not refuted:
+        print("  (none - an empty list usually means nobody looked hard enough)")
 
-        if isinstance(cid, str) and cid.startswith("  "):
-            print(cid)
-        else:
-            print(f"  - {cid}")
+    open_q = [q["id"] for q in questions if q.get("status") == "open"]
+    print(f"\nopen questions ({len(open_q)}):")
+    for qid in sorted(open_q):
+        print(f"  - {qid}")
+    if resolved_q:
+        print(f"\nopen questions since answered ({len(resolved_q)}):")
+        for qid in sorted(resolved_q):
+            print(f"  - {qid}")
 
     print()
 

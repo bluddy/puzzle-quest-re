@@ -416,6 +416,41 @@ let should_ai_cast (s : spell) (ctx : ai_context) : bool =
 let is_cast_legal (s : spell) (ctx : ai_context) : bool =
   match s.is_cast_legal with Some f -> f ctx | None -> true
 
+(** [Std_GetDifficulty(heroLevel, taskLevel)] - `Assets/Scripts/StandardUtilityScripts.lua`.
+
+    ```lua
+    function Std_GetDifficulty(heroLevel,taskLevel)
+        if (taskLevel < heroLevel-6) then return 0;
+        elseif (taskLevel < heroLevel-1) then return 1;
+        elseif (taskLevel < heroLevel+3) then return 2;
+        elseif (taskLevel < heroLevel+8) then return 3;
+        end
+        return 4;
+    end
+    ```
+
+    **Five bands, not three.** [Battle.rules.difficulty] was hand-set and
+    documented as "0 easy, 1 normal, 2+ hard", which was a guess at a field the
+    game actually computes: the difficulty of an encounter is the gap between the
+    hero's level and the task's. A hero ten levels above the task gets 0; a hero
+    eight or more below gets 4.
+
+    Every comparison is strictly less-than, so the boundaries are inclusive
+    upward - `heroLevel = 10` puts taskLevel 4 in band 0 but taskLevel 4 is the
+    first of band 1's territory only from 5 up. Transcribed exactly; the
+    off-by-one is the whole shape of the function.
+
+    This is the quest-to-battle bridge: it is the only thing that decides what
+    [Battle.rules.difficulty] is, and that value gates the AI's spell skip and
+    the board evaluator's jitter. It lives here rather than in a quest module
+    because there is no quest module yet and its only consumer is here. *)
+let difficulty_for_levels ~(hero_level : int) ~(task_level : int) : int =
+  if task_level < hero_level - 6 then 0
+  else if task_level < hero_level - 1 then 1
+  else if task_level < hero_level + 3 then 2
+  else if task_level < hero_level + 8 then 3
+  else 4
+
 (** [BattleAI_PickSpell] (0x00440FB0).
 
     The decompilation reads as a thin driver: a difficulty-gated skip, then walk
