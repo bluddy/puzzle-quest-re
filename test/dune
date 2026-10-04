@@ -1,6 +1,6 @@
 (tests
  (names test_board test_ai test_score test_combat test_spell test_spell_hooks
-         test_spell_effects test_status_effects test_battle test_battle_player test_item)
+         test_spell_effects test_status_effects test_battle test_battle_player test_item test_rng)
  (libraries puzzle_quest_lib))
 
 ; The pure part of the graphics front: no context, no display. It lives in its

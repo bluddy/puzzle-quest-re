@@ -251,6 +251,11 @@ let submit (win : context) (runs : run list) =
     Tgl3.Gl.vertex_attrib_pointer 0 2 Tgl3.Gl.float false stride (`Offset 0);
     Tgl3.Gl.enable_vertex_attrib_array 1;
     Tgl3.Gl.vertex_attrib_pointer 1 2 Tgl3.Gl.float false stride (`Offset 8);
+    (* Set the run's colour and draw it in the SAME pass. Doing all the uniform
+       sets first and then all the draws looks equivalent and is not: by the time
+       the first draw happens every uniform already holds the {e last} run's value,
+       so the whole frame comes out one colour. That bug shipped a board that was
+       entirely the final button's blue. *)
     List.iter
       (fun (r : run) ->
         let c = (r : run).colour in
@@ -258,7 +263,7 @@ let submit (win : context) (runs : run list) =
         let cg = float_of_int c.Layout.g /. 255.0 in
         let cb = float_of_int c.Layout.b /. 255.0 in
         let ca = float_of_int c.Layout.a /. 255.0 in
-        match r.tex with
+        (match r.tex with
         | Some t ->
             Tgl3.Gl.use_program win.prog_textured;
             Tgl3.Gl.active_texture Tgl3.Gl.texture0;
@@ -269,12 +274,7 @@ let submit (win : context) (runs : run list) =
         | None ->
             Tgl3.Gl.use_program win.prog_colour;
             if win.loc_colour >= 0 then
-              Tgl3.Gl.uniform4f win.loc_colour cr cg cb ca)
-      runs;
-    (* One draw call per run: a board drawn gem by gem collapses to one call per
-       contiguous stretch sharing a texture and a colour. *)
-    List.iter
-      (fun (r : run) ->
+              Tgl3.Gl.uniform4f win.loc_colour cr cg cb ca);
         Tgl3.Gl.draw_arrays Tgl3.Gl.triangles r.first r.count)
       runs;
     win.n_verts <- 0
@@ -287,6 +287,28 @@ let present (win : context) =
 let destroy (win : context) =
   Tsdl.Sdl.destroy_window win.w;
   quit ()
+
+(** Read the framebuffer back as 8-bit RGBA, top row first.
+
+    glReadPixels returns rows bottom-to-top, so this flips while copying -
+    otherwise every screenshot is upside down, which is the kind of thing that
+    wastes an afternoon. Used by [bin/pq_play_gfx.ml --shot] to diagnose what was
+    actually drawn, rather than guessing from a description of it. *)
+let read_frame_rgba ~(width : int) ~(height : int) : (char, B.int8_unsigned_elt) Tsdl.Sdl.bigarray =
+  let raw = B.(Array1.create char c_layout (width * height * 4)) in
+  Tgl3.Gl.finish ();
+  Tgl3.Gl.read_pixels 0 0 width height Tgl3.Gl.rgba Tgl3.Gl.unsigned_byte
+    (`Data raw);
+  let out = B.(Array1.create char c_layout (width * height * 4)) in
+  let row = width * 4 in
+  for y = 0 to height - 1 do
+    let src = (height - 1 - y) * row in
+    let dst = y * row in
+    for i = 0 to row - 1 do
+      out.{dst + i} <- raw.{src + i}
+    done
+  done;
+  out
 
 let gl_string which = match Tgl3.Gl.get_string which with Some s -> s | None -> "?"
 

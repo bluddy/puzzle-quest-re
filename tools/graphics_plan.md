@@ -86,8 +86,16 @@ The 63 JPGs are all backgrounds (`Skin_Backdrop_*.jpg`, `Cities.jpg`) and none a
 needed for a board, so PNG-only is enough to start. JPG can wait for a
 deliberate decision rather than blocking the first milestone.
 
-Text still needs a decision: SDL2 has no font rendering, so `SDL2_ttf` or a bitmap
-font of our own. Deferred until the board is on screen.
+### Text: `tsdl-ttf`
+
+**Decision: `tsdl-ttf`** (opam 0.6, "SDL2_Ttf bindings to go with Tsdl"), which is
+the SDL_ttf binding written against the same `tsdl` we already use. The
+alternative was a bitmap font of our own; the deciding factor is that the game's
+strings live in `Standard*Text.xml` and are Latin text with translations in five
+languages, which is font rendering rather than a fixed glyph set.
+
+That makes phase 3 an `opam install tsdl-ttf` plus a text path in `lib/gfx`, not a
+font pipeline. Note it is *not* installed yet.
 
 ## What to reuse from rails
 
@@ -148,6 +156,12 @@ layer should keep that boundary visible rather than pretend to be a
 reconstruction.
 
 ## Sequence
+
+`pq_play_gfx.exe --shot FILE` renders one frame and writes it as a PPM, which is
+how the two bugs below were found rather than guessed at. It reads the
+framebuffer *before* presenting, because after a swap the default framebuffer is
+undefined - reading it afterwards returns all zeroes and looks like a black screen
+rather than a measurement mistake.
 
 | phase | what |
 | --- | --- |

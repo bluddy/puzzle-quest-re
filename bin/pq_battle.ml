@@ -14,11 +14,11 @@ open Battle
     of [Random]'s global state. Without this, running two battles in one process
     would give different results for the same number, which makes a printed trace
     impossible to reproduce. *)
+(* The shared seeded generator: see lib/rng.ml for why the low bits of a
+   power-of-two-modulus LCG cannot be used directly. *)
 let lcg seed =
-  let s = ref (seed land 0x3FFFFFFF) in
-  fun n ->
-    s := ((1103515245 * !s) + 12345) land 0x3FFFFFFF;
-    !s mod max 1 n
+  let g = Rng.create seed in
+  fun n -> Rng.int g n
 
 let gem_char = function
   | Skull -> 'S'

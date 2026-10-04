@@ -245,18 +245,12 @@ let choose_swap (legal : Board.swap list) : Board.swap option =
 
 (* -------------------------------------------------------------------- main -- *)
 
-(** A seeded rng with the same contract as [Random.int]: [0 .. n-1].
-
-    Returning [1 .. n] instead would be silently wrong rather than obviously
-    broken. [PERCENTILE_CHANCE_SYNC] is 0..99 and the AI hooks compare it against
-    thresholds, so an off-by-one shifts every spell's decision; and the extra
-    turn tests [roll 100 < gained], which a 1-based roll can never satisfy for
-    [gained] = 1. *)
+(* The shared seeded generator. It has [Random.int]'s contract, 0 .. n-1, which
+   matters here: [PERCENTILE_CHANCE_SYNC] is 0..99 and the AI hooks compare it
+   against thresholds, so a 1-based roll would shift every spell's decision. *)
 let lcg seed =
-  let s = ref (seed land 0x3FFFFFFF) in
-  fun n ->
-    s := ((1103515245 * !s) + 12345) land 0x3FFFFFFF;
-    !s mod max 1 n
+  let g = Rng.create seed in
+  fun n -> Rng.int g n
 
 let fresh_board (rng : int -> int) : Board.board =
   let gems =

@@ -17,4 +17,5 @@
   score
   battle
   crypto
-  save_file))
+  save_file
+  rng))

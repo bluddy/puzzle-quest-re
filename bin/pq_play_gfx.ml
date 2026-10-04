@@ -24,15 +24,10 @@ let bar_h = 96
 
 (* ------------------------------------------------------------------ battle -- *)
 
-(** A seeded rng with [Random.int]'s contract: 0 .. n-1.
-
-    1-based would shift every AI percentile comparison and make the extra-turn
-    roll unsatisfiable, while still producing plausible-looking fights. *)
+(* The shared seeded generator; see lib/rng.ml. *)
 let lcg seed =
-  let s = ref (seed land 0x3FFFFFFF) in
-  fun n ->
-    s := ((1103515245 * !s) + 12345) land 0x3FFFFFFF;
-    !s mod max 1 n
+  let g = Rng.create seed in
+  fun n -> Rng.int g n
 
 let skill n =
   { Combat.earth = n; fire = n; air = n; water = n; battle = n; morale = n;
@@ -82,7 +77,7 @@ let bar_geometry () =
   let x0 = (window_w - (n * bw + ((n - 1) * gap))) / 2 in
   (n, bw, gap, bar_y, x0)
 
-let draw () =
+let draw ?(present = true) () =
   let b = battle () in
   let lay = layout () in
   Gl.begin_frame (ui ()).gl;
@@ -120,7 +115,9 @@ let draw () =
     demo_spells;
   ignore n;
   Gl.submit (ui ()).gl !runs;
-  Gl.present (ui ()).gl
+  (* Reading the default framebuffer after a swap gives an undefined buffer, so a
+     screenshot must render without presenting and read before the swap. *)
+  if present then Gl.present (ui ()).gl
 
 (** Block until the player clicks. Returns [x, y].
 
@@ -224,7 +221,7 @@ let choose_swap (_legal : Board.swap list) : Board.swap option =
 
 let () =
   let args = Array.to_list Sys.argv in
-  let seed = ref 7 and diff = ref 2 in
+  let seed = ref 7 and diff = ref 2 and shot = ref "" in
   let rec parse = function
     | [] -> ()
     | "--seed" :: n :: r ->
@@ -232,6 +229,9 @@ let () =
         parse r
     | "--difficulty" :: n :: r ->
         diff := int_of_string n;
+        parse r
+    | "--shot" :: f :: r ->
+        shot := f;
         parse r
     | _ :: r -> parse r
   in
@@ -266,6 +266,28 @@ let () =
       (fresh_board rng) hero foe
   in
   (ui ()).b <- Some b;
+  (* --shot draws one frame, writes it as raw RGBA and exits. What the window
+     actually shows is then measurable instead of described. *)
+  if !shot <> "" then begin
+    draw ~present:false ();
+    let px = Gl.read_frame_rgba ~width:window_w ~height:window_h in
+    let oc = open_out_bin !shot in
+    output_string oc (Printf.sprintf "P6\n%d %d\n255\n" window_w window_h);
+    (* P6 is RGB; drop the alpha byte from each pixel. *)
+    let n = window_w * window_h in
+    let rgb = Bytes.create (n * 3) in
+    for i = 0 to n - 1 do
+      Bytes.set rgb (i * 3 + 0) (Bigarray.Array1.get px ((i * 4) + 0));
+      Bytes.set rgb (i * 3 + 1) (Bigarray.Array1.get px ((i * 4) + 1));
+      Bytes.set rgb (i * 3 + 2) (Bigarray.Array1.get px ((i * 4) + 2))
+    done;
+    output_bytes oc rgb;
+    close_out oc;
+    Printf.printf "wrote %s (%dx%d)\n" !shot window_w window_h;
+    flush stdout;
+    Gl.destroy gl;
+    exit 0
+  end;
   Printf.printf "  cell %dpx, board at (%d,%d)\n" cell lay.Layout.origin_x
     lay.Layout.origin_y;
   Printf.printf
