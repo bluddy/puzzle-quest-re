@@ -132,36 +132,22 @@ dune exec bin/pq_save_tool.exe -- info "<path_to_save>.pqhero"
 dune exec bin/pq_save_tool.exe -- board-sim
 ```
 
-### Graphics (SDL2)
+### Graphics (SDL2 + OpenGL)
 
 ```powershell
-dune exec bin/sdl2_probe.exe
+dune exec bin/gl_probe.exe
 ```
 
-The graphics front is SDL2 through `tsdl`, using SDL2's own 2D renderer rather than
-OpenGL for now - SDL picks OpenGL on desktop and **OpenGL ES on Android**, so the
-same drawing code covers both targets. `bin/sdl2_probe.exe` proves SDL2 initialises
-and gets an accelerated renderer on this machine. `tools/graphics_plan.md` records
-why, what has to be bound by hand (`SDL2_image` for PNG/JPG, which neither library
-decodes), and when GLES becomes worth it.
+`tsdl` provides the window, input and GL context; `tgls` provides OpenGL, and also
+OpenGL ES, so the same code covers desktop and Android. The probe reports the
+driver it actually got - here a hardware 3.3 core context on Intel Iris Xe - and
+checks that a shader compiles, a texture uploads and an alpha-blended quad draws.
 
-The SDL3 path was verified working too and is documented in
-`tools/sdl3_readiness.md`; `bin/sdl3_probe.exe` still passes.
-
-The bindings are a pinned git dependency rather than an opam package:
-
-```sh
-opam pin add sdl3 https://github.com/sanette/ocaml-sdl3.git
-opam install sdl3
-$env:SDL3_LIBRARY = "C:\Program Files (x86)\Steam\SDL3.dll"
-dune exec bin/sdl3_probe.exe
-```
-
-`bin/sdl3_probe.exe` checks that SDL3 actually loads and can open a window on this
-machine. `tools/sdl3_readiness.md` records what was verified, how complete the
-bindings are for this game (40 of the 42 calls a board renderer needs), and the
-one real gap - nothing in SDL3 core decodes a PNG, and the game's art is 226 PNGs
-and 63 JPGs.
+`tools/graphics_plan.md` records the decision, what is reused from the rails
+project's engine, how Android differs (one GLSL version line, behind one module),
+and why the two earlier plans - SDL3, and SDL2 without OpenGL - were both wrong.
+`bin/sdl3_probe.exe` and `tools/sdl3_readiness.md` are kept; that path works too,
+it is just not the shortest road.
 
 ### Play a Headless Battle
 ```powershell

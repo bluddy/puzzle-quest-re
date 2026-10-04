@@ -22,3 +22,9 @@
 (executable
  (name sdl2_probe)
  (libraries tsdl))
+
+; SDL2 for the window and input, tgls for OpenGL. tgls binds GL 3/4 and GLES 2/3,
+; so the same dependency covers desktop and Android; see tools/graphics_plan.md.
+(executable
+ (name gl_probe)
+ (libraries tsdl tgls.tgl3))

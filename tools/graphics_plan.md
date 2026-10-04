@@ -1,118 +1,157 @@
 # Graphics plan
 
-Written before the first renderer, because the choice of graphics API is the
-decision everything else in this area hangs off — and because the obvious answer
-("use OpenGL, and OpenGL ES on Android") turns out to be two pieces of work rather
-than one.
+Superseded twice, and the current decision is the one this file argued against.
+Both earlier versions are kept below the current section because the reasoning
+that produced them is still what justifies the shape of the result.
 
 ## Decision
 
-**SDL2, through `tsdl`, using SDL2's own 2D renderer. No OpenGL code yet.**
+**SDL2 (`tsdl`) for the window, input and GL context. `tgls` for OpenGL.**
 
-Verified working on this machine before committing to it, with `bin/sdl2_probe.ml`:
+Verified on this machine before building on it, with `bin/gl_probe.exe`:
 
 ```
   ok    SDL_Init(VIDEO)
-  ok    SDL_CreateRenderer (accelerated)
-  ok    clear + fill + present
-  ok    event pump
-  ok    teardown + SDL_Quit
+  ok    window with opengl flag
+  ok    GL context (core 3.3 requested)
+  info  GL_VERSION  3.3.0 - Build 32.0.101.7092
+  info  GL_RENDERER Intel(R) Iris(R) Xe Graphics
+  ok    glTexImage2D upload
+  ok    shader compile + link
+  ok    uniforms
+  ok    draw + swap
 ```
 
-`accelerated` is the point. SDL2's renderer picks the backend per platform —
-OpenGL on desktop, Direct3D on Windows where it prefers it, and **OpenGL ES 2.0 on
-Android** — so the same drawing code is the same code on both targets, and we never
-name a graphics API at all.
+A real hardware 3.3 core context, a shader that compiles and links, a texture
+uploaded from a bigarray, and an alpha-blended textured quad reaching the
+framebuffer. That is the entire foundation a sprite renderer needs.
 
-## Why not OpenGL directly
+### Why OpenGL, and why this is not the SDL3 problem
 
-`tsdl` binds the SDL2 C API. It does **not** bind OpenGL: there is no
-`glGenTextures`, no shader entry point, no VAO binding, and no
-`SDL_GL_GetProcAddress`. Writing GL on top of `tsdl` therefore means supplying the
-whole GL layer ourselves, and that is where the cost lives:
+The first version of this plan said SDL3 was unusable and recommended dropping to
+SDL2's own 2D renderer with no OpenGL at all. That was wrong twice over:
 
-* **Two shader dialects.** Desktop GL and GLES do not accept the same source.
-  `#version 120` is not valid GLSL ES; `#version 100` is not valid desktop GLSL.
-  Maintaining both is the bulk of the ongoing work.
-* **Per-platform function loading.** Anything above GL 1.1 has to come from
-  `SDL_GL_GetProcAddress`, which needs a C stub (gcc *is* reachable here through
-  opam's `conf-mingw-w64-gcc-x86_64`, so this is possible, just not free).
-* **Capability differences** to guard, per driver and per GLES version.
+* **SDL2 + OpenGL is not blocked.** `tsdl` genuinely has no OpenGL bindings and no
+  `SDL_GL_GetProcAddress` — that part was right — but **`tgls` supplies them**:
+  "Thin bindings to OpenGL {3,4} and OpenGL ES {2,3} for OCaml", already installed,
+  ctypes-based so function loading is handled. The gap was real and already solved.
+* **This is not an improvisation.** The same stack runs the *rails* remake, so it
+  is a proven one rather than a workaround. `src/engine/utils/opengl.ml`,
+  `src/engine/utils/renderer.ml` and `src/engine/mainloop.ml` there are the
+  reference for the context attributes, the program setup and the loop.
 
-None of that is hard. It is just not free, and it buys nothing until something
-needs a custom shader.
+The `bin/sdl3_probe.ml` path also still works, and stays in the tree. It is simply
+no longer the shortest road, because the SDL3 bindings would have needed a
+hand-written `SDL3_image` binding anyway — which `imagelib` makes unnecessary here.
 
-## When we will want GL, and how to keep one dialect
+## Android: one dependency, two modules
 
-This game has a lot of effect content — 59 particle descriptors under
-`Assets/Particles/`, 48 under `Assets/Effects/` — so custom shading will earn its
-keep eventually. SDL2's 2D renderer cannot do custom shaders, and that is the
-whole of what it cannot do.
+This is the answer to "we'll want OpenGL ES?", and it is better than the ANGLE
+scheme proposed in the previous version of this file. **No ANGLE is needed.**
 
-When that day comes, the answer to "do we want OpenGL ES?" is **yes — and we should
-target it on desktop too, rather than maintaining GL on desktop and GLES on
-mobile.** That is one shader dialect, one code path, one target.
+`tgls` ships four backends: `tgl3`, `tgl4`, `tgles2`, `tgles3`. So the GL calls we
+write are the same calls on both targets; only the module differs:
 
-The enabler is ANGLE, which presents GLES on top of the desktop's D3D. Complete
-`libEGL.dll` + `libGLESv2.dll` pairs already exist on this machine (VS Code, Steam
-CEF, DaVinci Resolve, Vortex), which proves the path is viable — but like the SDL3
-DLL, those belong to other programs and should be **vendored**, not borrowed. ANGLE
-is a few megabytes.
-
-So the sequence is:
-
-| phase | what | cost |
+| | desktop | Android |
 | --- | --- | --- |
-| 1 | SDL2 renderer, sprites, board on screen | none beyond bindings |
-| 2 | bind `SDL2_image` for PNG/JPG (see below) | ~8 functions |
-| 3 | GLES 2.0 + ANGLE + `SDL_GL_GetProcAddress` stub, one dialect, first real shader | a C stub and a loader |
+| window, input, context | `Tsdl` | `Tsdl` |
+| GL | `Tgl3` | `Tgles3` |
+| GLSL | `#version 330 core` | `#version 300 es` |
 
-## What still has to be bound by hand
+That last row is the entire dialect problem, and it is one line per shader. The
+shader *bodies* are otherwise identical between GLSL 330 core and GLSL ES 300 —
+same `layout(location=)`, same `in`/`out`, same `texture()` — so the practical
+difference is the version directive and, where a shader uses them, the handful of
+GL3-only features (so none, so far, for 2D sprites).
 
-Neither `tsdl` nor SDL2 itself decodes an image, and the game's art is **226 PNGs
-and 63 JPGs**. So:
+Both changes are confined by putting them behind `lib/gfx`:
 
-* **`SDL2_image`** — `IMG_Init`, `IMG_Quit`, `IMG_Load`, `IMG_Load_IO`,
-  `IMG_LoadTexture`, `IMG_GetError` and friends. Roughly eight functions via
-  `ctypes`, the same approach the SDL3 bindings use. `SDL2_image.dll` ships with
-  the SDL2 development install already on this box.
-* **`SDL2_ttf`** — for text. SDL2 has no font rendering, and the UI strings live in
-  `Standard*Text.xml`. Or a bitmap font of our own; defer until the board is up.
+* `lib/gfx.ml` — the presentation layer: the game's concepts become draw calls.
+* `lib/gfx_gl.ml` — the only file naming `Tgl3.`/`Tgles3.`, with the shader header
+  chosen at construction.
+
+## Image loading: no hand-written binding needed
+
+Neither `tsdl` nor SDL2 decodes an image, and the game's art is 226 PNGs and 63
+JPGs. Earlier versions of this plan said `SDL2_image` would have to be bound by
+hand (~8 functions). **It does not have to be**: `imagelib` is already a
+dependency here and decodes PNG in pure OCaml (`Image.PNG.ReadPNG`), so there is
+no ctypes work and no ImageMagick requirement.
+
+Note the difference from rails, which uses `imagelib.unix` and therefore leans on
+ImageMagick for formats OCaml cannot read. We want the pure-OCaml path, because a
+second system dependency on a build machine is a cost for no benefit.
+
+The 63 JPGs are all backgrounds (`Skin_Backdrop_*.jpg`, `Cities.jpg`) and none are
+needed for a board, so PNG-only is enough to start. JPG can wait for a
+deliberate decision rather than blocking the first milestone.
+
+Text still needs a decision: SDL2 has no font rendering, so `SDL2_ttf` or a bitmap
+font of our own. Deferred until the board is on screen.
+
+## What to reuse from rails
+
+Three files, and the mapping is direct:
+
+| rails | becomes |
+| --- | --- |
+| `src/engine/utils/renderer.ml` — `gl_set_attribute context_profile_core / 3 / 3`, `Window.opengl + shown`, `gl_create_context` | the context setup in `lib/gfx_gl.ml` |
+| `src/engine/utils/opengl.ml` — shared vertex shader, textured and coloured fragment programs, VAO/VBO scratch quad | the sprite batcher |
+| `src/engine/mainloop.ml` — 20Hz tick, 30Hz render, event pump, sleep when ahead | the frame loop |
+
+The main loop is the one to lift almost verbatim. Separating a fixed-rate game tick
+from a separately-clocked render is the right structure, and it is already written
+and debugged.
+
+One thing **not** to copy: the shaders are `#version 330 core` inline string
+literals. They should live in one place with the version line chosen by the
+backend, or step two of the Android plan becomes a find-and-replace across the
+tree.
 
 ## Architecture
 
-Same reasoning as the SDL3 plan, and the reason has not changed:
-
 ```
-  lib/gfx.ml          the presentation layer: the game's concepts -> draw calls
-  lib/gfx_sdl2.ml     the only file that names Tsdl.*
-  bin/pq_play_gfx.ml  the playable window
+  lib/gfx.ml        the presentation layer: the game's concepts -> draw calls
+  lib/gfx_gl.ml     the only file naming Tgl3./Tgles3. and picking the GLSL header
+  lib/gfx_assets.ml  Assets.zip -> textures, via imagelib
+  bin/pq_play_gfx.ml the playable window
 ```
 
 The layer is not scaffolding. The presentation audit already established the
 shape of the original's: effects resolved through a **name-keyed asset table**
 (`Std_CastSpellEffect`), text messages laid out and clamped to the screen, and
-`PLAY_SOUND` de-duplicating a sound that is already playing. A layer built like
-that is closer to the original than a generic engine would be, and it means a
-future move — GLES, another backend, another binding — touches one file.
+`PLAY_SOUND` de-duplicating a sound already playing. A layer built like that is
+closer to the original than a generic engine would be.
 
-Rendering is not being reverse-engineered. The original is Uzzle Quest's own
-engine with PHYSFS for its assets; SDL2 is our choice for the port, and the layer
-should keep that boundary visible rather than pretend to be a reconstruction.
+Rendering is not being reverse-engineered. The original is Uzzle Quest's own engine
+with PHYSFS for its assets; SDL2 and OpenGL are our choice for the port, and the
+layer should keep that boundary visible rather than pretend to be a
+reconstruction.
 
-## On giving up SDL3
+## Sequence
 
-The SDL3 path was working, and is still here: `bin/sdl3_probe.ml` passes and
-`tools/sdl3_readiness.md` records what was verified. Two reasons this moved.
+| phase | what |
+| --- | --- |
+| 1 | sprite batcher and window, 8x8 board drawn from live battle state |
+| 2 | real gem art from `Assets.zip` via imagelib, board interaction by mouse |
+| 3 | text (`SDL2_ttf` or a bitmap font) |
+| 4 | `Tgles3` behind `lib/gfx_gl.ml` for Android, one GLSL header switch |
 
-1. **Android**, which was the deciding factor. SDL2's Android support is mature
-   and `tsdl` exists; the SDL3 bindings are four-star, self-described early and
-   untested, and have no Android story we could rely on.
-2. **SDL3_image is not in those bindings**, so SDL3 would have needed a
-   hand-written image binding anyway — which was true of SDL2 and is eight
-   functions either way.
+## Earlier versions, and why they changed
 
-The trade is real and worth stating: SDL2 is in maintenance mode, so this is a bet
-on the older-but-settled API. If SDL3's bindings mature, or if the effect work
-turns out to want SDL3's newer renderer, the `lib/gfx.ml` boundary is what makes
-that change cheap.
+**Version 1** (`tools/sdl3_readiness.md`, still current for its measurements):
+SDL3 via `sanette/ocaml-sdl3`, hand-binding `SDL3_image`. Correct about the
+bindings — 40 of the 42 needed calls bound, four-star project, early and untested —
+and the `SDL3_image` gap was real. But it did not know about `tgls`, and it assumed
+the choice was between SDL2 and SDL3 rather than SDL2 and OpenGL.
+
+**Version 2**: SDL2 with SDL2's own 2D renderer, no OpenGL, deferring shaders.
+Right that GL brings two shader dialects and per-platform function loading; wrong
+that the dialects were unavoidable, because `tgls` already binds GLES alongside
+GL, and wrong to give up shaders before they were needed — this game has 59
+particle descriptors and 48 effect descriptors.
+
+**Version 3** proposed ANGLE to run GLES on the desktop, to avoid two dialects.
+Unnecessary: `tgls.tgles3` gives GLES directly on mobile and `tgls.tgl3` gives GL
+on desktop, with the version line the only difference. ANGLE would have been a
+large dependency bought for nothing.
