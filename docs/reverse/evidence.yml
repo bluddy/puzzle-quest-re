@@ -140,6 +140,47 @@ claims:
       docs/decompiled carry the same misnaming, which is a standing trap when
       reading a quote without its caller.
 
+  - id: scripts.std_helpers_read_from_source
+    title: The whole Std_* library is one 9KB file, and it is thin
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      `Assets/Scripts/StandardUtilityScripts.lua` holds all 19 `Std_*` helpers -
+      `Std_GetDifficulty`, `Std_InflictDamage`, `Std_Healing`, the status-effect
+      pair, the gold pair, the spell-effect lookups, `Std_AISpellcastingChance`.
+      `Assets/Scripts/` contains only five files in total, so this and
+      `StandardConstants.lua` were the last unexamined assets of any size.
+
+      Every one of them is a thin wrapper: `Std_InflictDamage(amt, src)` is
+      `SUBTRACT_LIFE(GET_ENEMY(src,0), amt, src)` plus a sound and a text
+      message. The amount arrives as a parameter, so {e no} damage formula is in
+      Lua - which agrees with the `+0x392` consumer living in native code.
+
+      Two details that must not be tidied up. The singular/plural message split
+      is `amt < 2` in `Std_InflictDamage` but `amt == 1` in `Std_Healing`, so the
+      original is genuinely inconsistent and damage of 0 reads as singular while
+      healing of 0 reads as plural. And `Std_GainGold`/`Std_LoseGold` take a
+      combatant index directly, whereas damage, healing and status effects all
+      resolve their target with `GET_ENEMY(src, 0)` - so gold is handed to a named
+      combatant while damage is aimed at "the enemy of whoever cast it".
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardConstants.lua
+        note: |
+          Contains exactly IsWildcard and IsSkull - the two predicates, and the
+          answer to where the IsWildcard that SWMG calls is defined.
+      - kind: code
+        ref: lib/spell.ml
+        note: |
+          difficulty_for_levels, checked against the source and matching all four
+          band boundaries and their strict comparisons exactly.
+    affects: [lib/spell.ml, lib/spell_effects.ml, lib/combat.ml]
+
   - id: mana.ceiling.base_value
     title: The per-element mana ceiling base is a chosen 20, not a recovered fact
     area: mana
@@ -161,11 +202,22 @@ claims:
       recursive-descent walk of 89% of the binary's non-padding code finds exactly
       one function that writes the ceiling on a battle character
       (mana.ceiling.only_written_by_set_max), and that is the spell-facing setter.
-      So the base is not set by code in this image that we can reach; it has to
-      arrive from outside - bulk-loaded from the save, or written during
-      quest-side construction that this battle binary does not contain. That is a
-      sharper question than "we have not found it yet", and it redirects the
-      search away from the battle engine entirely.
+      So the base is not set by code we can reach. Two further facts narrow where
+      it does come from, and one of them corrects an earlier guess of mine:
+
+      - `SET_MAX_MANA` is called exactly **once** in the whole game, by
+        `SLCO.lua`. No item, rune, companion or quest script raises a ceiling, so
+        the base is not established by Lua.
+      - There is no second executable. `Puzzle Quest.exe` is the only game
+        binary; `oalinst.exe` is an installer (KERNEL32/USER32/GDI32/ADVAPI32
+        only) and every other file in `game/` is an audio or install-helper DLL.
+        I had assumed quest-side construction lived in some other binary. It does
+        not - all the game logic is Lua in `Assets.zip` plus this one image.
+
+      So the base is native code we have not reached, or it is bulk-loaded from
+      the save. Note the limit of the negative: the walk reaches 89% of
+      non-padding code and the remainder is largely SEH landing pads, so "not
+      found" is not "not present".
     evidence:
       - kind: code
         ref: lib/combat.ml
@@ -1281,13 +1333,15 @@ open_questions:
       - The hero or party constructor that writes +0x84 outside the battle object.
       - Whether the save record's single mana quadruple is the pool or the ceiling.
     notes: >
-      Search the binary no further for this one. A recursive-descent walk of 89%
-      of non-padding code finds exactly one writer of the ceiling on a battle
-      character, and it is the spell-facing setter. The base therefore arrives
-      from outside the code we can reach - bulk-loaded from the save, or set by
-      quest-side construction this battle binary does not contain. The next place
-      to look is the save loader and the party/hero builder, not the battle
-      engine.
+      Do not look for another binary: `Puzzle Quest.exe` is the only game
+      executable, and quest logic is Lua in `Assets.zip` like everything else. A
+      recursive-descent walk of 89% of non-padding code finds exactly one writer
+      of the ceiling on a battle character, and it is the spell-facing setter;
+      `SET_MAX_MANA` is called once in the entire game, by SLCO. So the base is
+      either native code in the ~11% the walk cannot reach, or it is bulk-loaded
+      from the save. Look at the save loader first - it is a smaller target, and
+      the save record carries level and class but no ceiling, which is itself the
+      clue: if the ceiling is level-derived it has to be computed at load time.
     related: [mana.ceiling.base_value, mana.ceiling.only_written_by_set_max]
     status: open
 
