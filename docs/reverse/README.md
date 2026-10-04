@@ -35,6 +35,31 @@ Exits non-zero on any problem, so it drops into CI or a pre-commit hook as-is.
 calls the port drops on an **unproven** assumption. Those are the ones that would
 have to be reversed anyway to render the game, so auditing them is not a detour.
 
+## Finding a consumer in the binary
+
+`tools/scan_field_refs.py` answers "what reads this struct offset?" directly,
+which the decompilation in `docs/decompiled/` cannot: every function dumped there
+that touches the multiplier flags only ever *writes* them, so `+0x392` looked
+consumerless until the binary was scanned.
+
+```sh
+python tools/scan_field_refs.py 0x390 0x391 0x392
+python tools/scan_field_refs.py 0x392 --context 20
+```
+
+It reports reads and writes separately, because a field that is written but never
+read is a real finding rather than a gap. Two traps worth knowing:
+
+- **`skipdata` is mandatory.** `.text` opens with import thunks and jump tables,
+  and `capstone`'s `disasm` stops at the first byte it cannot decode. Without
+  skipdata the scan covers a few hundred bytes and reports "no references" for
+  everything — a false negative indistinguishable from a real answer.
+- **Stack displacements look like struct fields.** `fild dword ptr [esp + 0x390]`
+  is a local variable. Read the base register before believing a hit.
+
+The tool prints its decode coverage as a percentage and warns below 50%, so a
+thin scan cannot quietly masquerade as a clean result.
+
 ## Schema
 
 ### `claims`

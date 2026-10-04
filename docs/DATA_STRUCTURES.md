@@ -119,7 +119,7 @@ in `docs/decompiled/`:
 | --- | --- | --- |
 | `Lua_SET_WILDCARD_CHANCE_ENABLED` | `+0x390` | a 5-or-more run creating a wildcard |
 | `Lua_SET_EXTRATURN_CHANCE_ENABLED` | `+0x391` | the **stat-based** extra turn roll |
-| `Lua_SET_DAMAGE_MULTIPLIER_ENABLED` | `+0x392` | skull damage scaling |
+| `Lua_SET_DAMAGE_MULTIPLIER_ENABLED` | `+0x392` | scaling in the damage readout |
 | `Lua_SET_45_PATTERN_ENABLED` | `+0x395` | 4-in-a-row and 5-in-a-row matching patterns |
 | `Lua_SET_ILLEGAL_MOVE_DAMAGE_ENABLED` | - | whether an illegal move damages the player |
 
@@ -134,3 +134,32 @@ are separate; see `COMBAT_FLOW.md` §1 and `SPELLS.md` §4.
 `SetMultiplierEffects` in `Assets/Scripts/GridUtilities.lua` sets `+0x390`,
 `+0x391` and `+0x392` together, which is how the board-sweeping spells suppress
 bonuses while they sweep. It does not touch `+0x395`.
+
+**Consumers, found by scanning the binary.** All three flags have their consumer
+inside the same routine, `FUN_0047D4F0`:
+
+| offset | consumer | behaviour |
+| --- | --- | --- |
+| `+0x390` | `Board.resolve_matches` | gates wildcard creation on a 5-or-more run |
+| `+0x391` | `0x0047d7bb` | `test`/`je` skips the whole extra-turn roll block, whose bound is the constant `100` |
+| `+0x392` | `0x0047d24d` | `test`/`jne`; when clear, the **unscaled** float is copied into five message slots |
+
+At `0x0047d9b9` the same routine reads all three, spills them to the stack and
+zeroes each, restoring them at `0x0047db70`. That is the engine performing
+`SetMultiplierEffects(false)` then `(true)` with the old values preserved - so the
+paired `false`/`true` idiom used by the 38 spell bodies is the engine's own
+pattern.
+
+The `+0x392` consumer builds `100 + x * factor * 0.01` percentages (constants
+`0.01` at `0x0051e4c8` and `100.0` at `0x005217b4`), and clearing the flag
+substitutes the raw value into those slots. The mechanic is therefore
+*presentation-side*: the flag chooses whether the player is shown the multiplied
+number or the true one, which is what a spell wants while its own board rewrite
+is resolving.
+
+These addresses come from `tools/scan_field_refs.py`, not from `docs/decompiled/`
+- every dumped function only ever **writes** the flags, so decompilation alone
+could never have found the consumers. Note that the scanner needs
+`skipdata` enabled; without it `disasm` stops at the first undecodable byte in
+`.text` and reports "no references" for every offset, which is a false negative
+that looks exactly like a real answer.

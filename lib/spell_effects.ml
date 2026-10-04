@@ -1322,29 +1322,52 @@ let random_grid_not2 ~(a : Board.gem) ~(b : Board.gem) fx =
   in
   go 0
 
-(** [GetRandomGrid_Isolated2(a, b)]: a cell holding neither kind, and with neither
-    kind in any of its eight neighbours.
+(** [NoAdjacentGems(x, y, typ)] from `Assets/Scripts/GetRandomGrid.lua`: true when
+    none of the cell's four {e orthogonal} neighbours holds [typ].
 
-    This is the strictest of the random-cell helpers, and it exists so a spawned
-    skull cannot chain: [SBAC] drops a red skull, and a red skull beside another
-    skull detonates on the next match. The adjacency test reads the board as it was
-    when the search started rather than re-reading it per candidate, because the
-    Lua tests [GET_GEM] on the same unchanged grid throughout.
+    Four, not eight. This is the whole of the isolation rule, and it is orthogonal
+    because that is what makes a match in this game: runs are horizontal and
+    vertical, so a diagonal skull cannot chain and must not disqualify a cell.
+    An earlier version of this file tested all eight neighbours including
+    diagonals, which made the search strictly pickier than the original - on a
+    crowded board it would reject cells the game accepts and then fall through
+    to the give-up case. *)
+let no_adjacent_gems (board : Board.board) ~(typ : Board.gem) (x : int) (y : int) : bool =
+  let at nx ny =
+    nx < 0 || nx >= board.Board.width || ny < 0 || ny >= board.Board.height
+    || not (Board.equal_gem (Board.get_gem board { Board.x = nx; y = ny }) typ)
+  in
+  at (x - 1) y && at (x + 1) y && at x (y - 1) && at x (y + 1)
+
+(** [GetRandomGrid_Isolated2(a, b)]: a cell holding neither kind, and with neither
+    kind in any orthogonal neighbour.
+
+    ```lua
+    if (GET_GEM(x,y) ~= typ1 and GET_GEM(x,y) ~= typ2) then
+        if (NoAdjacentGems(x,y,typ1) and NoAdjacentGems(x,y,typ2)) then done = true; end
+    end
+    ```
+
+    The Lua calls [NoAdjacentGems] once per type; that is the same boolean as
+    testing the union, which is what [no_adjacent_gems] takes, so the two forms
+    are interchangeable here.
+
+    This exists so a spawned skull cannot chain: [SBAC] drops a red skull, and a
+    red skull orthogonally adjacent to another skull detonates on the next match.
+    The adjacency test reads the board as it was when the search started rather
+    than re-reading per candidate, because the Lua tests [GET_GEM] on the same
+    unchanged grid throughout.
 
     Cells off the board count as not-that-kind, so a corner is easier to satisfy
-    than an interior cell. *)
+    than an interior cell - the Lua's `x > 1` / `x < 8` bounds tests never look
+    outside the grid either. *)
 let random_grid_isolated2 ~(a : Board.gem) ~(b : Board.gem) fx =
   let board = !(fx.fx_board) in
   let bad g = Board.equal_gem g a || Board.equal_gem g b in
-  let clear nx ny =
-    nx < 0 || nx >= board.Board.width || ny < 0 || ny >= board.Board.height
-    || not (bad (Board.get_gem board { Board.x = nx; y = ny }))
-  in
   let isolated x y =
     not (bad (Board.get_gem board { Board.x = x; y = y }))
-    && clear (x - 1) y && clear (x + 1) y && clear x (y - 1) && clear x (y + 1)
-    && clear (x - 1) (y - 1) && clear (x + 1) (y - 1)
-    && clear (x - 1) (y + 1) && clear (x + 1) (y + 1)
+    && no_adjacent_gems board ~typ:a x y
+    && no_adjacent_gems board ~typ:b x y
   in
   let rec go tries =
     if tries > 1000 then (0, 0)

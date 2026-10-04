@@ -1413,9 +1413,40 @@ let () =
   check "SWMG takes none at eleven Air" (c2.extra_turns = 0)
 
 let () =
-  (* SBAC drops a red skull somewhere with no skull beside it, and pays an extra
-     turn at fifteen Fire. The isolation is the mechanic: it is what stops the
-     spell handing out a chain. *)
+  (* SBAC's isolation test is ORTHOGONAL only, and that is the point: matches in
+     this game run horizontally and vertically, so a diagonal skull cannot chain
+     and must not disqualify a cell.
+
+     The roll is pinned to (3,3), and the board is Fire except for one skull at
+     (2,2) - diagonally adjacent to it. So (3,3) is a legal cell under the
+     original's rule and an illegal one under an eight-neighbour rule. *)
+  let seq = ref [ 3; 3 ] in
+  let roll n = if n <= 0 then 0 else match !seq with [] -> 0 | h :: t -> seq := t; h in
+  let b = ref (Board.of_array_matrix (Array.make_matrix 8 8 (Mana Fire))) in
+  b := Board.set_gem { Board.x = 2; y = 2 } Board.Skull !b;
+  Spell_effects.effect_sbac (fx ~roll ~caster:(caster ()) ~foe:(foe ()) b);
+  check "SBAC takes a cell whose only skull neighbour is diagonal"
+    (equal_gem (get_gem !b { Board.x = 3; y = 3 }) RedSkull);
+  check "and does not fall through to the corner"
+    (not (equal_gem (get_gem !b { Board.x = 0; y = 0 }) RedSkull));
+  check "and leaves the diagonal skull alone"
+    (equal_gem (get_gem !b { Board.x = 2; y = 2 }) Skull);
+  (* And an ORTHOGONAL skull does disqualify the cell, which is the other half of
+     the rule. Roll pinned to (3,3) with a skull at (2,3): rejected, the roll is
+     spent, and the search falls through to the give-up cell. *)
+  let c2 = ref (Board.of_array_matrix (Array.make_matrix 8 8 (Mana Fire))) in
+  c2 := Board.set_gem { Board.x = 2; y = 3 } Board.Skull !c2;
+  let seq2 = ref [ 3; 3 ] in
+  let roll2 n = if n <= 0 then 0 else match !seq2 with [] -> 0 | h :: t -> seq2 := t; h in
+  Spell_effects.effect_sbac (fx ~roll:roll2 ~caster:(caster ()) ~foe:(foe ()) c2);
+  check "an orthogonal skull does disqualify the cell"
+    (not (equal_gem (get_gem !c2 { Board.x = 3; y = 3 }) RedSkull));
+  check "so with the roll spent it falls through to the give-up cell"
+    (equal_gem (get_gem !c2 { Board.x = 0; y = 0 }) RedSkull)
+
+let () =
+  (* SBAC drops a red skull somewhere with no skull near it, and pays an extra
+     turn at fifteen Fire. *)
   let c = caster ~mana:(mana 0 15 0 0) () in
   let b = ref (board_with Spell.GGreen 0) in
   Spell_effects.effect_sbac (fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) b);

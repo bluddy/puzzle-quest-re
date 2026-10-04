@@ -1,2 +1,3 @@
 pefile>=2024.8.26
 PyYAML>=6.0
+capstone>=5.0.0

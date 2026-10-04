@@ -397,6 +397,34 @@ over - and it was still wrong, because the source was one file read away. The
 `Assets.zip` sits at `game/Assets.zip` in this repository. It should have been
 opened before either claim was written down.
 
+### The random-cell helpers
+
+Five helpers in `Assets/Scripts/GetRandomGrid.lua` cover every call site in the
+game, and all five are ported:
+
+| helper | used by | ported as |
+| --- | --- | --- |
+| `GetRandomGrid` | `SBSG` `SFCA` `SHGO` `SWMG` | `random_grid` |
+| `GetRandomGrid_Not` | `SGOW` `SKLO` `SMST` | `random_grid_not` |
+| `GetRandomGrid_Not2` | `SDBR` `SDGZ` | `random_grid_not2` |
+| `GetRandomGrid_Isolated2` | `SBAC` | `random_grid_isolated2` |
+| `GetRandomGrid_Type` | `SCLI` `SCON` `SFBA` `SLIS` `STHR` `SWTD` | `random_grid_type` |
+
+`GetRandomGrid_Not3`, `_Isolated` and `_Type2` exist in the asset but are called
+from nowhere, so there is no unported body behind them. `GetRandomGrid` is
+`GET_RANDOM_SYNC(1,8)` twice; the `_Not*` and `_Isolated*` variants give up after
+1001 draws.
+
+**`SBAC`'s isolation test is four neighbours, not eight.** `NoAdjacentGems` tests
+left, right, up and down only. That is the point of the rule rather than a
+shortcut: matches are horizontal and vertical, so a diagonal skull cannot chain
+and must not disqualify a cell. The port was checking all eight neighbours, which
+made the search strictly pickier than the original - on a crowded board it
+rejected cells the game accepts and then fell through to the give-up case, so
+`SBAC` dropped its red skull in the wrong place. Corrected in
+`lib/spell_effects.ml` as `no_adjacent_gems`, with a test that fails under the
+eight-neighbour rule.
+
 **What the return value means.** These functions return a *number*, not a
 boolean: `Std_AISpellcastingChance` returns 0 or 1, and three hooks return
 negatives (`SMBU` -50, `SSBL` and `SSTL` -10). In Lua 0 is truthy, so the engine
@@ -599,3 +627,11 @@ transcribe the original faithfully, and it is deliberate.
 | The AI picks the first affordable spell, unranked | High â€” `FUN_00440FB0` |
 | The extra `+0x0C` term in `IS_SPELL_CASTABLE` | Low â€” unresolved, possibly a second read of the disallowed flag |
 | The rescale factor near `0x51E39C` | Low â€” present in the call path, purpose unidentified |
+| `+0x392` chooses scaled vs true damage in the readout | High — consumer at `0x47D24D`; see `DATA_STRUCTURES.md` |
+
+The last one is worth a note because it reuses the mana-yield constants. The
+`+0x392` consumer multiplies by `0.01` at `0x51E4C8` and adds `100.0` at
+`0x5217B4` — the same two floats that produce `(skill + 100) * multiplier * 0.01`
+for mana yield. So the damage readout is built with the yield formula's shape and
+a multiplier the flag can suppress, which is what makes the reading coherent
+rather than merely plausible.

@@ -890,32 +890,93 @@ claims:
     title: Board flag +0x391 enables the stat-based extra turn
     area: board
     verdict: mechanic
-    status: inferred
-    confidence: medium
+    status: recovered
+    confidence: high
     source_pass: original_reverse
     summary: >
-      Gates the per-match roll for a stat-based extra turn. Seeded from the battle's
-      initial value rather than hardcoded on.
+      Gates the per-match roll for a stat-based extra turn. Seeded from the
+      battle's initial value rather than hardcoded on. The binary confirms both
+      halves: at 0x0047d7bb the flag is loaded, tested, and the routine jumps
+      away when it is zero, so the roll below is genuinely conditional; the
+      block it guards pushes the constant 100 (0x64) as the roll's bound.
     evidence:
       - kind: lua
         ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          0x0047d7bb `mov al, byte ptr [ebp + 0x391]` / `test al, al` /
+          `je 0x47d881`; the guarded block pushes 0x64 (100) and reads
+          `[ebp + 0x3b0]`.
+      - kind: code
+        ref: lib/battle.ml
+        note: credit_run, gated on the flag
     affects: [lib/board.ml, lib/battle.ml]
 
   - id: board.flag_skull_scaling
-    title: Board flag +0x392 scales skull damage - no consumer found
+    title: Board flag +0x392 suppresses damage scaling in the damage readout
     area: board
     verdict: mechanic
-    status: open
-    confidence: low
+    status: recovered
+    confidence: high
     source_pass: original_reverse
     summary: >
-      Modelled in the port with nothing reading it. Until a consumer is found,
-      either the offset is wrong or a mechanic is missing. See
-      quest.skull_scaling_consumer.
+      The consumer exists and was found by scanning the binary for reads of the
+      offset rather than by reading decompilation, which never captured one. At
+      0x0047d24d the flag is loaded and tested; when it is zero the routine
+      substitutes the raw unscaled value into five message slots, and when it is
+      set it leaves the scaled value in place. The surrounding code builds
+      `100 + x * factor * 0.01` percentages (the two float constants it uses are
+      0.01 at 0x0051e4c8 and 100.0 at 0x005217b4), so the flag decides whether
+      the number shown to the player is the multiplied one or the true one.
+
+      This is why 38 spell bodies wrap their board rewrite in
+      `SetMultiplierEffects(false)` ... `SetMultiplierEffects(true)`: the player
+      sees honest numbers while a spell resolves.
     evidence:
       - kind: lua
         ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
-    affects: [lib/board.ml]
+        note: SetMultiplierEffects - the script-side view of the flag
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          0x0047d24d `mov al, byte ptr [ebx + 0x392]` / `test al, al` /
+          `jne 0x47d281`. The fall-through at 0x0047d265-0x0047d27d copies the
+          unscaled float into [esp+0x28], [esp+0x30], [esp+0x34], [esp+0x38] and
+          [esp+0x3c]; the scaled value was already stored to [esp+0x3c] above.
+          Found with tools/scan_field_refs.py 0x392.
+      - kind: code
+        ref: tools/scan_field_refs.py
+        note: reproduces the scan; without skipdata it reports a false negative
+    affects: [lib/board.ml, lib/spell.ml, lib/battle.ml]
+
+  - id: board.multiplier_flags_save_and_clear
+    title: The engine saves, clears and restores the three multiplier flags itself
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      At 0x0047d9b9-0x0047d9e7 the routine reads all three flags into registers,
+      spills them to the stack (`[esp+0x17]`, `[esp+0x1f]`, `[esp+0x16]`) and
+      writes 0 to each, then restores them at 0x0047db70-0x0047db7c. That is
+      `SetMultiplierEffects(false)` followed by `SetMultiplierEffects(true)`
+      with the previous values preserved, which is exactly the paired
+      false/true idiom the spell bodies use. It confirms the port's
+      `set_multiplier_effects` pairing is the engine's own pattern and not a
+      convenience invented during porting.
+    evidence:
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          0x0047d9b9 `mov al,[ebp+0x390]`, 0x0047d9bf `mov cl,[ebp+0x391]`,
+          0x0047d9c5 `mov dl,[ebp+0x392]`, each followed by a spill and a zeroing
+          store to the same offset; restore at 0x0047db70/0x0047db76/0x0047db7c.
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: set_multiplier_effects, and the 38 call sites that pair it
+    affects: [lib/spell_effects.ml, lib/battle.ml]
 
   - id: board.flag_pattern_45
     title: Board flag +0x395 gates 4/5-of-a-kind pattern matching
@@ -931,6 +992,122 @@ claims:
       - kind: lua
         ref: game/Assets.zip!Assets/Scripts/GridPatterns.lua
     affects: [lib/board.ml]
+
+  - id: board.isolation_is_orthogonal_only
+    title: Skull isolation checks four neighbours, not eight
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      `NoAdjacentGems` in `GetRandomGrid.lua` tests only left, right, up and
+      down, with bounds checks that never look off the board. Four, not eight,
+      and that is the whole point of the rule: matches in this game are
+      horizontal and vertical, so a diagonally adjacent skull cannot chain and
+      must not disqualify a cell.
+
+      The port had been testing all eight neighbours including diagonals, which
+      made `GetRandomGrid_Isolated2` strictly pickier than the original. On a
+      crowded board it rejected cells the game accepts and then fell through to
+      the give-up case, so SBAC dropped its red skull in the wrong place.
+      Corrected, with a test that fails under the eight-neighbour rule.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GetRandomGrid.lua
+        note: >
+          NoAdjacentGems tests x-1, x+1, y-1, y+1 only; GetRandomGrid_Isolated2
+          calls it once per type and caps the search at 1001 draws.
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: no_adjacent_gems and random_grid_isolated2
+      - kind: code
+        ref: test/test_spell_effects.ml
+        note: >
+          A board where the only legal cell has one diagonal and no orthogonal
+          skull, which the eight-neighbour rule rejects.
+    affects: [lib/spell_effects.ml, lib/board.ml]
+
+  - id: board.random_grid_helpers_exhaustive
+    title: Five GetRandomGrid helpers cover every call site in the game
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      Every call site across all 129 spells and 17 status effects resolves to
+      one of five helpers - `GetRandomGrid`, `_Not`, `_Not2`, `_Isolated2` and
+      `_Type` - and all five are ported. `GetRandomGrid_Not3`, `_Isolated` and
+      `_Type2` exist in the asset but no spell calls them, so there is no
+      unported body hiding behind them.
+
+      `GetRandomGrid` is `GET_RANDOM_SYNC(1,8)` twice, and the 1001-draw cap in
+      the `_Not*` and `_Isolated*` variants matches the port.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GetRandomGrid.lua
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: the five ported helpers
+    affects: [lib/spell_effects.ml]
+
+  - id: board.grid_helpers_iterate_row_major
+    title: GridUtilities helpers scan y outer, x inner
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      `CountGems`, `DestroyAllGems`, `DeleteAllGems`, `EffectOnAllGems` and
+      `ChangeAllGems` all nest `for y` outside `for x`, which is row-major - the
+      same order the port uses. Worth recording because the opposite nesting is
+      an easy mistake to make and would be observable in any helper that reports
+      the first cell it finds rather than a count.
+
+      `DestroyAllGems` and `DeleteAllGems` add their effect to the cell they just
+      cleared, and `ExplodeGem` clears a bounds-checked 3x3 around its centre
+      while `ExplodeAllGems` adds the effect at the centre, not at each cleared
+      cell.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: count_of_type, destroy_all_gems, delete_all_gems, effect_on_all_gems
+    affects: [lib/spell_effects.ml]
+
+  - id: board.grid_patterns_is_unused
+    title: GridPatterns.lua is dead code - no spell calls it
+    area: board
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: original_reverse
+    summary: >
+      Reading the file in full closed the question it was filed under. Its
+      `CheckForPatterns`, `CheckForSequences`, `CheckForRedSkull` and
+      `CheckForWildcard` helpers have zero call sites across all spells and
+      status effects; the only symbol from it any script uses is `IsWildcard`,
+      by SWMG. So the 4/5-of-a-kind rules are not implemented here, and
+      `board.flag_pattern_45` cannot be confirmed or refuted from this asset.
+
+      The file is still worth keeping for two facts it states outright.
+      `IsMatchingGem` is the canonical match rule: equal, or skull against red
+      skull, or a wildcard against one of the four mana elements. And
+      `CheckForWildcard` returns `gemType - 6`, which pins wildcard ids 8-14 to
+      multipliers 2x-8x - the same mapping the port assumes.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridPatterns.lua
+        note: >
+          IsMatchingGem; CheckForWildcard returning gemType-6; and the fact that
+          every pattern helper is called from nowhere.
+      - kind: code
+        ref: lib/board.ml
+        note: equal_gem and the wildcard multiplier range
+    affects: [lib/board.ml, lib/spell_effects.ml]
 
   - id: board.gem_ids
     title: Gem ids are 1 Earth, 2 Fire, 3 Water, 4 Air, 5 Skull, 15 Red Skull
@@ -1052,8 +1229,16 @@ open_questions:
       mechanic is missing from the board resolution.
     would_be_settled_by:
       - A cross-reference sweep on the flag byte in the decompiler output.
-    related: [board.flag_skull_scaling]
-    status: open
+    related: [board.flag_skull_scaling, board.multiplier_flags_save_and_clear]
+    status: refuted
+    resolution: >
+      The premise was wrong - a consumer exists, and the decompiler output never
+      captured one because every dumped function only writes the flag. Scanning
+      the binary directly found two reads, at 0x0047d24d and 0x0047d9c5; the
+      first is in a percentage-formatting routine that substitutes the unscaled
+      value when the flag is clear. See board.flag_skull_scaling. The lesson for
+      the next sweep is in tools/scan_field_refs.py: decompilation coverage is
+      not reference coverage.
 
   - id: audit.animeffect_family
     question: Is any dropped presentation call secretly mechanical?
@@ -1093,8 +1278,15 @@ open_questions:
       is defined, and it is the largest single unread asset in the project.
     would_be_settled_by:
       - Reading game/Assets.zip!Assets/Scripts/GridPatterns.lua.
-    related: [board.flag_pattern_45]
-    status: open
+    related: [board.flag_pattern_45, board.grid_patterns_is_unused]
+    status: refuted
+    resolution: >
+      The file has been read and it does not contain the 4/5-of-a-kind rules -
+      none of its pattern helpers are called from anywhere in the game, so it is
+      developer scaffolding rather than shipped content. That does not refute
+      +0x395 itself, which stays inferred; it means this asset can no longer
+      settle it, and the search has to move to the binary. See
+      board.grid_patterns_is_unused.
 
   - id: asset.status_effect_id_mismatches
     question: Why does EFBO have no STATUS_EFFECT_ constant, and EDOO a constant with no XML?
