@@ -744,6 +744,404 @@ claims:
       SWOP's damage and SSWM's numSkulls, the latter an undefined global. That is
       a bug in their text and changes no mechanic.
 
+  - id: font.bitmap_faces
+    title: The game ships ten bitmap font atlases with per-glyph tables
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: font_pass
+    summary: >
+      Text is not a TTF and not a bitmap font of our own making: Assets.zip
+      contains ten faces, each an atlas PNG plus an XML glyph table. Every face
+      covers codes 32..8482 - a multilingual range, not ASCII - with 195 or 199
+      glyphs, and gives each glyph a rectangle plus two bearings called `leading`
+      and `trailing`.
+
+      This is why the port renders text instead of loading a font, and it is a
+      better answer than the one this project recorded earlier: it needs no
+      dependency, no font pipeline and no glyph synthesis, and it is the original's
+      own typeface. See `port.bitmap_fonts_not_ttf`.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Fonts/System.xml
+        note: '<FontData height="20" numchars="195" mincode="32" maxcode="8482">'
+      - kind: xml
+        ref: game/Assets.zip!Assets/Fonts/System.png
+        note: 512x128, 8-bit RGBA, cells packed edge to edge with one pixel between
+      - kind: xml
+        ref: game/Assets.zip!Assets/Fonts/Small.xml
+      - kind: xml
+        ref: game/Assets.zip!Assets/Fonts/WC_Message.xml
+        note: the float-text face; FontData height 43, matching font_msg_* at pointsize 40
+    affects: [lib/font_data.ml, gfx/font_layout.ml, gfx/font.ml, tools/extract_fonts.py]
+    notes: >
+      Ten faces: Small, System, WC_Button, WC_Heading, WC_Message, WC_Quest,
+      WC_ScriptBig, WC_ScriptMedium, WC_ScriptSmall, WC_Speech. All ten atlases are
+      extracted by tools/extract_gfx_assets.py, and all ten glyph tables are parsed
+      by tools/extract_fonts.py into the committed lib/font_data.ml.
+
+  - id: font.named_styles
+    title: 32 named logical fonts carry the face, a baseline, a line height and a colour
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: font_pass
+    summary: >
+      `<Language>/Font.xml` names 32 fonts - font_system, font_small,
+      font_button, font_xp, font_gold, seven `font_msg_*`, the script and speech
+      faces - each pointing at a face with `pointsize`, `baseline`, `lineheight`,
+      `scale` and an RGB colour.
+
+      **The colour being part of the font definition is the point.** It is where
+      the original's coloured numbers come from: `font_xp` is (200,0,255) purple,
+      `font_gold` is (255,150,0), and the seven `font_msg_*` styles are exactly the
+      float-message palette the damage text is drawn in. Naming the font names the
+      colour, so the port takes its default text colour from the font rather than
+      passing one.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/Font.xml
+        quote: '<Font id="6" tag="font_xp" file="Assets\Fonts\System" ... r="200" g="0" b="255" a="255" scale="1"/>'
+      - kind: xml
+        ref: game/Assets.zip!English/Font.xml
+        note: 32 Font entries; there is a Font.xml per language, and StartupFont.xml is the subset needed before the loading screen
+      - kind: xml
+        ref: game/Assets.zip!German/Font.xml
+        note: same 32 tags, so the tags are the stable vocabulary and the face behind a tag can differ per language
+    affects: [lib/font_data.ml, gfx/font.ml, bin/pq_play_gfx.ml]
+    notes: >
+      Six styles carry `lineheight="0"` - font_heading, the seven font_msg_*, and
+      the script faces share it - which cannot mean zero lines, since their faces
+      are 43 to 45px tall. It is read as "no override", falling back to the face's
+      own `FontData/@height`, which is the field FUN_004c9030 returns for a
+      one-line measurement. Asserted in test_font_data.
+
+  - id: font.string_height_is_stored
+    title: A string's height is read from the font record, not measured
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: font_pass
+    summary: >
+      `FUN_004c9030` returns `*(int *)(*(int *)(font + 0x10) + index * 8 + 0x28)` -
+      a stored per-face height, with no measurement and no dependence on the
+      string. That number is the same one the glyph table publishes as
+      `FontData/@height`: 20 for System, 43 for WC_Message, 15 for Small.
+
+      So the port's line height is not an estimate, and it does not depend on the
+      text being measured.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/font/Font_string_height_FUN_004c9030.c
+        quote: |
+          if ((param_3 != *(int *)(param_1 + 4)) && (param_3 != -0x10)) {
+            return *(undefined4 *)(*(int *)(*(int *)(param_1 + 0x10) + *(int *)(param_3 + 0x2c) * 8) + 0x28);
+          }
+      - kind: xml
+        ref: game/Assets.zip!Assets/Fonts/WC_Message.xml
+        note: '<FontData height="43" ...> - matching the value FUN_004c9030 returns'
+    affects: [gfx/font_layout.ml]
+    notes: >
+      Two early exits return 0: a null string, and a font handle that is neither the
+      requested one nor -0x10. The second is a sentinel meaning "fall back to the
+      default face", which the port has no equivalent of.
+
+  - id: font.glyph_advance_is_stored
+    title: The glyph advance is a stored field, and its relation to leading/trailing is not recovered
+    area: render
+    verdict: presentation
+    status: inferred
+    confidence: medium
+    audited: true
+    source_pass: font_pass
+    summary: >
+      A string's width is accumulated by `FUN_004c7650`, which sums one field per
+      character - `+0x18` - for the middle characters, and treats the first and
+      last differently:
+
+      ```
+        first character :  glyph+0x1c + glyph+0x18
+        middle characters:         glyph+0x18
+        last character  :  glyph+0x14 - glyph+0x1c
+      ```
+
+      `+0x14` is the glyph rectangle's width: `FUN_004c75e0` uses width, x and y
+      all being zero as the "no such glyph" sentinel, which fixes those three
+      fields. So `+0x18` is the advance. **What `+0x1c` holds is not recovered**,
+      because for a single 'A' in Small the first-character and last-character
+      branches disagree - 25 against 10 - and only one of them can be right.
+
+      The port advances by the glyph's ink width. Two measurements support it:
+
+      - **`leading + trailing` already equals the ink width**, for 94% of glyphs,
+        rather than adding to it. Summing all three would double the tracking.
+      - **The atlas packs each cell edge to edge** with one pixel between, so the
+        ink has no baked-in offset to compensate for. Measured off System.png: the
+        ink of code 33 starts one pixel into a cell whose `leading` is 2.
+
+      The one case where ink width is wrong is a glyph with no ink - the space in
+      every face, whose rectangle is a 1px placeholder while its bearings still
+      add up to a real space. So the port takes the larger of the two.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/font/Font_measure_advance_FUN_004c7650.c
+        quote: |
+          if (iVar5 == 0) {
+            iVar3 = *(int *)(iVar3 + 0x1c + *(int *)(param_1 + 0x3c)) + *(int *)(iVar3 + *(int *)(param_1 + 0x3c) + 0x18);
+          }
+          else { ... iVar3 = (int)*(short *)(iVar3 + 0x14 + iVar1) - *(int *)(iVar3 + iVar1 + 0x1c); }
+      - kind: decompiled
+        ref: docs/decompiled/font/Font_glyph_present_FUN_004c75e0.c
+        note: the all-zero-rectangle sentinel, which fixes +0x10/+0x12/+0x14 as x, y and width
+      - kind: xml
+        ref: game/Assets.zip!Assets/Fonts/Small.xml
+        note: "'A' is width 12, leading 2, trailing 9 - bearings that sum to the ink, not to 23"
+    affects: [gfx/font_layout.ml]
+    notes: >
+      The 127 glyphs whose bearings exceed their ink by more than 3px are all in the
+      heading and script faces; System, Small and WC_Message - the three the battle
+      screen draws - have one between them. test_font_data pins that split, so an
+      offender appearing in a HUD face fails the build.
+
+      Also recovered in the same function, and relied on: U+00A0 is substituted for
+      a plain space before measuring, and a code outside the face's range or with no
+      glyph becomes the face's fallback character, kept at +0x44 on the font record.
+      The fallback's value is unknown, so the port draws nothing rather than a guess.
+
+  - id: font.glyph_tables_not_parsed_at_runtime
+    title: The engine does not read the font XML at runtime, so the advance cannot be recovered by finding the parser
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: font_pass
+    summary: >
+      The strings `leading`, `trailing`, `numchars`, `mincode`, `Glyph` and
+      `FontData` are all present in the binary as UTF-16 at 0x0012bc60 and
+      immediately after it - and **nothing references them**. No code pushes those
+      addresses and no data holds a pointer to them, in the whole file.
+
+      So they are an asset-build tool's vocabulary, compiled in and unused, and the
+      runtime glyph records are pre-baked by a pipeline whose source is not in this
+      repository. That closes off the obvious way to settle
+      `font.glyph_advance_is_stored`: there is no parser to read.
+    evidence:
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: UTF-16 hits for all six strings at 0x0012bc60-0x0012bcb0, zero code references and zero data pointers to any of them
+    affects: [gfx/font_layout.ml, docs/reverse/evidence.yml]
+    notes: >
+      Worth recording as a negative because it was assumed twice. An earlier note in
+      this project stated the strings appear nowhere in the binary; they appear as
+      UTF-16, and an ASCII search misses them in a Unicode build. The second
+      assumption - that a reference would exist - is what the scan actually refuted.
+      DecompileXrefs on 0x0012bc60 returns 0 functions, and a direct scan of .text
+      for the address bytes finds nothing.
+
+  - id: pres.text_queue_is_utf16_bgra
+    title: Text is queued as UTF-16, coloured B,G,R,A, with an optional per-character colour
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: font_pass
+    summary: >
+      `FUN_004c9950` is the call the float-text entry points make. It stores the
+      string with `wcsncpy` capped at 0xff characters, into a fixed ring of at most
+      **100 queued strings** (0x314 bytes each, and `if (99 < slot) return -1`),
+      and takes the text's colour from the font record at +0x28, +0x29, +0x2a -
+      **B, G, R in that order** - overridable per call, with a fourth byte for
+      alpha modulated as `byte(+0x2b) * param / 0xff`.
+
+      Two things the port does not yet have, recorded so they are not discovered
+      twice: the default colour comes from the font record rather than from the
+      caller, which is why the colour lives in `Font.xml`; and there is an optional
+      **per-character colour array**, one byte per character, which is how the
+      original draws a single number in more than one colour.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/font/Font_queue_text_FUN_004c9950.c
+        quote: |
+          *(char *)(*(short *)(param_1 + 0x1c) * 0x314 + 0x22c + param_1) =
+              (char)(((uint)*(byte *)(iVar6 + 0x2b) * (uint)param_6) / 0xff);
+        note: the default colour read from the font record, and the alpha modulation
+      - kind: decompiled
+        ref: docs/decompiled/font/Font_queue_text_FUN_004c9950.c
+        quote: 'if (99 < sVar4) { ... return 0xffffffff; }'
+        note: 100 queued strings, then refuse
+    affects: [gfx/font.ml, bin/pq_play_gfx.ml]
+    notes: >
+      The port draws text immediately rather than through a 100-deep queue, which is
+      the right shape for a HUD redrawn every frame and the wrong one for a script
+      that queues a message and lets it animate. The queue is what a float-message
+      implementation would need.
+
+  - id: pres.float_text_anchors_on_min_corner
+    title: Float text anchors on its box's smaller corner, then clamps to the screen - and the vertical rule ignores the text's height
+    area: ui
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: font_pass
+    summary: >
+      The positioning in `Engine_ADD_TEXT_MESSAGE_415120`, with its two measurement
+      calls now resolved (see `font.string_height_is_stored` and
+      `font.glyph_advance_is_stored`):
+
+      1. `x = min(x0, x1) - width / 2`, and likewise for y. It takes the **smaller**
+         of each pair of corners and uses the larger only to establish which is
+         smaller - it does not centre on the box's midpoint. The division truncates,
+         so an odd width loses half a pixel.
+      2. If the text would reach within **20px** (`0x14`) of the right edge it is
+         shifted left by the overhang; if it starts left of the margin it is shifted
+         right to the margin. **The near-edge test overrides the far-edge one**,
+         because the second `if` assigns to the same variable the first did.
+      3. **The vertical rule tests `y` against the bottom margin but never
+         `y + height`,** while the horizontal rule tests `x + width`. So a message
+         whose bottom edge runs off the screen is not pulled back.
+
+      This is transcribed in `gfx/font_layout.place_message` and pinned by
+      test_gfx_font_layout, including the asymmetry and the override.
+
+      **Correction to `pres.add_text_message`.** That claim describes the
+      positioning as "centre it, then keep it on screen" and cites
+      `width_of_line + DAT_0059a4c8 / 2` centring against a global screen width.
+      That is a *different* path. This function centres on the box's minimum corner
+      and clamps; the other centres on the screen width. Reading them as one rule is
+      what produced a midpoint assertion in a test, which failed.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEXT_MESSAGE_415120.c
+        quote: |
+          iVar3 = param_4;
+          if (param_6 <= param_4) { iVar3 = param_6; }
+          sVar6 = (short)iVar3 - sVar1 / 2;                    // min corner, minus half width
+          if (DAT_0059a4c8 + -0x14 <= iVar10 + iVar3) { ... }  // 20px, and x + width
+          if (DAT_0059a4ca + -0x14 <= iVar3) { ... }           // 20px, but y alone
+          if (sVar6 < 0x14) { iVar9 = 0x14 - iVar10; }         // overrides
+        note: 'sVar1/2 is a truncating divide, and the vertical test omits the height'
+      - kind: decompiled
+        ref: docs/decompiled/font/FloatText_draw_centred_FUN_004c6b10.c
+        quote: 'FUN_004c9950(..., (int)(short)(param_2 - (sVar1 >> 1)), (int)param_3, ...)'
+        note: the same half-width shift on the other centring entry point
+    affects: [gfx/font_layout.ml, test/test_gfx_font_layout.ml]
+    notes: >
+      The two globals are the screen dimensions: DAT_0059a4c8 is the width and
+      DAT_0059a4ca the height, and neither value has been read out of .data. The
+      original then writes the shift into four fields of the message's rectangle and
+      copies two over the other two; that copy is a property of its data structure,
+      not of the layout, so the port returns a resolved box instead.
+
+  - id: skin.bitmap_registry
+    title: Assets/Assets.xml is a registry of 44 sheets and 422 named rectangles, and it is the decoration vocabulary
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: decoration_pass
+    summary: >
+      The registry has two halves: `<Bitmap tag=...>path</Bitmap>` for 44 sheets,
+      and `<BitmapImage tag=... bitmap=... x y width height destwidth destheight/>`
+      for 422 named rectangles inside them. Those 422 are the game's whole
+      decoration vocabulary - backdrop, border, selection glow, turn-counter
+      plates, button states, dialog furniture - so a renderer should look tags up
+      rather than carry coordinates of its own.
+
+      Three things it settled that guessing would have got wrong:
+
+      - **The screen is 1024x768.** `Assets/Screens/Backdrop.xml` declares a
+        1024x768 menu, and the four border frames tile that rectangle exactly:
+        top 1024x95 at (0,0), left 19x653 at (0,95), right 21x653 at (1003,95),
+        bottom 1024x20 at (0,748) - 95+653 = 748, 748+20 = 768, and 19+21+1003 =
+        1024. The window size is therefore recovered, not chosen.
+      - **The backdrop is a JPEG**, and the sheet the registry names is
+        `Skin_Backdrop_Standard.jpg`, not `Skin_Backdrop_Battle.jpg`. The latter
+        appears in the archive and is mentioned nowhere in `Assets.xml`; this
+        repository was extracting it until the registry was read.
+      - **Frames carry a destination size as well as a stored size.** The red glows
+        are 88x88 on disk and 64x64 on screen, so drawing one at its stored size is
+        wrong, and the registry is the only place that says so.
+
+      The gem frames are in this table too, which is why `gfx/assets.ml` looks them
+      up instead of transcribing them: a rectangle nothing can check is a
+      rectangle that is wrong by a pixel and looks fine.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Assets.xml
+        quote: '<BitmapImage tag="img_border_top" bitmap="bmp_skin_backdrop" x="0" y="0" width="1024" height="95" destwidth="1024" destheight="95"/>'
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/Backdrop.xml
+        quote: '<Menu x="0" y="0" width="1024" height="768" timer="on" draw="off" modal="off">'
+      - kind: xml
+        ref: game/Assets.zip!Assets/Assets.xml
+        quote: '<Bitmap tag="bmp_skin_backdrop" precache="1">Assets\Skin\Skin_Backdrop_Standard.jpg</Bitmap>'
+      - kind: xml
+        ref: game/Assets.zip!Assets/Assets.xml
+        note: img_redglow_00 is width 88 destwidth 64 - stored larger than drawn
+    affects: [lib/skin_data.ml, gfx/skin.ml, gfx/assets.ml, gfx/layout.ml, bin/pq_play_gfx.ml, tools/extract_skin_data.py]
+    notes: >
+      Paths in the registry use backslashes and carry no extension, while the zip
+      uses forward slashes and the decoder needs the extension - so both are
+      normalised on the way in rather than at each use.
+
+      `img_timer_0..5` (the hourglass) and `img_shieldgrn_*`/`img_shieldred_*` are
+      identified and deliberately undrawn: the first belongs to the timed minigames,
+      and the port has no mechanic the second would report. Both are recorded here
+      so they are not mistaken for oversights.
+
+  - id: skin.jpeg_needs_imagelib_fork
+    title: Reading the backdrop needs imagelib's jpeg-codec fork; the opam release cannot decode JPEG
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: decoration_pass
+    summary: >
+      The opam release of `imagelib` has an `ImageJPG` module but does not wire it
+      into `ImageLib.openfile`, so `openfile ~extension:"jpg"` raises
+      `Not_yet_implemented "jpg"`. The `jpeg-codec` fork of
+      `github.com/bluddy/ocaml-imagelib` adds the dispatch branch, pinned here at
+      `00243ab8`.
+
+      **The two builds also disagree about the extension spelling**, which is a
+      separate trap: the release lists `extensions = ["png"]` and the fork lists
+      `[".png"]`, and `openfile` does a bare `List.mem` with no normalising. So
+      `"png"` works against the release and raises against the fork, while `"jpg"`
+      raises against the release. `gfx/png.ml` tries the dotted spelling and falls
+      back, so the port runs against either build - but only the fork can decode a
+      JPEG at all.
+
+      Recorded because it is a build-time requirement that lives in opam state
+      rather than in the repository, so a fresh clone gets a release and a black
+      screen.
+    evidence:
+      - kind: code
+        ref: gfx/png.ml
+        note: try_both tries ".png" then "png", because the two builds disagree
+      - kind: doc
+        ref: README.md
+        note: the requirements section carries the pin, since no opam file is committed
+    affects: [gfx/png.ml, README.md, tools/graphics_plan.md]
+    notes: >
+      This is the second git pin in the project; `tsdl-mixer` is pinned the same
+      way. Neither is in a committed opam file, so the README is the only thing
+      that records them.
+
+      An earlier version of the graphics plan deferred JPEG on the grounds that the
+      archive's 63 JPGs are backgrounds and none are needed for a board. That was
+      true and it left the one image the screen is mostly made of unreadable.
+
   - id: pres.play_sound
     title: PLAY_SOUND looks a named sound up and plays it, skipping one already playing
     area: render
@@ -1526,6 +1924,29 @@ open_questions:
       two tables are complementary rather than redundant, and neither can be
       generated from the other.
 
+  - id: font.advance_field_mapping
+    question: What is the glyph field at +0x1c, and how does it relate to the table's leading and trailing?
+    why_it_matters: >
+      Every piece of text in the port is positioned with this. FUN_004c7650 sums
+      +0x18 per character but adds +0x1c for the first character and subtracts it
+      for the last, and for a single 'A' in Small those two branches disagree - 25
+      against 10. One of them must be wrong, and until we know which, the port's
+      measure is the ink width rather than the original's measurement.
+
+      The visible consequence is small - text is laid out contiguously and centred
+      on its own ink - but it means a string's measured width may differ from the
+      original's by up to one bearing, which matters for anything that has to line
+      up with the original's screen.
+    would_be_settled_by:
+      - >
+        Reading the asset-build tool that writes these glyph records, which is not
+        in this repository.
+      - >
+        Failing differently: measuring a known string in the original and comparing
+        it against FUN_004c7650's prediction, which would say which branch is live.
+    related: [font.glyph_advance_is_stored, font.glyph_tables_not_parsed_at_runtime]
+    status: open
+
   - id: spell.sfba_target_writeback
     question: How does SFBA's SET_INPUT_DATA target reach CastSpell?
     why_it_matters: >
@@ -1592,3 +2013,43 @@ port_decisions:
     supersedes: port.headless_first
     date: 2026-10-04
     status: open
+
+  - id: port.bitmap_fonts_not_ttf
+    decision: Text is drawn with the game's own bitmap fonts, not with SDL_ttf and a font pipeline
+    rationale: >
+      tools/graphics_plan.md phase 3 specified `tsdl-ttf` on the reasoning that the
+      game's strings are translated into five languages and therefore need font
+      rendering rather than a fixed glyph set. That reasoning was sound and the
+      conclusion was wrong, because it never checked what the game ships: ten font
+      atlases in Assets.zip, each with a per-glyph table, plus 32 named styles per
+      language carrying the colours.
+
+      Using them is strictly better than a TTF here - no dependency, no glyph
+      synthesis, no font pipeline, and the original's own typeface and metrics - so
+      `tsdl-ttf` was installed, found to be unnecessary, and is not linked by
+      anything in the tree. The translated-text concern it was chosen for is
+      answered by the glyph tables' code range of 32..8482, which already covers
+      more scripts than the five languages need.
+
+      What is given up: text can only be set in a face the game ships, at its own
+      size. Arbitrary sizes and any character outside those ten faces would need a
+      TTF after all. Nothing on the battle screen needs either.
+    supersedes: null
+    date: 2026-10-05
+
+  - id: port.advance_is_ink_width
+    decision: A glyph advances by its ink width, or by its bearings if it has no ink
+    rationale: >
+      An inference, not a recovery - see font.glyph_advance_is_stored and the open
+      question font.advance_field_mapping. Two measurements support it over the
+      alternative: the table's two bearings sum to the ink width rather than adding
+      to it, and the atlas packs cells edge to edge so there is no baked-in offset.
+      The bearings-only case covers the space, whose 1px rectangle is a placeholder
+      and which would otherwise render "you 60" as "you60".
+
+      Recorded as a decision because it is the one number every glyph position in
+      the project depends on, and because the honest summary of its status is
+      "inferred from the assets and confirmed by how the result looks", not
+      "recovered".
+    supersedes: null
+    date: 2026-10-05

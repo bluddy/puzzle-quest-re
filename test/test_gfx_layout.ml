@@ -55,7 +55,54 @@ let show_rect r =
 
 (* 8x8 at 64px in a 900x680 window: the board is 512 square, so it is centred
    with 194 left over on each side horizontally and 84 vertically. *)
-let lay = Layout.create ~cell:64 ~cols:8 ~rows:8 ~window_w:900 ~window_h:680
+let lay = Layout.create ~reserve_top:0 ~reserve_bottom:0 ~cell:64 ~cols:8 ~rows:8 ~window_w:900 ~window_h:680
+
+let () =
+  (* The window size is the one the art is drawn for, and the art is the evidence:
+     the backdrop frame is 1024x768 and the four border frames tile it exactly (see
+     test_skin_data). Asserted here because this is where the constant lives, so a
+     change to it cannot drift away from the decoration without a failure. *)
+  check_int "the window is the backdrop's width" Layout.game_screen_w
+    (Option.get (Skin_data.frame_of_tag "img_backdrop")).Skin_data.dest_w;
+  check_int "and its height"
+    (Option.get (Skin_data.frame_of_tag "img_backdrop")).Skin_data.dest_h
+    Layout.game_screen_h;
+  (* The top inset the board is placed below is read from the border frame rather
+     than typed, so the art and the layout cannot disagree. *)
+  check_int "the top inset is the top border's height" (Skin.top_inset ())
+    (Option.get (Skin_data.frame_of_tag "img_border_top")).Skin_data.h;
+  check_int "which is also the top panel's" (Skin.top_inset ())
+    (Option.get (Skin_data.frame_of_tag "img_toppanel")).Skin_data.h
+
+let () =
+  (* Docked furniture. The board centres in what is left after the top panel and
+     the bar, rather than being centred in the window and half-hidden under them -
+     which is what it did before [reserve_top] existed. *)
+  let screen = Layout.game_screen_w and bar = 96 in
+  let inset = Skin.top_inset () in
+  let docked = Layout.create ~reserve_top:inset ~reserve_bottom:bar ~cell:71
+      ~cols:8 ~rows:8 ~window_w:screen ~window_h:Layout.game_screen_h
+  in
+  check_int "the board starts below the top panel" docked.Layout.origin_y
+    (inset + 4);
+  check "and ends above the bar"
+    (docked.Layout.origin_y + (8 * 71) <= Layout.game_screen_h - bar);
+  (* The vertical centring is within the free space, not the window: had it been
+     centred in the window it would land 48px higher, under the panel. *)
+  check "which is not where an undocked board would be"
+    (docked.Layout.origin_y
+    <> (Layout.create ~reserve_top:0 ~reserve_bottom:0 ~cell:71 ~cols:8 ~rows:8
+          ~window_w:screen ~window_h:Layout.game_screen_h)
+       .Layout.origin_y);
+  (* A board too tall for the free space must not produce a negative origin, or the
+     top row renders off-screen with no indication why. *)
+  let too_tall =
+    Layout.create ~reserve_top:inset ~reserve_bottom:bar ~cell:200 ~cols:8 ~rows:8
+      ~window_w:screen ~window_h:Layout.game_screen_h
+  in
+  check "an oversized board still starts at the inset, not above it"
+    (too_tall.Layout.origin_y >= inset);
+  check_int "and starts exactly at it" too_tall.Layout.origin_y inset
 
 let () =
   check_int "origin centres the board horizontally" lay.Layout.origin_x 194;
@@ -146,12 +193,12 @@ let () =
 let () =
   check "a non-positive cell size is rejected"
     (try
-       ignore (Layout.create ~cell:0 ~cols:8 ~rows:8 ~window_w:100 ~window_h:100);
+       ignore (Layout.create ~reserve_top:0 ~reserve_bottom:0 ~cell:0 ~cols:8 ~rows:8 ~window_w:100 ~window_h:100);
        false
      with Invalid_argument _ -> true);
   check "a non-positive column count is rejected"
     (try
-       ignore (Layout.create ~cell:8 ~cols:0 ~rows:8 ~window_w:100 ~window_h:100);
+       ignore (Layout.create ~reserve_top:0 ~reserve_bottom:0 ~cell:8 ~cols:0 ~rows:8 ~window_w:100 ~window_h:100);
        false
      with Invalid_argument _ -> true)
 

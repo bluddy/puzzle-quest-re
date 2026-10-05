@@ -14,6 +14,16 @@ let rgba r g b a = { r; g; b; a }
 
 type rect = { x : int; y : int; w : int; h : int }
 
+(** The resolution the game's own screen furniture is drawn for.
+
+    Not a preference. `Assets/Screens/Backdrop.xml` declares a 1024x768 menu, and
+    the border frames in the registry are cut to exactly that: top 1024x95, left
+    19x653, right 21x653, bottom 1024x20. A window of any other size either crops
+    the border or stretches it, so the window is this size and the decoration fits.
+*)
+let game_screen_w = 1024
+let game_screen_h = 768
+
 (** Board geometry.
 
     The board is [cols] x [rows] cells of [cell] pixels, centred in a window of
@@ -21,8 +31,21 @@ type rect = { x : int; y : int; w : int; h : int }
     original's board sits in the middle of the combat screen, and because a
     centred board survives a window resize without a second set of rules.
 
+    [reserve_top] and [reserve_bottom] are the heights of anything docked along
+    the top and bottom edges - the top panel and the spell bar. They are
+    subtracted before centring, not after, so the board centres in the space that
+    is actually free instead of sitting half under the panel with a row hidden.
+    Default 0, which is the plain case.
+
     [origin_x] and [origin_y] are the top-left of cell (0, 0) in window pixels,
-    with y growing downwards as SDL and OpenGL both expect. *)
+    with y growing downwards as SDL and OpenGL both expect.
+
+    A board taller than the free space is clamped to start at [reserve_top] rather
+    than being pushed off the top of the screen. Overflowing the bottom is the
+    better failure: the first row is still where a player expects it, whereas a
+    negative origin renders the top of the board outside the window with nothing to
+    explain it. It cannot happen at the sizes this project uses, which is why it is
+    a clamp and not an error. *)
 type t = {
   cell : int;
   cols : int;
@@ -31,12 +54,19 @@ type t = {
   origin_y : int;
 }
 
-let create ~cell ~cols ~rows ~window_w ~window_h : t =
+let create ~reserve_top ~reserve_bottom ~cell ~cols ~rows ~window_w ~window_h : t =
   if cell <= 0 then invalid_arg "Pq_gfx.Layout.create: cell must be positive";
   if cols <= 0 || rows <= 0 then
     invalid_arg "Pq_gfx.Layout.create: cols and rows must be positive";
   let board_w = cell * cols and board_h = cell * rows in
-  { cell; cols; rows; origin_x = (window_w - board_w) / 2; origin_y = (window_h - board_h) / 2 }
+  let free_h = window_h - reserve_top - reserve_bottom in
+  {
+    cell;
+    cols;
+    rows;
+    origin_x = (window_w - board_w) / 2;
+    origin_y = max reserve_top (reserve_top + ((free_h - board_h) / 2));
+  }
 
 (** The destination rectangle for one cell, in window pixels. *)
 let cell_rect (t : t) (x : int) (y : int) : rect =

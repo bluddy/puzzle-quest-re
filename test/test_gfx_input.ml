@@ -39,7 +39,7 @@ let check_eq name got want =
 let bar =
   { Input.count = 4; button_w = 120; gap = 12; top_y = 680 - 96; left_x = 186 }
 
-let lay = Layout.create ~cell:64 ~cols:8 ~rows:8 ~window_w:900 ~window_h:680
+let lay = Layout.create ~reserve_top:0 ~reserve_bottom:0 ~cell:64 ~cols:8 ~rows:8 ~window_w:900 ~window_h:680
 
 let always_valid _ _ = true
 let never_valid _ _ = false

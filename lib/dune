@@ -13,6 +13,8 @@
    combat
   status_effect_data
   status_effect_hooks
+  font_data
+  skin_data
   ai
   score
   battle

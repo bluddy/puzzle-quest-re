@@ -69,56 +69,46 @@ let pitch = 72
 
 (** Read a PNG into a c-layout char bigarray of RGBA bytes, top row first.
 
-    This is the shape tgls wants for glTexImage2D, so nothing is repacked
-    between decoding and upload.
-
-    [imagelib] decodes PNG in pure OCaml (it depends on [decompress]), so there is
-    no ImageMagick requirement - unlike rails, which uses [imagelib.unix] and
-    shells out to `convert` for formats OCaml cannot read. *)
+    The gem sheet is a fixed 512x512 and this asserts it, because a mismatched
+    sheet would show up as every frame addressing the wrong texels rather than as
+    an error. The decode itself is [Png.load_rgba]'s. *)
 let load_rgba (path : string) : (char, B.int8_unsigned_elt) Tsdl.Sdl.bigarray * int * int =
-  let ic = open_in_bin path in
-  let len = in_channel_length ic in
-  let bytes = Bytes.create len in
-  really_input ic bytes 0 len;
-  close_in ic;
-  let reader () = ImageUtil.chunk_reader_of_string (Bytes.unsafe_to_string bytes) in
-  let w, h = ImageLib.size ~extension:"png" (reader ()) in
+  let px, w, h = Png.load_rgba path in
   if w <> sheet_width || h <> sheet_height then
     failwith
       (Printf.sprintf "gfx/assets: expected a %dx%d gem sheet, got %dx%d (%s)"
          sheet_width sheet_height w h path);
-  let img = ImageLib.openfile ~extension:"png" (reader ()) in
-  let out = B.(Array1.create char c_layout (w * h * 4)) in
-  let set i r g b a =
-    out.{i} <- Char.chr (r land 0xFF);
-    out.{i + 1} <- Char.chr (g land 0xFF);
-    out.{i + 2} <- Char.chr (b land 0xFF);
-    out.{i + 3} <- Char.chr (a land 0xFF)
-  in
-  (* [Image.read_rgba img x y f] calls [f] with the pixel's r, g, b, a - the
-     coordinates go in, four channel values come back. The callback's own type is
-     [int -> int -> int -> int -> 'a], so a lambda taking six arguments silently
-     half-applies instead of failing, which is why this is spelled as an explicit
-     double loop. *)
-  for y = 0 to h - 1 do
-    for x = 0 to w - 1 do
-      Image.read_rgba img x y (fun r g b a ->
-          set (((y * w) + x) * 4) r g b a)
-    done
-  done;
-  (out, w, h)
+  (px, w, h)
 
 (* Where each frame lives in the sheet. See the table above for the four named
-   ones; the rest are read off the image and are inferred. *)
+   ones; the rest are read off the image and are inferred.
+
+   The named four are now *looked up* in [Skin_data] rather than written out here,
+   which is the point: the coordinates below used to be a transcription that
+   nothing could check, and a transcription of a rectangle is exactly the kind of
+   thing that is wrong by a pixel and looks fine. [test_skin_data] asserts that
+   this lookup returns the same rectangles the table used to claim. *)
 type provenance =
   | Named of string  (** a tag in Assets.xml - recovered *)
   | Inferred  (** read off the sheet by eye *)
 
+let named (tag : string) (w : int) (h : int) : Layout.rect * provenance =
+  match Skin_data.frame_of_tag tag with
+  | Some f ->
+      ({ Layout.x = f.Skin_data.x; y = f.Skin_data.y; w; h }, Named tag)
+  | None ->
+      (* The tag is not in the registry, so there is nothing to check this
+         against. Failing loudly beats drawing from a rectangle nobody can
+         verify. *)
+      failwith ("gfx/assets: no frame tagged " ^ tag ^ " in the registry")
+
 let frame_rect : Board.gem -> (Layout.rect * provenance) option = function
-  | Board.Mana Board.Earth -> Some ({ Layout.x = 0; y = 0; w = cell; h = cell }, Named "img_gem_green")
-  | Board.Mana Board.Fire -> Some ({ Layout.x = 72; y = 0; w = cell; h = cell }, Named "img_gem_red")
-  | Board.Mana Board.Air -> Some ({ Layout.x = 144; y = 0; w = cell; h = cell }, Named "img_gem_yellow")
-  | Board.Mana Board.Water -> Some ({ Layout.x = 216; y = 0; w = cell; h = cell }, Named "img_gem_blue")
+  | Board.Mana Board.Earth -> Some (named "img_gem_green" cell cell)
+  | Board.Mana Board.Fire -> Some (named "img_gem_red" cell cell)
+  | Board.Mana Board.Air -> Some (named "img_gem_yellow" cell cell)
+  | Board.Mana Board.Water -> Some (named "img_gem_blue" cell cell)
+  (* Not in the registry: the engine addresses the remaining gems by raw
+     coordinates, so these are read off the sheet by eye. See the table above. *)
   | Board.Skull -> Some ({ Layout.x = 288; y = 0; w = cell; h = cell }, Inferred)
   (* The purple star, row 0 cell 5. See the module comment: identified as
      experience by [Spell.GStar], positioned by eye. *)

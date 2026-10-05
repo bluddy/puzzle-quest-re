@@ -1,8 +1,11 @@
 # Graphics plan
 
-Superseded twice, and the current decision is the one this file argued against.
-Both earlier versions are kept below the current section because the reasoning
-that produced them is still what justifies the shape of the result.
+Superseded three times, and the current decision is the one this file argued
+against. The earlier versions are kept below the current section because the
+reasoning that produced them is still what justifies the shape of the result. The
+third - bitmap fonts instead of `tsdl-ttf` - was reversed once the assets turned
+out to contain the game's own fonts, which is the sort of thing worth checking
+before writing a plan down.
 
 ## Decision
 
@@ -126,16 +129,120 @@ The sheet is not committed. `tools/extract_gfx_assets.ps1` pulls it out of
 `game/` is: it is copyrighted material. Without running it the board still works,
 on flat colours.
 
-### Text: `tsdl-ttf`
+### Text: the game's own bitmap fonts
 
-**Decision: `tsdl-ttf`** (opam 0.6, "SDL2_Ttf bindings to go with Tsdl"), which is
-the SDL_ttf binding written against the same `tsdl` we already use. The
-alternative was a bitmap font of our own; the deciding factor is that the game's
-strings live in `Standard*Text.xml` and are Latin text with translations in five
-languages, which is font rendering rather than a fixed glyph set.
+**Decision: the ten bitmap fonts in `Assets.zip`, rendered directly.**
+Superseded the `tsdl-ttf` decision recorded below; the reasoning that produced it
+is kept because it is what made the mistake visible.
 
-That makes phase 3 an `opam install tsdl-ttf` plus a text path in `lib/gfx`, not a
-font pipeline. Note it is *not* installed yet.
+The argument for `tsdl-ttf` was that the game's strings live in `Standard*Text.xml`
+and are translated into five languages, which is font rendering rather than a fixed
+glyph set. That was sound, and it never checked what the game already ships:
+
+```
+  Assets/Fonts/<Face>.png    ten atlas sheets, 8-bit RGBA
+  Assets/Fonts/<Face>.xml    <FontData height numchars mincode maxcode>
+                             + one <Glyph code x y width height
+                                    leading trailing/> per character
+  <Language>/Font.xml        32 *named* fonts: a face, a baseline, a line
+                             height and an RGB colour
+```
+
+Ten faces, 195-199 glyphs each, codes 32..8482 - so the multilingual concern that
+motivated a TTF is already answered, by a wider code range than five languages
+need. And the 32 named styles are where the original's coloured text comes from:
+`font_xp` is purple, `font_gold` orange, and the seven `font_msg_*` styles are the
+float-message palette the damage numbers are drawn in.
+
+So text costs no dependency, no font pipeline and no glyph synthesis, and it is the
+original's own typeface. `tsdl-ttf` was installed to try it, found unnecessary, and
+**nothing in the tree links it**. What is given up: text can only be set in a face
+the game ships, at its own size. Nothing on the battle screen needs otherwise.
+
+`tools/extract_fonts.py` generates `lib/font_data.ml` from the glyph tables and
+`English/Font.xml`. The atlases are pulled by `tools/extract_gfx_assets.py` into
+`assets/gfx/Fonts/`.
+
+### The advance is inferred, and that is the one soft spot
+
+`FUN_004c7650` accumulates a string's width from a stored per-glyph advance at
+`+0x18`, but adds `+0x1c` for the first character and subtracts it for the last -
+and for a single `'A'` in `Small` those branches disagree, 25 against 10. **What
+`+0x1c` is, is not recovered**, and it cannot be: the `FontData` attribute names
+*are* in the binary, as UTF-16 at `0x0012BC60`, but nothing references them, so the
+engine does not parse these files at all and there is no parser to read. The
+runtime glyph records are pre-baked by a tool outside this repository.
+
+What the port does instead, and why:
+
+* **`leading + trailing` already equals the ink width** (94% of glyphs), rather than
+  adding to it. Summing all three - the reading the attribute names invite - doubles
+  the tracking, which is exactly what the first render of the HUD did.
+* **The atlas packs cells edge to edge**, one pixel between, so the ink carries no
+  baked-in offset to undo.
+* The exception is a glyph with no ink: the space, whose 1px rectangle is a
+  placeholder while its bearings still add up to a real space. Hence
+  `max width (leading + trailing)` - without which "you 60" renders as "you60".
+
+This is recorded as an inference, in `port.advance_is_ink_width` and the open
+question `font.advance_field_mapping`, rather than as a recovery.
+
+### Float messages
+
+`gfx/font_layout.place_message` is a transcription of the positioning in
+`Engine_ADD_TEXT_MESSAGE_415120`: anchor on the box's **smaller** corner minus half
+the width, then clamp into the screen with a hardcoded 20px margin, with the
+near-edge rule overriding the far-edge one. The vertical rule tests `y` alone and
+never `y + height`, while the horizontal rule tests `x + width` - so a message whose
+bottom edge runs off screen is not pulled back. That asymmetry is reproduced, and
+pinned by a test, because tidying it would be a silent divergence.
+
+`FUN_004c9950`, the call the float-text entry points make, shows the queue the
+original draws into: UTF-16 strings capped at 255 characters, at most 100 queued at
+once, colour read from the font record as **B, G, R, A** in that order, and an
+optional per-character colour array - which is how it draws one number in two
+colours. The port draws text immediately instead, which suits a HUD redrawn every
+frame and would not suit a script that queues a message and animates it.
+
+## Decoration: read the registry, do not measure the art
+
+Earlier versions of this plan treated the gem sheet as a special case - one sheet,
+four named frames, the rest read off the image by eye - and left the rest of the
+screen's art alone. That was the wrong shape once it turned out the registry has
+**422 named rectangles across 44 sheets**, covering the whole decoration
+vocabulary of the game: the backdrop and its border, the selection glow, the turn
+counter plates, button states, dialog furniture.
+
+So `tools/extract_skin_data.py` generates `lib/skin_data.ml` from
+`Assets/Assets.xml`, and `gfx/skin.ml` draws a frame by tag:
+
+```ocaml
+Skin.draw skin runs "img_border_top" ~place
+```
+
+Nothing in the presentation layer carries a rectangle it measured. Three things
+came out of the registry that guessing would have got wrong:
+
+- **The window is 1024x768, because the art is cut for it.** The four border
+  frames tile that rectangle exactly - top 1024x95, left 19x653, right 21x653,
+  bottom 1024x20, with 95 + 653 = 748 and 748 + 20 = 768. `Assets/Screens/Backdrop.xml`
+  declares the same 1024x768 menu. A border at any other window size is cropped or
+  stretched, and looks merely "off" rather than broken, so `test_skin_data` asserts
+  the tiling.
+- **The backdrop is a JPEG**, so `imagelib` has to be the `jpeg-codec` fork - see
+  the requirements section in the README. Note also that the sheet the registry
+  names is `Skin_Backdrop_Standard.jpg`, **not** `Skin_Backdrop_Battle.jpg`, which
+  `Assets.xml` never mentions; this repo was extracting the latter until the
+  registry was read.
+- **Frames carry a destination size as well as a stored size.** The red glows are
+  88x88 on disk and 64x64 on screen, so drawing one at its stored size is wrong.
+
+The board's top inset is read from the border frame rather than typed, so the art
+and the layout cannot drift apart.
+
+One deliberate omission: `img_timer_0..5`, the hourglass. It belongs to the timed
+minigames, and there is nothing on a battle screen for it to count, so guessing a
+place for it would be decoration for its own sake.
 
 ## What to reuse from rails
 
@@ -162,7 +269,11 @@ tree.
   gfx/layout.ml      board geometry and gem colours - no SDL, no GL, pure
   gfx/input.ml       what a click means, given which prompt is open - also pure
   gfx/gl.ml          the only file naming Tgl3./Tgles3., picks the GLSL header
+  gfx/png.ml         PNG -> RGBA bigarray, shared by assets and fonts
   gfx/assets.ml      Assets.zip -> textures, via imagelib
+  gfx/font_layout.ml glyph advances, measuring, wrapping, float-message placement
+  gfx/font.ml        a font atlas -> one texture, one batched run per line
+  gfx/skin.ml        decoration by registry tag: backdrop, border, glow, plates
   bin/pq_play_gfx.ml the playable window
 ```
 
@@ -227,8 +338,13 @@ rather than a measurement mistake.
 | --- | --- |
 | 1 | sprite batcher and window, 8x8 board drawn from live battle state |
 | 2 | real gem art from `Assets.zip` via imagelib, board interaction by mouse |
-| 3 | text (`SDL2_ttf` or a bitmap font) |
+| 3 | text - **done**, in the game's own bitmap fonts, with a HUD |
+| 3b | decoration - **done**: the registry as data, the backdrop and border at 1024x768 |
 | 4 | `Tgles3` behind `lib/gfx_gl.ml` for Android, one GLSL header switch |
+
+Phase 3 needed no new dependency, which was not obvious when it was written down as
+a font pipeline. Phase 3b needed `imagelib` pinned to a fork, because the backdrop
+is a JPEG - so "no new dependency" was true of the text and not of the decoration.
 
 ## Earlier versions, and why they changed
 

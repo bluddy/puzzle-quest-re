@@ -61,9 +61,21 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - Skills are modelled per element and drive mana yield, rather than being read off the mana balance.
   - Tests in [test/test_battle.ml](test/test_battle.ml) cover the coordinate bridge, determinism, size-based and stat-based extra turns, mana burn, cooldowns, the turn-ending rule, damage hooks, gold/XP/Heroic Effort, death, and the stalemate cap.
 
-Enhancement ideas are kept out of the port and tracked in
-[`ENHANCEMENTS.md`](docs/ENHANCEMENTS.md), including the ranked AI spell
-chooser, which is implemented but off by default.
+- [x] **Option H: Graphics Front End**:
+  - SDL2 for the window, input and GL context; `tgls` for OpenGL, which also covers OpenGL ES for Android behind one module.
+  - A sprite batcher, an 8x8 board drawn from live battle state, and mouse play through the same two hooks the ASCII runner uses.
+  - Real gem sprites, cut from the frames `Assets/Assets.xml` names.
+  - Text in the game's own bitmap fonts, and a HUD. See [Graphics](#graphics-sdl2--opengl).
+- [x] **Option I: Decoration**:
+  - `Assets/Assets.xml` read as data: 44 sheets and 422 named rectangles, with the size each is meant to be drawn at.
+  - The window is 1024x768, which is what the backdrop and the border frame are cut for.
+  - Backdrop, border, selection glow and turn-counter plates, all addressed by tag.
+
+There is no enhancements file, and that is a deliberate end state rather than an
+omission. One used to exist, for a ranked AI spell chooser to replace the
+original's first-affordable-wins. Recovering the real per-spell `ShouldAICastSpell`
+hooks made it pointless: the port now does what the game does rather than something
+ranked, so there is nothing to keep out of the default.
 
 ---
 
@@ -73,22 +85,35 @@ chooser, which is implemented but off by default.
   * `board.ml`: Pure functional 8x8 match-3 simulation engine, swap validation, cascades, and gravity.
   * `ai.ml`: Enemy move selection — probe windows, match scoring, difficulty and hero-level jitter.
   * `combat.ml`: Turn order, banked extra turns, status effect lifetimes, and the 37-hook record.
+  * `item.ml` / `item_data.ml` / `item_hooks.ml`: Items, their descriptors and their `IT_*` hooks.
   * `spell.ml`: Spell costs, mana yield, the stat-based extra turn roll, the turn-ending rule, and the AI's spell pick.
   * `spell_data.ml`: The 129 spell descriptors parsed from the game's assets. Generated.
   * `spell_ai.ml`: Per-spell `ShouldAICastSpell` hooks. Generated.
   * `spell_ai_manual.ml`: Hand-ported hooks that read the board.
   * `spell_effects.ml`: Per-spell `CastSpell` bodies — all 129 of them.
   * `status_effect_data.ml`: Status effect descriptors from the game's XML. Generated.
+  * `skin_data.ml`: The bitmap registry - 44 sheets, 422 named rectangles. Generated.
   * `status_effect_hooks.ml`: The 17 status effect scripts, hand-ported.
+  * `font_data.ml`: The ten bitmap font glyph tables and the 32 named fonts. Generated.
   * `score.ml`: End-of-battle score, both solo and co-op paths.
   * `battle.ml`: Headless battle loop wiring board, AI, combat, and spells together.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).
   * `save_file.ml`: `.pqhero` binary deserializer, PNG thumbnail slicer, and hero state parser.
+* `gfx/`: The presentation layer (`pq_gfx`), split so the arithmetic is testable without a window:
+  * `layout.ml`: Board geometry and gem colours. Pure.
+  * `input.ml`: What a click means, given which prompt is open. Pure.
+  * `font_layout.ml`: Glyph advances, measuring, wrapping, and float-message placement. Pure.
+  * `gl.ml`: The only file naming `Tgl3`/`Tgles3`; the window, the context and the sprite batcher.
+  * `png.ml`: PNG and JPEG to an RGBA bigarray, shared by the sheets and the font atlases.
+  * `assets.ml`: The gem sheet's frames, looked up in the registry rather than hardcoded.
+  * `font.ml`: A font atlas to one texture, and one batched run per line of text.
+  * `skin.ml`: The backdrop, the border and the other decorations, addressed by registry tag.
 * `bin/`: CLI utilities:
   * `pq_save_tool.ml`: Save file inspector, PNG extractor, and interactive board simulator.
   * `pq_battle.ml`: Plays a seeded headless battle and prints the trace or a summary.
+  * `pq_play_gfx.ml`: The same battle in a window, with a mouse and a HUD.
 * `pq_play.ml`: The same battle with you on the hero's turns.
-* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
@@ -111,6 +136,22 @@ chooser, which is implemented but off by default.
 * OCaml 5.x with Opam
 * Dune 3.x
 * Required opam packages: `tsdl`, `tsdl-mixer`, `tgls`, `imagelib`, `containers`
+* **`imagelib` must be the `jpeg-codec` fork.** The opam release cannot read the
+  game's backdrop, which is a JPEG, and there is no PNG of it — the only copy is
+  `Assets/Skin/Skin_Backdrop_Standard.jpg`. Pin it with:
+
+```sh
+opam pin add imagelib https://github.com/bluddy/ocaml-imagelib.git#jpeg-codec
+opam install imagelib
+```
+
+Pinned at `00243ab8`. The fork is what wires JPEG into `ImageLib.openfile`; the
+release raises `Not_yet_implemented "jpg"`. `gfx/png.ml` copes with both builds'
+differing extension spellings, but only the fork can decode a JPEG at all.
+
+This is the second git pin in the project — `tsdl-mixer` is pinned the same way —
+and neither is recorded in a committed opam file, so **this section is the only
+thing that tells a fresh clone what to pin.**
 
 ### Build
 ```powershell
@@ -151,9 +192,10 @@ the battle screen needs once:
 python tools/extract_gfx_assets.py
 ```
 
-Python is the default because PowerShell script execution is gated by policy on
-some machines, and a build step you cannot run is one that will not be run.
-Two equivalents, if you prefer:
+That pulls three sheets and all ten font atlases into `assets/gfx/`. Python is the
+default because PowerShell script execution is gated by policy on some machines,
+and a build step you cannot run is one that will not be run. Two equivalents, if
+you prefer:
 
 ```powershell
 # bsdtar, no script at all (Windows 10+ ships tar, which reads zips)
@@ -166,13 +208,87 @@ powershell -ExecutionPolicy Bypass -File tools/extract_gfx_assets.ps1
 All three produce identical bytes; the extractor asserts nothing about the others
 being present.
 
-Without it the board still runs, on flat colours.
+The glyph tables, the 32 named fonts and the bitmap registry are turned into OCaml
+separately, and those files *are* committed:
+
+```powershell
+python tools/extract_fonts.py            # -> lib/font_data.ml
+python tools/extract_skin_data.py        # -> lib/skin_data.ml
+python tools/extract_fonts.py --check    # fail if the committed file is stale
+python tools/extract_skin_data.py --check
+```
+
+Without the atlases the board still runs and the battle is still playable, on flat
+colours, with no labels and no frame.
 
 A playable window exists: `dune exec bin/pq_play_gfx.exe` runs the same
 `Battle` as the ASCII runner with the mouse choosing instead of `read_line` -
-click a gem then an adjacent one to swap, or a button on the bar to cast. Gems
-are coloured quads for now; real sprite art is phase 2. There is no text yet and
-no CRT filter.
+click a gem then an adjacent one to swap, or a button on the bar to cast. It draws
+at 1024x768, the game's own screen size, with its backdrop, its border and its
+own bitmap fonts. Gems are the game's sprites, text is set in the game's fonts,
+and there is no CRT filter and no placeholder typography.
+
+### Decoration comes from the game's own registry
+
+`Assets/Assets.xml` is the engine's asset registry: 44 sheets and **422 named
+rectangles**, each with the size it is meant to be *drawn* at as well as the size
+it is stored at. `tools/extract_skin_data.py` turns it into `lib/skin_data.ml`, so
+decoration is addressed by the tag the game uses rather than by coordinates
+somebody measured off a PNG:
+
+```ocaml
+Skin.draw skin runs "img_border_top" ~place
+```
+
+Three things that registry settled, none of which were obvious:
+
+* **The window is 1024x768 because the art says so.** `Assets/Screens/Backdrop.xml`
+  declares a 1024x768 menu, and the four border frames tile it exactly — top
+  1024x95, left 19x653, right 21x653, bottom 1024x20, with 95+653 = 748 and
+  748+20 = 768. `test_skin_data` asserts that tiling, so the window size cannot
+  drift away from the decoration.
+* **The backdrop is a JPEG**, and the file the registry names is
+  `Skin_Backdrop_Standard.jpg` — not the `Skin_Backdrop_Battle.jpg` this repository
+  was extracting, which `Assets.xml` never mentions. Hence the `imagelib` pin above.
+* **Some frames are stored larger than they are drawn** — the red glows are 88x88 on
+  disk for 64x64 on screen — so the registry's destination size is honoured rather
+  than ignored.
+
+The board's top inset is read from the border frame rather than typed, so the art
+and the layout cannot disagree. A missing sheet costs its decoration and nothing
+else: every draw call declines and the battle is still playable.
+
+### Text: the game's own fonts
+
+`Assets.zip` ships ten bitmap font atlases with a per-glyph table each, and
+`<Language>/Font.xml` names 32 logical fonts - a face, a baseline, a line height
+and an **RGB colour**. That last part is why there are thirty-two: `font_xp` is
+purple, `font_gold` orange, and the seven `font_msg_*` styles are the float-message
+palette. Naming the font names the colour, so the HUD takes its text colour from
+the font rather than passing one.
+
+This replaced a recorded decision to use `tsdl-ttf`. The argument for it was that
+the game's strings are translated into five languages and so need font rendering
+rather than a fixed glyph set - true, and beside the point, because the glyph
+tables cover codes 32..8482. So text needed no dependency and no font pipeline.
+`tsdl-ttf` is installed but **linked by nothing**.
+
+One number is an inference rather than a recovery: the per-glyph advance.
+`FUN_004c7650` sums a stored advance field, but adds a second field for the first
+character and subtracts it for the last, and the two disagree for a one-character
+string - so what that field is, is unknown. It cannot be settled from the binary
+either, because the `FontData` attribute names are present but unreferenced: the
+engine never parses these files. The port advances by the ink width instead,
+supported by measuring the atlas - the table's two bearings sum to the ink width
+rather than adding to it, and cells are packed edge to edge. The exception is the
+space, which has a 1px placeholder rectangle, so the advance is
+`max width (leading + trailing)`. See `gfx/font_layout.ml`,
+`port.advance_is_ink_width` and the open question `font.advance_field_mapping`.
+
+Float-message placement is a transcription, not a guess: `gfx/font_layout.ml`
+anchors on the box's smaller corner, then clamps to a 20px margin with the
+near-edge rule overriding the far-edge one, and reproduces the original's asymmetry
+where the vertical clamp never looks at the text's height.
 
 `tools/graphics_plan.md` records the decision, what is reused from the rails
 project's engine, how Android differs (one GLSL version line, behind one module),
