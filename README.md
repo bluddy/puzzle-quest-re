@@ -331,6 +331,19 @@ So a spell's timing is the game's: `SpellHealing` runs for 2.1 seconds because i
 descriptor says so, rather than because this port guessed a duration. `fx.ml` is
 pure, so all of that is asserted in `test_gfx_fx` rather than watched on screen.
 
+Playing one needed two things the batcher did not have. Quads now rotate - by turning
+their four corners about their own centre in pixel space, which is exact for a
+rectangle and costs no vertex attribute - because `SpellHealing` turns its ring
+through 12.4 radians. And each draw batch carries its own blend mode, because all but
+a handful of particles ask for `additive` and an additive sparkle drawn with the
+ordinary alpha blend is a grey dot.
+
+An effect's own bitmap is a region of the battle sheet, addressed the way the
+decoration is (`bmp_skin_battlemisc` plus a rectangle); its particles are six whole
+32x32 and 64x64 PNGs, extracted whole because none of them is a registry frame. The
+six are named by file in the descriptors, so `assets/gfx/Particles/Sparkle.png` is
+found by the same string the archive used.
+
 Three things it deliberately does not interpret, each recorded rather than papered
 over: `Shape steps` (2 in seven particles), the planar `planes` codes, and
 `AnimPosition`. The five Ring particles - which is what `SpellHealing` actually

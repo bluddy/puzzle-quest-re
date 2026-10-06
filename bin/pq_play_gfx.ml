@@ -81,7 +81,22 @@ type ui = {
   audio : Audio.t;
   (* The cascade animation. Fed by [Battle.on_step], drained by the frame loop. *)
   anim : Anim.t;
+  (* Spell effects, from the game's own descriptors: a name and a point is all it
+     takes, and the timings come out of `lib/fx_data.ml`. *)
+  fx : Fx.t;
+  (* The six particle textures, keyed by the file name the descriptors use. None of
+     them is a registry frame - they are whole 32x32 and 64x64 images - so they are
+     loaded individually rather than cut out of a sheet. A missing one costs the
+     particles that use it and nothing else. *)
+  fx_textures : (string * Gl.texture * int * int) list;
 }
+
+
+(** Where the particle textures live, alongside the font atlases. *)
+let fx_dir () =
+  match Sys.getenv_opt "PQ_GFX_ASSETS" with
+  | Some p when Sys.file_exists p -> Filename.concat p "Particles"
+  | _ -> "assets/gfx/Particles"
 
 let u : ui option ref = ref None
 
@@ -117,6 +132,23 @@ let message_anchor (s : Float_text.subject) : Font_layout.box =
     the frame loop's own notion of time, and mixing a millisecond counter with a
     float accumulator is how a message ends up expiring on the wrong frame. This
     is a plain float the presentation layer advances. *)
+
+(** Where a character stands, for an effect aimed at one.
+
+    The original asks the character for its screen point and then subtracts the
+    camera offset (`Engine_ADD_ANIMEFFECT_TO_CHARACTER_47b370`). There is no camera
+    here - the board is fixed and the portraits are painted into the backdrop - so
+    these are two points measured off that 1024x768 art: the hero's chest on the
+    left, and the foe's on the right.
+
+    Measured rather than derived, and recorded as such: the board rectangle *is*
+    derivable, but the portraits are not - the hero is a figure painted into the
+    backdrop and the foe is only its name and life total, so "the foe's screen point"
+    has no recovered answer here. Both are also the same points the float messages
+    are anchored to, which is the tidier way to be wrong: one number for each side
+    rather than two that drift apart. *)
+let hero_point () = message_anchor Float_text.Hero
+let foe_point () = message_anchor Float_text.Foe
 let now_seconds = ref 0.0
 
 (** One frame's worth of presentation time, in seconds.
@@ -343,6 +375,63 @@ let draw_timer (rs : Gl.run list ref) =
     (Skin.draw s rs frame_timer_r
        ~place:{ Layout.x = window_w - pad - 90; y; w = 0; h = 0 })
 
+let fx_sprite_size name =
+  match List.find_opt (fun (n, _, _, _) -> n = name) (ui ()).fx_textures with
+  | Some (_, _, w, h) -> (w, h)
+  | None -> (0, 0)
+
+(** Draw whatever effects are running, over the board and under the HUD text.
+
+    A particle is drawn from its own texture and an effect's own bitmap from the
+    registry sheet, so the two are looked up differently - which is why this cannot
+    be folded into [emit_gem]. Additive runs are marked as such, because an additive
+    sparkle drawn with the ordinary blend is a grey dot. *)
+let draw_fx (rs : Gl.run list ref) =
+  let st = ui () in
+  let gl = st.gl in
+  let skin = st.skin in
+  let sprites = Fx.frame st.fx ~texture_size:(fx_sprite_size) in
+  List.iter
+    (fun (s : Fx.sprite) ->
+      match Fx.quad_of_sprite ~texture_size:fx_sprite_size s with
+      | None -> ()
+      | Some (dst, uv, colour, rotation, blend) ->
+          let tex, dims =
+            match s.Fx.image with
+            | Fx.Region { sheet; _ } ->
+                (* A spell effect\'s own bitmap is a region of a registry sheet, so it
+                   comes from the same place the border and the glows do. *)
+                ( match Skin.sheet_texture skin sheet with
+                  | Some (tex, w, h) -> (Some tex, (w, h))
+                  | None -> (None, (0, 0)) )
+            | Fx.Particle_sprite { texture; _ } -> (
+                match List.find_opt (fun (n, _, _, _) -> n = texture) st.fx_textures with
+                | Some (_, tex, w, h) -> (Some tex, (w, h))
+                | None -> (None, (0, 0)))
+          in
+          (match tex with
+          | None -> ()
+          | Some tex ->
+              let first =
+                Gl.push_quad ~tex_size:dims ~rotate:rotation gl dst (Some uv) colour
+              in
+              rs :=
+                !rs
+                @ [
+                    {
+                      Gl.first;
+                      count = 6;
+                      tex = Some tex;
+                      colour;
+                      clip = None;
+                      blend =
+                        (match blend with
+                        | Fx_data.Additive -> Some Gl.Additive
+                        | Fx_data.Alpha_blend -> Some Gl.Alpha);
+                    };
+                  ]))
+    sprites
+
 let draw ?(present = true) () =
   let b = battle () in
   let lay = layout () in
@@ -354,7 +443,7 @@ let draw ?(present = true) () =
   let runs = ref [] in
   let emit dst col =
     let first = Gl.push_quad gl dst None col in
-    runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col; clip = None } ]
+    runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col; clip = None; blend = None } ]
   in
   (* A gem, drawn from the sheet when a frame was identified for it. The fallback
      is the flat colour rather than a guessed sprite: drawing the wrong gem would
@@ -369,7 +458,7 @@ let draw ?(present = true) () =
         in
         runs :=
           !runs
-          @ [ { Gl.first; count = 6; tex = Some sheet; colour = Layout.rgba 255 255 255 255; clip = None } ]
+          @ [ { Gl.first; count = 6; tex = Some sheet; colour = Layout.rgba 255 255 255 255; clip = None; blend = None } ]
     | _ -> emit dst (Layout.gem_colour g)
   in
   emit
@@ -407,13 +496,13 @@ let draw ?(present = true) () =
             in
             runs :=
               !runs
-              @ [ { Gl.first; count = 6; tex = Some sheet; colour = sprite_colour; clip } ]
+              @ [ { Gl.first; count = 6; tex = Some sheet; colour = sprite_colour; clip; blend = None } ]
         | _ ->
             (* No sprite: a flat colour, faded by alpha like the sprite path. *)
             let flat = Layout.gem_colour g.Anim.gem in
             let col = { flat with Layout.a = g.Anim.alpha } in
             let first = Gl.push_quad gl dst None col in
-            runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col; clip } ])
+            runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col; clip; blend = None } ])
       (Anim.frame anim);
   end
   else
@@ -448,6 +537,9 @@ let draw ?(present = true) () =
      side of the top panel and the hourglass over it. There is no countdown in a
      turn-based battle, so what is shown is how many turns have gone. *)
   draw_timer runs;
+  (* Spell effects go in after the gems and before the text, so a sparkle is over the
+     board and under the numbers it belongs to. *)
+  draw_fx runs;
   (* Text goes in last, on top: the HUD, then the float messages over everything. *)
   let runs = !runs @ draw_hud gl demo_spells in
   let runs =
@@ -487,8 +579,12 @@ let rec wait_click () =
      the pop it belongs to, and keeping one idle delta avoids the temptation to
      advance them separately and get that wrong. *)
   let anim_changed = Anim.advance (ui ()).anim frame_seconds in
+  (* The effects carry their own clock for the same reason the cascade does, and are
+     advanced on the same delta: an effect that runs at a different rate from the
+     gems popping around it reads as two systems rather than one. *)
+  let fx_changed = Fx.advance (ui ()).fx frame_seconds in
   let messages_changed = advance_clock frame_seconds in
-  if anim_changed || messages_changed then draw ();
+  if anim_changed || messages_changed || fx_changed then draw ();
   if Tsdl.Sdl.poll_event some_ev then begin
     let t = E.get ev E.typ in
     if t = E.quit then exit 0
@@ -639,7 +735,7 @@ let on_battle_step (_b : Battle.battle) (s : Battle.step) =
     done
   end
 
-let on_battle_event ~(pause_ms : int) (_b : Battle.battle) (e : Battle.event) =
+let on_battle_event ~(pause_ms : int) (b : Battle.battle) (e : Battle.event) =
   (* A cast is the one event whose sound needs more than the event: it depends on
      what the spell does, and the event carries only its id. So the spell is looked
      up by name here, where the spell list is in scope. *)
@@ -650,6 +746,23 @@ let on_battle_event ~(pause_ms : int) (_b : Battle.battle) (e : Battle.event) =
   in
   ignore (Audio.play_all (ui ()).audio (Sound_map.with_spell e spell));
   ignore (Float_text.say_event (ui ()).float_text e ~anchor_of:message_anchor !now_seconds);
+  (* The effect, which is the same lookup in the other direction: the spell's script
+     named a SPELLFX constant, the constant named an effect, and the effect plays
+     itself out over its own descriptor's duration.
+
+     Aimed at the caster, which is what `Std_CastSpellEffect` does - the enemy and
+     grid forms aim elsewhere and are not wired up yet. A cast by either side plays
+     on the caster's own portrait, so which combatant cast is read off the event's
+     first field. *)
+  (match e with
+  | Battle.SpellCast (who, id) ->
+      (* The event carries the caster's *name*, so whose side to play on is a
+         comparison against the hero's. The anchor is a one-pixel box and the player
+         wants a point, so the middle of it is taken. *)
+      let a = if who = b.Battle.hero.Combat.name then hero_point () else foe_point () in
+      let at = { Fx.x = float_of_int (a.Font_layout.x0); y = float_of_int a.Font_layout.y0 } in
+      ignore (Fx.play_for_fx (ui ()).fx id ~at)
+  | _ -> ());
   (* The clock advances whether or not the frame is actually shown. In `--demo`
      there is no real pause, but messages still have to expire or the screen fills
      with every message the battle has ever produced - which is exactly what the
@@ -714,7 +827,7 @@ let () =
   let gem_sheet =
     match Assets.sheet_path () with
     | path when Sys.file_exists path ->
-        let px, w, h = Assets.load_rgba path in
+        let px, w, h = Assets.load_gem_sheet path in
         Printf.printf "  gem sheet %s (%dx%d)\n" path w h;
         Some (Gl.texture_of_bigarray ~w ~h px)
     | path ->
@@ -752,6 +865,26 @@ let () =
         (Font.face_dir ())
   | Some _ -> Printf.printf "  fonts: %d atlases\n" (List.length want));
   flush stdout;
+  (* The six particle textures the effect descriptors name. Loaded whole, each
+     one, keyed by the file name `lib/fx_data.ml` uses - so a particle asking for
+     `Sparkle.png` finds it by the same string the archive used. *)
+  let fx_textures =
+    List.filter_map
+      (fun tex ->
+        let path = Filename.concat (fx_dir ()) tex in
+        if not (Sys.file_exists path) then None
+        else
+          let px, w, h = Assets.load_image path in
+          Some (tex, Gl.texture_of_bigarray ~w ~h px, w, h))
+      Fx_data.textures
+  in
+  let missing = List.length Fx_data.textures - List.length fx_textures in
+  if missing > 0 then
+    Printf.printf
+      "  %d of %d particle textures missing from %s - run tools/extract_gfx_assets.py\n"
+      missing
+      (List.length Fx_data.textures)
+      (fx_dir ());
   u :=
     Some
       { gl;
@@ -768,6 +901,8 @@ let () =
         float_text = Float_text.create ();
         audio = Audio.create ();
         anim = Anim.create ();
+        fx = Fx.create ();
+        fx_textures;
         (* Two sheets carry the whole frame: the backdrop the border is cut out
            of, and the sheet the selection glow and turn counters live on. *)
         skin = Skin.create ~gl ~sheets:[ "bmp_skin_backdrop"; "bmp_skin_battlemisc" ] };
@@ -798,33 +933,47 @@ let () =
     for _ = 1 to !demo_turns do
       if b.Battle.winner = None then Battle.take_turn b
     done;
-    (* The demo plays with no frame loop, so the animation queue has built up with
-       nothing draining it. Settle it before drawing, or the screenshot shows
-       whichever cascade happened first rather than the board the battle ended on.
+    (* The demo plays with no frame loop, so both queues have built up with nothing
+       draining them. Settle them before drawing, or the screenshot shows whichever
+       cascade happened first rather than the board the battle ended on.
 
-       `--shot-at T` stops part way in instead, which is how a fall or a pop gets
-       looked at: the first phase starts the instant the queue does, so T of about
-       a fifth of a second lands inside it. *)
+       Both clocks are advanced together, because they are both presentation time
+       and an effect stopped half way is a different picture from a cascade stopped
+       half way.
+
+       `--shot-at T` stops part way in instead, which is how a fall, a pop or a
+       spell effect gets looked at: the first phase starts the instant the queue
+       does, so T of about a fifth of a second lands inside it. *)
     (match !shot_at with
     | Some t ->
         let anim = (ui ()).anim in
+        let fx = (ui ()).fx in
         let stop = Anim.now anim +. t in
-        while Anim.now anim < stop && Anim.advance anim 0.016 do
-          ()
+        while Anim.now anim < stop && (ignore (Anim.advance anim 0.016); true) do
+          ignore (Fx.advance fx 0.016)
         done
     | None ->
         let anim = (ui ()).anim in
+        let fx = (ui ()).fx in
         let guard = ref 0 in
         while Anim.advance anim 0.05 && !guard < 10_000 do
-          incr guard
+          incr guard;
+          ignore (Fx.advance fx 0.05)
+        done;
+        (* And the effects themselves, which have their own durations. *)
+        let guard2 = ref 0 in
+        while Fx.is_busy fx && !guard2 < 10_000 do
+          incr guard2;
+          ignore (Fx.advance fx 0.05)
         done);
     Printf.printf
-      "  demo: %d turns, %d events, %d messages live, %d sounds started, %d animation frames\n"
+      "  demo: %d turns, %d events, %d messages live, %d sounds started, %d animation frames, %d effects\n"
       b.Battle.turns_elapsed
       (List.length (Battle.log_of b))
       (Float_text.count (ui ()).float_text)
       (ui ()).audio.Audio.played
-      !drained_frames;
+      !drained_frames
+      (Fx.played (ui ()).fx);
     flush stdout
   end;
   (* `--pace` is a smoke run, not a game: the turns are played and animated and then

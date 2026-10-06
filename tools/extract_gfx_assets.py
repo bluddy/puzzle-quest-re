@@ -58,6 +58,32 @@ FONT_SUBDIR = "Fonts"
 LANGUAGE = "English"
 SOUND_BANKS = [("Assets/Sounds/", ""), (LANGUAGE + "/Sounds/", LANGUAGE + "/")]
 
+# The six particle textures. Unlike everything else here they are not registry
+# frames: the 51 particle descriptors name a bare file, six of them, each a whole
+# 32x32 or 64x64 image rather than a rectangle of a sheet. They go to
+# assets/gfx/Particles/ because that is where the front end looks for them, and the
+# list is spelled out rather than globbed so that adding an effect cannot silently
+# pull in a particle nothing plays.
+PARTICLE_SUBDIR = "Particles"
+PARTICLE_TEXTURES = [
+    "Sparkle.png",   # 37 of the 51
+    "Flare.png",
+    "Skull.png",
+    "Fire.png",
+    "Smoke.png",
+    "Rock.png",
+]
+
+def is_particle(name: str) -> bool:
+    return name.startswith("Assets/Particles/") and name.endswith(".png")
+
+
+def particle_dest(name: str) -> pathlib.Path | None:
+    if not is_particle(name):
+        return None
+    return pathlib.Path(PARTICLE_SUBDIR) / pathlib.Path(name).name
+
+
 def is_font(name: str) -> bool:
     return name.startswith(FONT_PREFIX) and name.endswith(FONT_SUFFIX)
 
@@ -86,6 +112,7 @@ def main() -> int:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / FONT_SUBDIR).mkdir(parents=True, exist_ok=True)
+    (args.out_dir / PARTICLE_SUBDIR).mkdir(parents=True, exist_ok=True)
     for _, subdir in SOUND_BANKS:
         (args.out_dir / subdir / "Sounds").mkdir(parents=True, exist_ok=True)
     missing = []
@@ -96,6 +123,7 @@ def main() -> int:
             name_set = set(names)
             want = list(WANTED)
             want += sorted(n for n in names if is_font(n))
+            want += [f"Assets/Particles/{t}" for t in PARTICLE_TEXTURES]
             for w in want:
                 # Archive paths use forward slashes; the asset tree in the game
                 # uses backslashes, so only match on the leaf where it matters.
@@ -104,7 +132,7 @@ def main() -> int:
                     print(f"  warning: not in archive, skipping: {w}",
                           file=sys.stderr)
                     continue
-                sub = FONT_SUBDIR if is_font(w) else ""
+                sub = FONT_SUBDIR if is_font(w) else (PARTICLE_SUBDIR if is_particle(w) else "")
                 dest = args.out_dir / sub / pathlib.Path(w).name
                 dest.write_bytes(z.read(w))
                 written += 1

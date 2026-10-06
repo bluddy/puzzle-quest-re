@@ -332,8 +332,13 @@ let advance (t : t) (dt : float) : bool =
 
     The `start` fraction is the point in the particle's life at which its own
     animation begins: before it, the particle holds its starting size and colour;
-    after, it interpolates to the ending ones. It is not a delay before it appears. *)
-let particle_at (l : live) (t : float) (size_of_texture : string -> float) =
+    after it, the particle interpolates to the ending ones. It is not a delay before
+    it appears.
+
+    The width of its texture is used and the textures are square - all six are 32x32
+    or 64x64 - so there is nothing to choose between them, and taking the width keeps
+    the reader's type honest about being a lookup rather than a number. *)
+let particle_at (l : live) (t : float) (texture_dims : string -> int * int) =
   let age = t -. l.born in
   let p = l.p in
   let span = if p.Fx_data.life <= 0.0 then 1.0 else p.Fx_data.life in
@@ -343,7 +348,7 @@ let particle_at (l : live) (t : float) (size_of_texture : string -> float) =
   in
   let lerp a b = a +. ((b -. a) *. f) in
   let size = lerp p.Fx_data.size p.Fx_data.to_size in
-  let tex = size_of_texture p.Fx_data.texture in
+  let tex = fst (texture_dims p.Fx_data.texture) in
   let colour =
     {
       Fx_data.r = lerp p.Fx_data.colour.Fx_data.r p.Fx_data.to_colour.Fx_data.r;
@@ -352,9 +357,9 @@ let particle_at (l : live) (t : float) (size_of_texture : string -> float) =
       a = lerp p.Fx_data.colour.Fx_data.a p.Fx_data.to_colour.Fx_data.a;
     }
   in
-  (size *. tex, colour)
+  (size *. float_of_int tex, colour)
 
-let frame (t : t) ~(texture_size : string -> float) : sprite list =
+let frame (t : t) ~(texture_size : string -> int * int) : sprite list =
   let effect_sprites =
     List.concat_map
       (fun (r : running) ->
@@ -409,3 +414,63 @@ let frame (t : t) ~(texture_size : string -> float) : sprite list =
   (* Particles over effects: a sparkle in front of the ring it comes out of, which is
      what reads as depth. Both are additive or alpha-blended anyway. *)
   effect_sprites @ particle_sprites
+
+(** A sprite as one batched quad: where to draw it, which part of which texture,
+    what colour to tint it, how far to turn it, and how it combines.
+
+    Pure, so the mapping from descriptors to pixels is asserted in a test rather
+    than looked at. Positions are absolute in window pixels, because by the time a
+    sprite reaches here the frame loop knows where the window is - the alternative
+    is threading an origin through every call site.
+
+    [texture_size] is needed only for particles: an effect's own bitmap is a region
+    of a registry sheet and names its own rectangle, while a particle texture is
+    used whole. *)
+let quad_of_sprite ~(texture_size : string -> int * int) (s : sprite)
+    : (Layout.rect * Layout.rect * Layout.colour * float * Fx_data.blend) option =
+  let byte f = int_of_float (max 0.0 (min 1.0 f) *. 255.0) in
+  let tint c =
+    Layout.rgba (byte c.Fx_data.r) (byte c.Fx_data.g) (byte c.Fx_data.b)
+      (byte (c.Fx_data.a *. s.alpha))
+  in
+  match s.image with
+  | Region { sheet = _; sx; sy; sw; sh; dx; dy; dw; dh } ->
+      let dst =
+        {
+          Layout.x = int_of_float (s.origin.x +. dx);
+          y = int_of_float (s.origin.y +. dy);
+          w = max 1 (int_of_float dw);
+          h = max 1 (int_of_float dh);
+        }
+      in
+      let uv =
+        {
+          Layout.x = int_of_float sx;
+          y = int_of_float sy;
+          w = max 1 (int_of_float sw);
+          h = max 1 (int_of_float sh);
+        }
+      in
+      Some (dst, uv, tint s.colour, s.rotation, s.blend)
+  | Particle_sprite { texture; x; y; size } ->
+      let tw, th = texture_size texture in
+      if tw <= 0 || th <= 0 then None
+      else
+        let half = size /. 2.0 in
+        (* Centred on its position, because a particle's descriptor gives a point
+           and not a rectangle - and the texture is square in all six cases, so the
+           centre is the only thing worth computing. *)
+        let dst =
+          {
+            Layout.x = int_of_float (x -. half);
+            y = int_of_float (y -. half);
+            w = max 1 (int_of_float size);
+            h = max 1 (int_of_float size);
+          }
+        in
+        Some
+          ( dst,
+            { Layout.x = 0; y = 0; w = tw; h = th },
+            tint s.colour,
+            s.rotation,
+            s.blend )

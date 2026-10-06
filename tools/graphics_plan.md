@@ -446,6 +446,7 @@ rather than a measurement mistake.
 | 3d | sound - **done**: the registry's 82 tags, lazy mixer, recovered cascade ladder |
 | 3e | animation - **done**: board snapshots, swap slide, match pop, column fall |
 | 3f | spell fx - **done**: the tables, the per-spell constants, the 48 effect and 51 particle descriptors, and a player for them |
+| 3g | rotation and per-run blending in the batcher, for the effects that need both |
 | 4 | `Tgles3` behind `lib/gfx_gl.ml` for Android, one GLSL header switch |
 
 Phase 3 needed no new dependency, which was not obvious when it was written down as

@@ -69,11 +69,18 @@ let pitch = 72
 
 (** Read a PNG into a c-layout char bigarray of RGBA bytes, top row first.
 
-    The gem sheet is a fixed 512x512 and this asserts it, because a mismatched
-    sheet would show up as every frame addressing the wrong texels rather than as
-    an error. The decode itself is [Png.load_rgba]'s. *)
-let load_rgba (path : string) : (char, B.int8_unsigned_elt) Tsdl.Sdl.bigarray * int * int =
-  let px, w, h = Png.load_rgba path in
+    Any size. This is the general case, and it is the particle textures' loader -
+    six images at 32x32 and 64x64, none of them a gem sheet. [load_gem_sheet] below
+    is the one with the assertion, and it is the one that should be used for a sheet:
+    a mismatched gem sheet would show up as every frame addressing the wrong texels
+    rather than as an error. The decode itself is [Png.load_rgba]'s. *)
+let load_image (path : string) : (char, B.int8_unsigned_elt) Tsdl.Sdl.bigarray * int * int =
+  Png.load_rgba path
+
+(** The gem sheet specifically, checked to be the size the frame tables assume. *)
+let load_gem_sheet (path : string) :
+    (char, B.int8_unsigned_elt) Tsdl.Sdl.bigarray * int * int =
+  let px, w, h = load_image path in
   if w <> sheet_width || h <> sheet_height then
     failwith
       (Printf.sprintf "gfx/assets: expected a %dx%d gem sheet, got %dx%d (%s)"
@@ -148,8 +155,15 @@ let named_count =
          Board.Experience; Board.Wildcard 4 ])
 
 (** Default sheet location, overridable so a test or a packager can point
-    elsewhere. *)
+    elsewhere.
+
+    `PQ_GFX_ASSETS` is a *directory* everywhere else - [Font.face_dir] and
+    [Skin.dir] both concatenate subdirectories onto it - so it is accepted as one
+    here too. Checking it with [Sys.file_exists] alone is not enough, because a
+    directory exists: the result was a path to the directory, and the loader then
+    picked up whichever image it found first inside it. *)
 let sheet_path () =
   match Sys.getenv_opt "PQ_GFX_ASSETS" with
-  | Some p when Sys.file_exists p -> p
+  | Some p when Sys.file_exists p ->
+      if Sys.is_directory p then Filename.concat p "Skin_Gems_Grid.png" else p
   | _ -> "assets/gfx/Skin_Gems_Grid.png"

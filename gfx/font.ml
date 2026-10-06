@@ -142,7 +142,7 @@ let draw_into (win : Gl.context) (t : t) (m : Font_layout.metrics) ?colour (s : 
         placed;
       (match !first with
       | None -> []
-      | Some first -> [ { Gl.first; count = !count * 6; tex = Some f.texture; colour = col; clip = None } ])
+      | Some first -> [ { Gl.first; count = !count * 6; tex = Some f.texture; colour = col; clip = None; blend = None } ])
 
 (** Draw several lines, stacked by the style's line height. *)
 let draw_lines (win : Gl.context) (t : t) (m : Font_layout.metrics) ?colour

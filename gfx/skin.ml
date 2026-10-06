@@ -109,6 +109,17 @@ let uv (f : Skin_data.frame) : Layout.rect =
 
 let sheet_of (t : t) (tag : string) : sheet option = Hashtbl.find_opt t.sheets tag
 
+(** A sheet's texture and size, or nothing if that sheet was not loaded.
+
+    For drawing something a descriptor names rather than a decoration tag: the spell
+    effects give a sheet tag (`bmp_skin_battlemisc`) and a rectangle in its own
+    pixels, so the caller needs the texture *and* the sheet's dimensions to turn
+    that rectangle into texture coordinates. *)
+let sheet_texture (t : t) (tag : string) : (Gl.texture * int * int) option =
+  match Hashtbl.find_opt t.sheets tag with
+  | Some s -> Some (s.texture, s.tex_w, s.tex_h)
+  | None -> None
+
 (** Draw a named frame into [place], appending to the frame's run list.
 
     Returns [None] when the tag is unknown or its sheet was not loaded, so a
@@ -125,7 +136,7 @@ let draw (t : t) (runs : Gl.run list ref) ?(colour = Layout.rgba 255 255 255 255
           let first =
             Gl.push_quad ~tex_size:(s.tex_w, s.tex_h) t.gl dst (Some (uv f)) colour
           in
-          runs := !runs @ [ { Gl.first; count = 6; tex = Some s.texture; colour; clip = None } ];
+          runs := !runs @ [ { Gl.first; count = 6; tex = Some s.texture; colour; clip = None; blend = None } ];
           true)
 
 (** Draw a named frame centred in [place] horizontally and vertically. *)

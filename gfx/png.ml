@@ -2,7 +2,7 @@
 
     Shared by [Assets], [Skin] and [Font], which between them read every image
     this project draws. It lives in its own module because the only thing they
-    have in common is the decode, and [Assets.load_rgba] grew a sheet-size
+    have in common is the decode, and [Assets.load_gem_sheet] grew a sheet-size
     assertion that is about the gem sheet specifically, not about images.
 
     Named for the formats rather than for the general case. Both are read in pure

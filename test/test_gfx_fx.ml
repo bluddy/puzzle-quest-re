@@ -47,12 +47,14 @@ let particle name =
   | None -> failwith ("no particle named " ^ name)
 
 (** The six particle textures are 32x32 or 64x64; this is the reader the player is
-    given so it does not have to know, and the tests check the real sizes. *)
+    given so it does not have to know, and the sizes here are the real ones - the
+    port reads them off the PNG headers when it loads them, so a test that agreed
+    with the player's arithmetic but not with the archive would be worth nothing. *)
 let texture_size name =
   match name with
-  | "Sparkle.png" -> 64.0
-  | "Flare.png" -> 64.0
-  | "Skull.png" | "Fire.png" | "Smoke.png" | "Rock.png" -> 32.0
+  | "Sparkle.png" -> (64, 64)
+  | "Flare.png" -> (64, 64)
+  | "Skull.png" | "Fire.png" | "Smoke.png" | "Rock.png" -> (32, 32)
   | other -> failwith ("no texture named " ^ other)
 
 let at x y = { Fx.x = x; y = y }
@@ -326,8 +328,129 @@ let () =
     (List.for_all
        (fun (p : Fx_data.particle) -> List.mem p.Fx_data.texture Fx_data.textures)
        Fx_data.particles);
-  check "and every particle texture can be measured"
-    (List.for_all (fun tex -> texture_size tex > 0.0) Fx_data.textures)
+  check "and every particle texture is square, and measurable"
+    (List.for_all
+       (fun tex -> let w, h = texture_size tex in w = h && w > 0)
+       Fx_data.textures);
+  check_int "and there are six of them" (List.length Fx_data.textures) 6
+
+(* ------------------------------------------------------- sprites as quads -- *)
+
+let () =
+  (* The last step before GL: a sprite becomes a destination rectangle, a source
+     rectangle, a tint, a rotation and a blend mode. Pure, so it is asserted here
+     rather than looked for on screen. *)
+  let t = Fx.create () in
+  ignore (Fx.play t "SpellHealing" ~at:(at 400.0 300.0));
+  ignore (Fx.advance t 0.016);
+  let effect_sprite =
+    List.find_opt
+      (fun (s : Fx.sprite) -> match s.image with Fx.Region _ -> true | _ -> false)
+      (Fx.frame t ~texture_size)
+  in
+  (match effect_sprite with
+  | None -> check "an effect sprite becomes a quad" false
+  | Some s -> (
+      match Fx.quad_of_sprite ~texture_size s with
+      | None -> check "an effect sprite becomes a quad" false
+      | Some (dst, uv, colour, rotation, blend) ->
+          check "an effect sprite becomes a quad" true;
+          (* Aimed at 400,300, drawn at the descriptor's own dest offset. One frame
+             in that offset is -50.8 rather than -50, because SpellHealing animates
+             dest_x from -50 to **-150** while dest_w grows to 300: the ring drifts
+             up and left as it expands. Reading that as "grows to 300" is what a
+             guess would have produced, and the player is not guessing. *)
+          check "its destination is where it was aimed, plus its dest offset"
+            (dst.x = 349 && dst.y = 249);
+          check "which is already drifting towards its own -150"
+            (let e = descr "SpellHealing" in
+             Fx.value_at e Fx_data.Dest_x 0.016 < -50.0
+             && Fx.value_at e Fx_data.Dest_x 2.0 = -150.0);
+          check "and its source is the descriptor's own rectangle"
+            (uv.x = 0 && uv.y = 257 && uv.w = 100 && uv.h = 100);
+          check "tinted by the descriptor's colour, which is white"
+            (colour.r = 255 && colour.g = 255 && colour.b = 255);
+          check "with the descriptor's alpha, still near zero at one frame"
+            (colour.a < 255);
+          check "rotated by however much the descriptor says"
+            (rotation <> 0.0);
+          check "and blended the ordinary way"
+            (blend = Fx_data.Alpha_blend)));
+  (* A particle is a square of its whole texture, centred on its point. *)
+  let ring =
+    List.find_opt
+      (fun (s : Fx.sprite) -> match s.image with Fx.Region _ -> false | _ -> true)
+      (let rec tick n =
+           if n = 0 then ()
+           else begin
+             ignore (Fx.advance t 0.05);
+             tick (n - 1)
+           end
+         in
+        tick 12;
+        Fx.frame t ~texture_size)
+  in
+  (match ring with
+  | None -> check "a particle sprite becomes a quad" false
+  | Some s -> (
+      match s.image with
+      | Fx.Region _ -> check "a particle sprite becomes a quad" false
+      | Fx.Particle_sprite ps -> (
+          match Fx.quad_of_sprite ~texture_size s with
+          | None -> check "a particle sprite becomes a quad" false
+          | Some (dst, uv, colour, _, blend) ->
+              check "a particle sprite becomes a quad" true;
+              check "covering the whole of its 64px texture" (uv.w = 64 && uv.h = 64);
+              check "drawn square, as wide as it is tall" (dst.w = dst.h);
+              check "centred on its point" (dst.x + (dst.w / 2) = int_of_float ps.x);
+              check "tinted by its own colour" (colour.b > 0 || colour.g > 0);
+              check "and additive, because the descriptor said so"
+                (blend = Fx_data.Additive))));
+  (* A texture that was never loaded cannot be drawn, and says so rather than
+     drawing a black square where a sparkle should be. *)
+  let orphan =
+    {
+      Fx.image = Fx.Particle_sprite { texture = "NoSuchTexture.png"; x = 0.0; y = 0.0; size = 32.0 };
+      origin = { Fx.x = 0.0; y = 0.0 };
+      colour = { Fx_data.r = 1.0; g = 1.0; b = 1.0; a = 1.0 };
+      alpha = 1.0;
+      rotation = 0.0;
+      blend = Fx_data.Additive;
+    }
+  in
+  check "a particle whose texture is missing is not drawn"
+    (Fx.quad_of_sprite ~texture_size:(fun _ -> (0, 0)) orphan = None)
+
+(* -------------------------------------------------------------- rotation -- *)
+
+let () =
+  (* Rotation is new geometry inside the batcher, and a renderer that needs a window
+     cannot be asked what angle it drew something at - so the corner maths is a pure
+     function of its own and asserted here. *)
+  let r = { Layout.x = 100; y = 200; w = 40; h = 20 } in
+  let straight = Gl.rotated_corners r 0.0 in
+  check_int "an unrotated quad has four corners" (Array.length straight) 4;
+  check "and they are its own, in order"
+    (straight.(0) = (100.0, 200.0)
+    && straight.(1) = (140.0, 200.0)
+    && straight.(2) = (100.0, 220.0)
+    && straight.(3) = (140.0, 220.0));
+  let turned = Gl.rotated_corners r (Float.pi /. 2.0) in
+  let near a b = Float.abs (a -. b) < 1e-6 in
+  (* The top-left corner starts at (100,200), which is 20 left and 10 above the
+     middle; a quarter turn puts it 10 right and 20 above it. Note that y grows
+     downwards here, so a positive angle turns clockwise on screen. *)
+  check "a quarter turn moves a corner to the far corner of a 20x40 box"
+    (near (fst turned.(0)) 130.0 && near (snd turned.(0)) 190.0);
+
+  check "and its extent swaps over"
+    (near (Float.abs (fst turned.(3) -. fst turned.(0))) 20.0
+    && near (Float.abs (snd turned.(3) -. snd turned.(0))) 40.0);
+  (* The middle does not move, whatever the angle. *)
+  let midpoint c =
+    ((fst c.(0) +. fst c.(2)) /. 2.0, (snd c.(0) +. snd c.(2)) /. 2.0)
+  in
+  check "and the centre is where it was" (near (fst (midpoint turned)) 120.0)
 
 let () =
   if !failures = 0 then print_endline "all effect tests passed"

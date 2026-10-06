@@ -189,6 +189,15 @@ let destroy_texture (t : texture) =
    drawn gem by gem is one draw call per gem run rather than one per gem - and when
    the real atlas lands, a whole row of same-sheet gems collapses into one. *)
 
+(** How a run combines with what is already on screen.
+
+    The particle descriptors are explicit about this: all but a handful ask for
+    `additive`, and an additive sparkle drawn with the ordinary alpha blend is a
+    grey dot rather than a glow. Like [clip] this is a per-run field rather than a
+    pair of calls around [push_quad], for the same reason: the batcher does not
+    draw when you push. *)
+type blend = Alpha | Additive
+
 (** One batched draw.
 
     [clip] is a scissor rectangle in window pixels, or [None] for the whole
@@ -205,9 +214,40 @@ type run = {
   tex : texture option;
   colour : Layout.colour;
   clip : Layout.rect option;
+  blend : blend option;
 }
 
 let buf_set v i x = v.{i} <- x
+
+(** The four corners of a rectangle in pixels, rotated about its centre.
+
+    Rotation happens on the CPU rather than in the vertex shader: a quad is a
+    rectangle, so turning its corners about its own middle is exact, and it costs no
+    vertex attribute and no shader change. It has to be in pixel space, because the
+    clip-space conversion flips y - rotating in clip space would spin a sparkle the
+    other way, which looks like a wrong angle rather than a wrong coordinate system.
+    [SpellHealing] turns its ring through 12.4 radians, so this is not theoretical.
+
+    Pure, and separated from [push_quad] for that reason: a renderer that needs a
+    window cannot be asked what angle it drew something at, and this is the part
+    worth asserting. *)
+let rotated_corners (dst : Layout.rect) (rotate : float) :
+    (float * float) array =
+  let mid_x = float_of_int dst.x +. (float_of_int dst.w /. 2.0) in
+  let mid_y = float_of_int dst.y +. (float_of_int dst.h /. 2.0) in
+  let rot (px, py) =
+    if rotate = 0.0 then (px, py)
+    else
+      let dx = px -. mid_x and dy = py -. mid_y in
+      let c = cos rotate and s = sin rotate in
+      (mid_x +. (dx *. c) -. (dy *. s), mid_y +. (dx *. s) +. (dy *. c))
+  in
+  [|
+    rot (float_of_int dst.x, float_of_int dst.y);
+    rot (float_of_int (dst.x + dst.w), float_of_int dst.y);
+    rot (float_of_int dst.x, float_of_int (dst.y + dst.h));
+    rot (float_of_int (dst.x + dst.w), float_of_int (dst.y + dst.h));
+  |]
 
 (** Append one quad. Returns the index of its first vertex, which the caller needs
     to record the run it belongs to.
@@ -218,24 +258,33 @@ let buf_set v i x = v.{i} <- x
     nothing at all - the sampler clamps outside 0..1 and the quad comes out black.
     [tex_size] is the source image's dimensions; pass (0, 0) for a solid quad,
     which has no texture and ignores it. *)
-let push_quad ?(tex_size = (0, 0)) (win : context) (dst : Layout.rect)
+let push_quad ?(tex_size = (0, 0)) ?(rotate = 0.0) (win : context) (dst : Layout.rect)
     (uv : Layout.rect option) (col : Layout.colour) : int =
   if win.n_verts + 6 > max_quads * 4 then failwith "Pq_gfx: sprite batch overflow";
   let v = win.buf in
   let n = win.n_verts in
+  let corners = rotated_corners dst rotate in
   (* Pixel space to clip space, flipping y because window space grows downwards
      and clip space grows upwards. *)
-  let cx x = (float_of_int x /. float_of_int win.width) *. 2.0 -. 1.0 in
-  let cy y = 1.0 -. (float_of_int y /. float_of_int win.height) *. 2.0 in
-  let x0 = cx dst.x and x1 = cx (dst.x + dst.w) in
-  let y0 = cy dst.y and y1 = cy (dst.y + dst.h) in
+  let cx x = (x /. float_of_int win.width) *. 2.0 -. 1.0 in
+  let cy y = 1.0 -. (y /. float_of_int win.height) *. 2.0 in
+  let (ax, ay), (bx, by), (dxp, dyp), (ex, ey) =
+    (cx (fst corners.(0)), cy (snd corners.(0))),
+    (cx (fst corners.(1)), cy (snd corners.(1))),
+    (cx (fst corners.(2)), cy (snd corners.(2))),
+    (cx (fst corners.(3)), cy (snd corners.(3)))
+  in
   let tw, th = tex_size in
-  let nx v = if tw > 0 then float_of_int v /. float_of_int tw else 0.0 in
-  let ny v = if th > 0 then float_of_int v /. float_of_int th else 0.0 in
+  let nx v = if tw > 0 then v /. float_of_int tw else 0.0 in
+  let ny v = if th > 0 then v /. float_of_int th else 0.0 in
   let u0, v0, u1, v1 =
     match uv with
     | None -> (0.0, 0.0, 0.0, 0.0)
-    | Some r -> (nx r.x, ny r.y, nx (r.x + r.w), ny (r.y + r.h))
+    | Some r ->
+        ( nx (float_of_int r.x),
+          ny (float_of_int r.y),
+          nx (float_of_int (r.x + r.w)),
+          ny (float_of_int (r.y + r.h)) )
   in
   let emit i px py pu pv =
     let o = (n + i) * 4 in
@@ -244,13 +293,13 @@ let push_quad ?(tex_size = (0, 0)) (win : context) (dst : Layout.rect)
     buf_set v (o + 2) pu;
     buf_set v (o + 3) pv
   in
-  (* Two triangles. *)
-  emit 0 x0 y0 u0 v0;
-  emit 1 x1 y0 u1 v0;
-  emit 2 x0 y1 u0 v1;
-  emit 3 x0 y1 u0 v1;
-  emit 4 x1 y0 u1 v0;
-  emit 5 x1 y1 u1 v1;
+  (* Two triangles, wound from the four rotated corners. *)
+  emit 0 ax ay u0 v0;
+  emit 1 bx by u1 v0;
+  emit 2 dxp dyp u0 v1;
+  emit 3 dxp dyp u0 v1;
+  emit 4 bx by u1 v0;
+  emit 5 ex ey u1 v1;
   ignore col;
   win.n_verts <- n + 6;
   n
@@ -309,6 +358,14 @@ let submit (win : context) (runs : run list) =
         (match r.clip with
         | None -> Tgl3.Gl.disable Tgl3.Gl.scissor_test
         | Some rect -> clip_rect win rect);
+        (* The run's blend mode, for the same reason as the scissor. Additive is
+           `src_alpha, one`: the particle art is drawn to add light, and with the
+           ordinary blend it is a grey smudge instead of a glow. *)
+        (match r.blend with
+        | Some Additive ->
+            Tgl3.Gl.blend_func Tgl3.Gl.src_alpha Tgl3.Gl.one
+        | Some Alpha | None ->
+            Tgl3.Gl.blend_func Tgl3.Gl.src_alpha Tgl3.Gl.one_minus_src_alpha);
         (match r.tex with
         | Some t ->
             Tgl3.Gl.use_program win.prog_textured;
