@@ -10,6 +10,7 @@
    spell_ai_manual
    spell
    spell_effects
+   spell_fx
    combat
   status_effect_data
   status_effect_hooks

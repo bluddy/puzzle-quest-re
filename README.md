@@ -213,14 +213,16 @@ powershell -ExecutionPolicy Bypass -File tools/extract_gfx_assets.ps1
 All three produce identical bytes; the extractor asserts nothing about the others
 being present.
 
-The glyph tables, the 32 named fonts and the bitmap registry are turned into OCaml
-separately, and those files *are* committed:
+The glyph tables, the 32 named fonts, the bitmap registry and the spell effect
+tables are turned into OCaml separately, and those files *are* committed:
 
 ```powershell
 python tools/extract_fonts.py            # -> lib/font_data.ml
 python tools/extract_skin_data.py        # -> lib/skin_data.ml
+python tools/extract_spell_fx.py         # -> lib/spell_fx.ml
 python tools/extract_fonts.py --check    # fail if the committed file is stale
 python tools/extract_skin_data.py --check
+python tools/extract_spell_fx.py --check
 ```
 
 Without the atlases the board still runs and the battle is still playable, on flat
@@ -303,8 +305,19 @@ the event-to-sound mapping returns a list rather than a tag.
 One deliberate divergence: the original compares against a single global "currently
 playing" sound, so two sounds never overlap from this path. Here each tag has its
 own channel, so a cascade rumbles *under* the damage numbers instead of replacing
-them. Which sound a *spell* plays is a guess, and is recorded as one - see
-`port.spell_sound_is_guessed`.
+them.
+
+A *spell's* sound used to be a guess - `snd_spellfire` for anything that cost mana -
+and is now recovered. Every spell script passes a `SPELLFX_*` constant to one of four
+`Std_*SpellEffect` helpers, and each helper resolves that constant through
+`Std_GetSpellSoundAsset` to one of six spell sounds. `tools/extract_spell_fx.py`
+reads both tables and all 130 spell scripts into `lib/spell_fx.ml`, so the port looks
+the constant up by spell id and plays what the game plays. See
+`port.spell_fx_follows_the_script`, which supersedes `port.spell_sound_is_guessed`.
+
+The same table names the *picture*: `Std_GetSpellFXAsset` maps 21 constants to effect
+assets, which are keyframed particle descriptors under `Assets/Effects`. Nothing
+plays those yet - `lib/spell_fx.ml` has the names, and the next step is the player.
 
 Audio is silent by construction: no device, no extracted bank, or an unknown tag
 all mean "play nothing", never an error. The demo line reports how many sounds were

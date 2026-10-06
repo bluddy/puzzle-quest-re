@@ -295,7 +295,28 @@ frame rather than by reasoning about the code:
 - **Only the matched gems fade.** A single alpha for the frame dims the stationary
   board along with the matched three, which reads as the board flashing.
 
-The durations are ours. Nothing in the port knows the original's timing table.
+The durations are ours. Nothing in the port knows the original's timing table - but
+the next piece to be built does, which is why it is worth saying what it is.
+
+### Spell effects
+
+Every spell script passes a SPELLFX_* constant to one of four Std_*SpellEffect
+helpers, and each helper resolves that constant through one of two 21/22-entry tables
+to an effect asset and a sound. So a spell's presentation is decided by its *script*,
+not by its XML - which is why 130 spell XMLs contain nothing whatever about effects,
+and why guessing was the only option until the scripts were read.
+
+	ools/extract_spell_fx.py reads both tables and all 130 scripts into
+lib/spell_fx.ml. That retires the port's one sound guess (snd_spellfire for
+anything that cost mana) and leaves the picture data addressed but unplayed: the
+effect assets are keyframed particle descriptors in Assets/Effects, each with a
+duration, an Initialize block of parameters and a list of timed Animate steps.
+
+So the timing table this animation lacks is 48 effect descriptors and 59 particle
+descriptors away, and it is data rather than an experiment. The grid form is the part
+that cannot be recovered from the table alone: Std_GridSpellEffect(x,y,...) takes a
+cell the spell body has just chosen, so the cell comes from the ported body and the
+constant comes from the script.
 
 ## What to reuse from rails
 
@@ -331,6 +352,7 @@ tree.
   gfx/sound_map.ml   which tag an event plays, including the recovered cascade ladder
   gfx/audio.ml       the mixer, lazy chunk loading, do-not-restart
   gfx/anim.ml        board snapshots -> gem positions: slide, pop, column fall
+  lib/spell_fx.ml    generated: which effect and sound each spell asks for
   bin/pq_play_gfx.ml the playable window
 ```
 
@@ -400,6 +422,7 @@ rather than a measurement mistake.
 | 3c | events and float text - **done**: `Battle.on_event`, messages, bounded stack |
 | 3d | sound - **done**: the registry's 82 tags, lazy mixer, recovered cascade ladder |
 | 3e | animation - **done**: board snapshots, swap slide, match pop, column fall |
+| 3f | spell fx - **half**: the tables and per-spell constants are recovered; the player is not |
 | 4 | `Tgles3` behind `lib/gfx_gl.ml` for Android, one GLSL header switch |
 
 Phase 3 needed no new dependency, which was not obvious when it was written down as

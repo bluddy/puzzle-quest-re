@@ -94,21 +94,34 @@ let of_event (e : Battle.event) : string list =
 
 (** The sound a spell cast plays.
 
-    **This is a guess, and it is labelled as one in the evidence database.** The
-    registry names six spell sounds - nature, buff, debuff, fire, heal, alter - and
-    which one a given spell uses is decided by the spell's own effect, which is not
-    recovered. Rather than pretend otherwise, this picks by what the spell costs: a
-    spell that spends mana is doing something, and `SpellFire` is the game's fire
-    sound. Every tag it returns is a real one, so nothing can come out as a
-    wrong-file-but-plausible-noise; the risk is a mismatched *category*, which is
-    the lesser one.
+    **Recovered, and it replaces a guess.** The game resolves this in
+    `Std_GetSpellSoundAsset`: every spell script asks for a `SPELLFX_*` constant, and
+    that constant names the sound. The previous version picked by what the spell
+    cost - a spell that spends mana got `snd_spellfire` - which was a real tag in
+    the right family but had nothing to do with the answer, and `port.spell_sound_is_guessed`
+    said so.
 
-    A caller with the real mapping should replace this. It is one function. *)
+    So the chain is: the spell's script passes a constant, the constant names the
+    sound, and `lib/spell_fx.ml` is the transcription of the table the middle step
+    comes from. The port's spell bodies are inlined rather than scripts, so the
+    constant is looked up by the spell's id - which is the same thing the script
+    belongs to, and which the `SpellCast` event already carries.
+
+    A cast with several effect calls plays the sounds of the ones that ask for one,
+    in the script's order, so a spell like `SBAC` gets its grid effect's war sound
+    and nothing from its silent caster effect. *)
 let spell_sound (s : Spell.spell) : string list =
-  let spends =
-    s.Spell.cost_earth + s.Spell.cost_fire + s.Spell.cost_air + s.Spell.cost_water
+  let sounds =
+    List.filter_map
+      (fun (c : Spell_fx.call) ->
+        match c.Spell_fx.use_sound with
+        | false -> None
+        | true -> Spell_fx.sound_of c.Spell_fx.fx)
+      (Spell_fx.calls_of_spell s.Spell.id)
   in
-  if spends <= 0 then [ "snd_aispell" ] else [ "snd_spellfire" ]
+  match sounds with
+  | [] -> []
+  | tags -> tags
 
 (** The sounds for an event, given the spell that was cast when it was one.
 
