@@ -43,6 +43,115 @@ and frame_selection = "img_selglow"
 and frame_timer_l = "img_ltimebg"
 and frame_timer_r = "img_rtimebg"
 
+(* The message fonts. Seven `font_msg_*` styles exist and this is what they are
+   for: the float-text palette. They are all the same face - WC_Message - so the
+   seven atlases the HUD already loads cover them; what differs is the colour,
+   which the font carries, so naming the tag is naming the colour. *)
+let message_fonts =
+  List.filter_map
+    (fun tag -> Option.map (fun m -> (tag, m)) (Font_layout.metrics_of_tag tag))
+    [ "font_msg_white"; "font_msg_red"; "font_msg_orange"; "font_msg_yellow";
+      "font_msg_green"; "font_msg_cyan"; "font_msg_purple" ]
+
+(* ------------------------------------------------------------------- state -- *)
+
+type ui = {
+  gl : Gl.context;
+  gem_sheet : Gl.texture option;
+  mutable b : Battle.battle option;
+  (* Fixed: the window is not resizable, so the board geometry never moves. *)
+  layout : Layout.t;
+  mutable first_cell : (int * int) option;  (** first half of a pending swap *)
+  (* None when no font atlas could be loaded, which is a supported state: the
+     battle is still playable, it just has no labels. *)
+  fonts : Font.t option;
+  system : Font_layout.metrics option;  (** font_system - the HUD's body text *)
+  small : Font_layout.metrics option;  (** font_small - the tight fits *)
+  button : Font_layout.metrics option;  (** font_button - the spell bar *)
+  xp : Font_layout.metrics option;  (** font_xp, which is purple *)
+  gold : Font_layout.metrics option;  (** font_gold, which is orange *)
+  (* The decoration sheets. The backdrop and the border are both on one, and both
+     are absent together; [Skin.create] reports what it could not load and every
+     draw call then declines. A checkout without the art still plays. *)
+  skin : Skin.t;
+(* The live float messages, fed by [Battle.on_event] as the battle runs. *)
+  float_text : Float_text.t;
+  (* The mixer. Silent by construction: no device, no sounds extracted, or an
+     unknown tag all mean "play nothing", never an error. *)
+  audio : Audio.t;
+  (* The cascade animation. Fed by [Battle.on_step], drained by the frame loop. *)
+  anim : Anim.t;
+}
+
+let u : ui option ref = ref None
+
+let ui () = match !u with Some x -> x | None -> failwith "ui not created"
+
+let battle () = match (ui ()).b with Some b -> b | None -> failwith "no battle"
+let layout () = (ui ()).layout
+
+(** The message a subject is anchored to.
+
+    A message belongs over the character it is about, and the characters have no
+    portraits placed yet - so the hero's side is the left margin and the foe's the
+    right, either side of the board. When the portraits arrive this is the one
+    function that moves.
+
+    The anchor is a one-pixel box: [place_message] takes the box's smaller corner
+    and centres the text on it, which is exactly what a point anchor wants, and it
+    clamps the result into the screen on the way. *)
+let message_anchor (s : Float_text.subject) : Font_layout.box =
+  let lay = layout () in
+  let board = Layout.board_rect lay in
+  let point x y = { Font_layout.x0 = x; y0 = y; x1 = x; y1 = y } in
+  match s with
+  | Float_text.Both -> point (board.Layout.x + (board.Layout.w / 2)) (board.Layout.y - 40)
+  | Float_text.Hero -> point (board.Layout.x / 2) (board.Layout.y + (board.Layout.h / 2))
+  | Float_text.Foe ->
+      point (board.Layout.x + board.Layout.w - (board.Layout.w / 4))
+        (board.Layout.y + (board.Layout.h / 2))
+
+(** Clock for message lifetimes, in seconds.
+
+    [Tsdl.Sdl.get_ticks] would do, but the float messages have to age in step with
+    the frame loop's own notion of time, and mixing a millisecond counter with a
+    float accumulator is how a message ends up expiring on the wrong frame. This
+    is a plain float the presentation layer advances. *)
+let now_seconds = ref 0.0
+
+(** One frame's worth of presentation time, in seconds.
+
+    The idle loop's delay is the only clock in the front end, so the frame rate is
+    this number by definition: 16ms is a 60Hz frame and close enough at any rate a
+    window manager will give us. Both the idle loop and the step observer advance
+    by it, so a message and a falling gem age by the same amount on either path. *)
+let frame_seconds = 0.016
+
+(** Whether the front end is showing frames as the battle happens, rather than only
+    settling everything before one screenshot.
+
+    `--demo` and `--shot` set it false: they want a settled state (or a named instant
+    inside the first animation) rather than a paced replay, and they have no loop to
+    pace into. *)
+let paced = ref true
+
+(** Animation frames the step observer has drawn while blocking, across the whole
+    process.
+
+    Not decoration: `--demo` and `--shot` deliberately skip the block, so without a
+    counter there is no way to tell a paced run that animated from one that quietly
+    fell back to queueing everything and settling it at the end. The counter is the
+    difference between "it looked fine" and "it ran". *)
+let drained_frames = ref 0
+
+(** Advance the clock, expire finished messages, and return whether the screen
+    changed enough to be worth redrawing. *)
+let advance_clock (dt : float) : bool =
+  now_seconds := !now_seconds +. dt;
+  let before = Float_text.count (ui ()).float_text in
+  Float_text.tick (ui ()).float_text !now_seconds;
+  Float_text.count (ui ()).float_text <> before
+
 (* ------------------------------------------------------------------ battle -- *)
 
 (* The shared seeded generator; see lib/rng.ml. *)
@@ -66,36 +175,6 @@ let fresh_board rng =
   Board.of_array_matrix
     (Array.init Board.default_height (fun _ ->
          Array.init Board.default_width (fun _ -> gems.(rng 4))))
-
-(* ------------------------------------------------------------------- state -- *)
-
-type ui = {
-  gl : Gl.context;
-  gem_sheet : Gl.texture option;
-  mutable b : Battle.battle option;
-  (* Fixed: the window is not resizable, so the board geometry never moves. *)
-  layout : Layout.t;
-  mutable first_cell : (int * int) option;  (** first half of a pending swap *)
-  (* None when no font atlas could be loaded, which is a supported state: the
-     battle is still playable, it just has no labels. *)
-  fonts : Font.t option;
-  system : Font_layout.metrics option;  (** font_system - the HUD's body text *)
-  small : Font_layout.metrics option;  (** font_small - the tight fits *)
-  button : Font_layout.metrics option;  (** font_button - the spell bar *)
-  xp : Font_layout.metrics option;  (** font_xp, which is purple *)
-  gold : Font_layout.metrics option;  (** font_gold, which is orange *)
-  (* The decoration sheets. The backdrop and the border are both on one, and both
-     are absent together; [Skin.create] reports what it could not load and every
-     draw call then declines. A checkout without the art still plays. *)
-  skin : Skin.t;
-}
-
-let u : ui option ref = ref None
-
-let ui () = match !u with Some x -> x | None -> failwith "ui not created"
-
-let battle () = match (ui ()).b with Some b -> b | None -> failwith "no battle"
-let layout () = (ui ()).layout
 
 (* ------------------------------------------------------------------- input -- *)
 
@@ -275,7 +354,7 @@ let draw ?(present = true) () =
   let runs = ref [] in
   let emit dst col =
     let first = Gl.push_quad gl dst None col in
-    runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col } ]
+    runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col; clip = None } ]
   in
   (* A gem, drawn from the sheet when a frame was identified for it. The fallback
      is the flat colour rather than a guessed sprite: drawing the wrong gem would
@@ -290,7 +369,7 @@ let draw ?(present = true) () =
         in
         runs :=
           !runs
-          @ [ { Gl.first; count = 6; tex = Some sheet; colour = Layout.rgba 255 255 255 255 } ]
+          @ [ { Gl.first; count = 6; tex = Some sheet; colour = Layout.rgba 255 255 255 255; clip = None } ]
     | _ -> emit dst (Layout.gem_colour g)
   in
   emit
@@ -299,12 +378,51 @@ let draw ?(present = true) () =
   (* The backdrop and the border go down first, so everything else is on top of
      them. Both come from one sheet, and both are absent together. *)
   draw_decorations runs;
-  for y = 0 to lay.Layout.rows - 1 do
-    for x = 0 to lay.Layout.cols - 1 do
-      let g = Board.get_gem b.Battle.board { Board.x = x; y } in
-      emit_gem x y g
-    done
-  done;
+(* Gems come from the animation while it is running, and from the battle's own
+     board when it is not. That is the whole seam: [Anim.frame] returns fractional
+     cell positions for whatever phase is current, and this turns them into quads.
+     A cell is a float here, which is what makes a gem's motion read as motion
+     rather than as a jump between two frames. *)
+  let anim = (ui ()).anim in
+  if Anim.is_busy anim then begin
+    (* Confined to the board: a gem dropping in from above the top row must not
+       paint over the title art. The scissor rides on each run rather than being
+       enabled around the pushes, because [Gl.submit] is where drawing happens. *)
+    let board = Layout.board_rect lay in
+    let clip = Some board in
+    List.iter
+      (fun (g : Anim.placed_gem) ->
+        let dst =
+          { Layout.x = lay.Layout.origin_x + (int_of_float (g.Anim.x *. float_of_int lay.Layout.cell));
+            y = lay.Layout.origin_y + (int_of_float (g.Anim.y *. float_of_int lay.Layout.cell));
+            w = int_of_float (g.Anim.w *. float_of_int lay.Layout.cell);
+            h = int_of_float (g.Anim.h *. float_of_int lay.Layout.cell) }
+        in
+        match ((ui ()).gem_sheet, Assets.frame g.Anim.gem) with
+        | Some sheet, Some uv ->
+            let sprite_colour = Layout.rgba 255 255 255 g.Anim.alpha in
+            let first =
+              Gl.push_quad ~tex_size:(Assets.sheet_width, Assets.sheet_height) gl dst
+                (Some uv) sprite_colour
+            in
+            runs :=
+              !runs
+              @ [ { Gl.first; count = 6; tex = Some sheet; colour = sprite_colour; clip } ]
+        | _ ->
+            (* No sprite: a flat colour, faded by alpha like the sprite path. *)
+            let flat = Layout.gem_colour g.Anim.gem in
+            let col = { flat with Layout.a = g.Anim.alpha } in
+            let first = Gl.push_quad gl dst None col in
+            runs := !runs @ [ { Gl.first; count = 6; tex = None; colour = col; clip } ])
+      (Anim.frame anim);
+  end
+  else
+    for y = 0 to lay.Layout.rows - 1 do
+      for x = 0 to lay.Layout.cols - 1 do
+        let g = Board.get_gem b.Battle.board { Board.x = x; y } in
+        emit_gem x y g
+      done
+    done;
   (* The pending first half of a swap. The game marks it with a glow sprite
      (`img_selglow`), which is 200x50 - wider than a cell and half as tall, so it
      is a lozenge drawn across the cell rather than a box around it. The flat
@@ -330,24 +448,60 @@ let draw ?(present = true) () =
      side of the top panel and the hourglass over it. There is no countdown in a
      turn-based battle, so what is shown is how many turns have gone. *)
   draw_timer runs;
-  (* Text goes in last, on top. *)
+  (* Text goes in last, on top: the HUD, then the float messages over everything. *)
   let runs = !runs @ draw_hud gl demo_spells in
+  let runs =
+    match (ui ()).fonts with
+    | None -> runs
+    | Some fonts ->
+        let lookup tag = List.assoc_opt tag message_fonts in
+        runs
+        @ Float_text.draw gl fonts (ui ()).float_text ~screen_w:window_w
+            ~screen_h:window_h ~metrics_of:lookup
+  in
   Gl.submit gl runs;
   (* Reading the default framebuffer after a swap gives an undefined buffer, so a
      screenshot must render without presenting and read before the swap. *)
   if present then Gl.present gl
 
+(** Wait for a click, keeping messages alive meanwhile.
+
+    The clock is advanced on every pass, not only on events, so a message fades
+    while the player is thinking rather than sitting on screen until their next
+    move. The redraw is conditional for the same reason: repainting at 60Hz an
+    unchanged screen costs a full vertex-buffer upload for nothing, and this loop
+    runs for as long as the player hesitates.
+
+    The frame delay is the loop's clock. Nothing here measures elapsed time, so
+    the pacing is tied to the idle rate - which is fine for a message fading over
+    about a second, and would not be fine for anything that has to keep time with
+    the battle. It does not: the battle is paused while this runs. *)
 let rec wait_click () =
-  draw ();
+  (* The animation clock and the float-message clock are advanced together, and the
+     redraw happens when either has something new to show. While a cascade is
+     animating this is the only thing running, so it is also the frame loop: the
+     delay is what paces it.
+
+     Tying the two clocks together is deliberate rather than tidy. They are both
+     presentation time, they both need to advance together or a message outlives
+     the pop it belongs to, and keeping one idle delta avoids the temptation to
+     advance them separately and get that wrong. *)
+  let anim_changed = Anim.advance (ui ()).anim frame_seconds in
+  let messages_changed = advance_clock frame_seconds in
+  if anim_changed || messages_changed then draw ();
   if Tsdl.Sdl.poll_event some_ev then begin
     let t = E.get ev E.typ in
     if t = E.quit then exit 0
-    else if t = E.mouse_button_down then
+    else if t = E.mouse_button_down then begin
+      (* Always repaint before acting on the click: the click may have landed on a
+         board whose gems moved since the last frame. *)
+      draw ();
       (E.get ev E.mouse_button_x, E.get ev E.mouse_button_y)
+    end
     else wait_click ()
   end
   else begin
-    Tsdl.Sdl.delay 16l;
+    Tsdl.Sdl.delay (Int32.of_int (int_of_float (frame_seconds *. 1000.)));
     wait_click ()
   end
 
@@ -370,8 +524,12 @@ let choose_spell spells : Spell.spell option =
   let rec ask () =
     let mx, my = wait_click () in
     match Input.in_spell_prompt bg ~usable:(List.length usable) mx my with
-    | Input.Cast i when i < List.length usable ->
+| Input.Cast i when i < List.length usable ->
         let s : Spell.spell = List.nth usable i in
+        (* The button's own click, before the spell's sound. Both are real tags:
+           `snd_buttup` is the button, and the spell sound follows from the observer
+           when the battle emits the cast. *)
+        ignore (Audio.play (ui ()).audio "snd_buttup");
         Printf.printf "  cast %s\n" s.Spell.id;
         flush stdout;
         Some s
@@ -433,11 +591,87 @@ let choose_swap (_legal : Board.swap list) : Board.swap option =
   in
   ask ()
 
+(** Called by the battle as each event happens.
+
+    This is the whole point of `Battle.on_event`: the engine resolves a turn
+    internally, so without an observer the front end either waits for the turn to
+    finish and replays a burst of events, or polls the log and misses the order.
+    Being called in sequence means a cascade's messages arrive one at a time, in
+    the order the cascade actually happened.
+
+    The pause between events is the presentation layer's business, not the
+    engine's - the engine has no clock and should not grow one. [pause_ms] is zero
+    in `--shot` mode, because a screenshot of a burst is a screenshot of the last
+    frame, and the point of `--shot` is to see one specific thing. *)
+let on_battle_step (_b : Battle.battle) (s : Battle.step) =
+  let anim = (ui ()).anim in
+  Anim.push_step anim s;
+  (* Play the step out before the engine is allowed to carry on.
+
+     This is not a nicety, it is the difference between the cascade being seen and
+     being replayed. `Battle` resolves a whole turn synchronously, so every step of
+     a six-step cascade arrives back to back while nothing is drawing; if the steps
+     are only queued, the board is already final by the time the animation queue is
+     drained by [wait_click], and what the player then watches is the board
+     rewinding through every state it already passed through.
+
+     Blocking here costs nothing: the engine is single-threaded and has no clock, so
+     the only thing that can happen while this runs is that no further steps are
+     produced - which is the point. Each step's events have already been emitted
+     (the engine emits them before it refills), so its message and its sound are up
+     before its gems move; that ordering is why the block goes here and not in the
+     event callback.
+
+     `--demo` and `--shot` skip the block, because they have no frame loop to block
+     into and one specific frame is the thing being asked for. *)
+  if !paced then begin
+    let guard = ref 0 in
+    while Anim.advance anim frame_seconds && !guard < 10_000 do
+      incr guard;
+      incr drained_frames;
+      (* The message clock ages with the animation clock here for the same reason
+         it does in [wait_click]: they are both presentation time, and a message
+         whose step is now animating must not be still fully opaque when its gems
+         land. *)
+      ignore (advance_clock frame_seconds);
+      draw ();
+      Tsdl.Sdl.delay (Int32.of_int (int_of_float (frame_seconds *. 1000.)))
+    done
+  end
+
+let on_battle_event ~(pause_ms : int) (_b : Battle.battle) (e : Battle.event) =
+  (* A cast is the one event whose sound needs more than the event: it depends on
+     what the spell does, and the event carries only its id. So the spell is looked
+     up by name here, where the spell list is in scope. *)
+  let spell =
+    match e with
+    | Battle.SpellCast (_, id) -> List.find_opt (fun (s : Spell.spell) -> s.Spell.id = id) demo_spells
+    | _ -> None
+  in
+  ignore (Audio.play_all (ui ()).audio (Sound_map.with_spell e spell));
+  ignore (Float_text.say_event (ui ()).float_text e ~anchor_of:message_anchor !now_seconds);
+  (* The clock advances whether or not the frame is actually shown. In `--demo`
+     there is no real pause, but messages still have to expire or the screen fills
+     with every message the battle has ever produced - which is exactly what the
+     first demo screenshot showed. *)
+  let dt = float_of_int pause_ms /. 1000.0 in
+  now_seconds := !now_seconds +. dt;
+  Float_text.tick (ui ()).float_text !now_seconds;
+  if pause_ms > 0 then begin
+    draw ();
+    Tsdl.Sdl.delay (Int32.of_int pause_ms)
+  end
+
 (* -------------------------------------------------------------------- main -- *)
 
 let () =
   let args = Array.to_list Sys.argv in
-  let seed = ref 7 and diff = ref 2 and shot = ref "" in
+  let seed = ref 7 and diff = ref 2 and shot = ref "" and demo_turns = ref 0 in
+  let shot_at = ref None in
+  (* `--pace` plays a demo with the front end's blocking animation loop, so the
+     interactive path can be exercised without a keyboard: same observer, same
+     frames, just no input to supply. *)
+  let pace = ref false in
   let rec parse = function
     | [] -> ()
     | "--seed" :: n :: r ->
@@ -446,8 +680,17 @@ let () =
     | "--difficulty" :: n :: r ->
         diff := int_of_string n;
         parse r
+| "--pace" :: r ->
+        pace := true;
+        parse r
     | "--shot" :: f :: r ->
         shot := f;
+        parse r
+    | "--shot-at" :: n :: r ->
+        shot_at := Some (float_of_string n);
+        parse r
+    | "--demo" :: n :: r ->
+        demo_turns := int_of_string n;
         parse r
     | _ :: r -> parse r
   in
@@ -485,11 +728,21 @@ let () =
   let lay =
     Layout.create ~cell ~cols:Board.default_width ~rows:Board.default_height ~window_w ~window_h ~reserve_top:(Skin.top_inset ()) ~reserve_bottom:bar_h
   in
-  (* The HUD's five fonts, named by their tags in the game's own English/Font.xml.
-     Only these five faces get decoded: ten are shipped and the other five are
-     quest and script faces this screen never draws. *)
-  let want = List.filter_map Font_layout.metrics_of_tag
-      [ "font_system"; "font_small"; "font_button"; "font_xp"; "font_gold" ]
+(* The fonts this screen draws with, named by their tags in the game's own
+     English/Font.xml. Only the faces behind these get decoded: ten are shipped
+     and the rest are quest and script faces this screen never draws.
+
+     The message tags have to be in this list as well as in [message_fonts]. They
+     share the WC_Message face, so they cost one extra atlas - and leaving them
+     out is completely silent: the metrics resolve, the text is laid out, and
+     [Font.draw] returns no quads because the atlas was never loaded. That is how
+     the first render of the float text came out with 32 messages live and an
+     empty screen. [Font.create] now complains if a requested style did not get
+     its atlas, which is the guard that should have existed. *)
+  let want =
+    List.filter_map Font_layout.metrics_of_tag
+      ([ "font_system"; "font_small"; "font_button"; "font_xp"; "font_gold" ]
+      @ List.map fst message_fonts)
   in
   let fonts = Font.create ~styles:want in
   (match fonts with
@@ -512,19 +765,76 @@ let () =
         button = Font_layout.metrics_of_tag "font_button";
         xp = Font_layout.metrics_of_tag "font_xp";
         gold = Font_layout.metrics_of_tag "font_gold";
+        float_text = Float_text.create ();
+        audio = Audio.create ();
+        anim = Anim.create ();
         (* Two sheets carry the whole frame: the backdrop the border is cut out
            of, and the sheet the selection glow and turn counters live on. *)
         skin = Skin.create ~gl ~sheets:[ "bmp_skin_backdrop"; "bmp_skin_battlemisc" ] };
+(* `--demo N` plays N turns with nobody at the keyboard before anything is
+     drawn. It exists because `--shot` on its own photographs the board before the
+     battle has done anything, which cannot show damage numbers, cascades or any
+     other event-driven thing - and "the float text renders" is not a claim worth
+     making on the strength of a screenshot of an empty board. *)
   let rules =
     { Battle.default_rules with
       difficulty = !diff;
-      player = Some { Battle.choose_spell; choose_swap } }
+      player = (if !demo_turns > 0 then None else Some { Battle.choose_spell; choose_swap }) }
   in
   let b =
     Battle.create ~rng ~rules ~hero_spells:demo_spells ~enemy_spells:demo_spells
       (fresh_board rng) hero foe
   in
+  (* Attached after [create], which is the only point at which the battle exists to
+     hand the observer. With no `--shot` the events are paced; with one they are
+     not, because a screenshot of a paced sequence is a screenshot of whichever
+     frame happened to be last. *)
+  b.Battle.on_event <-
+    Some (on_battle_event ~pause_ms:(if !shot = "" then 90 else 0));
+  b.Battle.on_step <- Some on_battle_step;
+  paced := (!demo_turns = 0 && !shot = "") || !pace;
   (ui ()).b <- Some b;
+  if !demo_turns > 0 then begin
+    for _ = 1 to !demo_turns do
+      if b.Battle.winner = None then Battle.take_turn b
+    done;
+    (* The demo plays with no frame loop, so the animation queue has built up with
+       nothing draining it. Settle it before drawing, or the screenshot shows
+       whichever cascade happened first rather than the board the battle ended on.
+
+       `--shot-at T` stops part way in instead, which is how a fall or a pop gets
+       looked at: the first phase starts the instant the queue does, so T of about
+       a fifth of a second lands inside it. *)
+    (match !shot_at with
+    | Some t ->
+        let anim = (ui ()).anim in
+        let stop = Anim.now anim +. t in
+        while Anim.now anim < stop && Anim.advance anim 0.016 do
+          ()
+        done
+    | None ->
+        let anim = (ui ()).anim in
+        let guard = ref 0 in
+        while Anim.advance anim 0.05 && !guard < 10_000 do
+          incr guard
+        done);
+    Printf.printf
+      "  demo: %d turns, %d events, %d messages live, %d sounds started, %d animation frames\n"
+      b.Battle.turns_elapsed
+      (List.length (Battle.log_of b))
+      (Float_text.count (ui ()).float_text)
+      (ui ()).audio.Audio.played
+      !drained_frames;
+    flush stdout
+  end;
+  (* `--pace` is a smoke run, not a game: the turns are played and animated and then
+     the process ends. Without this it would fall through into [Battle.run] and sit
+     there waiting for clicks that nothing is going to send. *)
+  if !pace then begin
+    Audio.destroy (ui ()).audio;
+    Gl.destroy gl;
+    exit 0
+  end;
   (* --shot draws one frame, writes it as raw RGBA and exits. What the window
      actually shows is then measurable instead of described. *)
   if !shot <> "" then begin
@@ -544,6 +854,7 @@ let () =
     close_out oc;
     Printf.printf "wrote %s (%dx%d)\n" !shot window_w window_h;
     flush stdout;
+    Audio.destroy (ui ()).audio;
     Gl.destroy gl;
     exit 0
   end;
@@ -577,4 +888,5 @@ let () =
     end
   in
   linger ();
+  Audio.destroy (ui ()).audio;
   Gl.destroy gl

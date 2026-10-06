@@ -244,6 +244,59 @@ One deliberate omission: `img_timer_0..5`, the hourglass. It belongs to the time
 minigames, and there is nothing on a battle screen for it to count, so guessing a
 place for it would be decoration for its own sake.
 
+### Sound
+
+The same registry has a third section: **82 `<Sound>` entries**, addressed by the
+tag the engine hands to `PLAY_SOUND` rather than by filename. `gfx/audio.ml` is the
+mixer and `gfx/sound_map.ml` is the pure event-to-tag mapping, and the split is the
+same as everywhere else here - the mapping is testable without a sound card, and the
+device is not.
+
+Two things worth knowing before extending it, both of which cost time to find:
+
+- **The tag does not give the filename.** Most are `snd_<stem>` for `<Stem>.wav`,
+  but the element sounds carry a `Mana` suffix, the buttons are `Button*`, and
+  `snd_voice_victory` is `VVictorious.wav` in a per-language directory. The
+  generated table records `Exact` / `Renamed` / `Absent` per tag so a rename is never
+  mistaken for a convention working.
+- **There is no music.** All 14 `music_*` tags are declared and none has audio; the
+  archive holds no Ogg, MP3 or module file. A music player written against this
+  registry discovers that at runtime.
+
+Chunks are loaded lazily by tag. The bank is 83 files and a battle uses perhaps a
+dozen, so decoding all of them up front would cost time for sounds that never fire.
+
+### Animation
+
+`gfx/anim.ml` is pure, and takes board snapshots rather than a timeline: a swap's two
+boards and two cells, and for each cascade step the board as the player saw it, the
+same board with the matches gone and the gaps still open, and the board after gravity
+and refill. `lib/battle.ml` grows `Battle.step` and a second optional observer to
+carry them - `on_event` reports that something happened, which is not enough to draw
+a gem that is on its way somewhere.
+
+Four things here are less obvious than they look, and each was found by looking at a
+frame rather than by reasoning about the code:
+
+- **The fall pairs gems bottom-up within a column.** Gravity preserves a column's
+  order, so the pairing walks from the floor. A top-down pairing still pairs every
+  gem with *something* and still produces a plausible-looking board - it just puts
+  the newcomer on top of the wrong survivor, so the topmost gem visibly jumps the
+  length of the column. `test_gfx_anim` pins the order, not just the count.
+- **The front end blocks while a step animates.** The engine resolves a whole turn
+  synchronously, so queueing the steps means the board is already final before
+  anything draws and the animation is a rewind. Blocking in the observer costs
+  nothing on a single-threaded engine with no clock. `--pace` exercises that path
+  without a keyboard.
+- **The scissor rides on the run, not around the pushes.** The batcher accumulates
+  vertices and `submit` draws them all at the end of the frame, so a scissor enabled
+  and disabled around the pushes is still set when the frame is drawn - clipping
+  everything - and one set around `submit` clips nothing at all.
+- **Only the matched gems fade.** A single alpha for the frame dims the stationary
+  board along with the matched three, which reads as the board flashing.
+
+The durations are ours. Nothing in the port knows the original's timing table.
+
 ## What to reuse from rails
 
 Three files, and the mapping is direct:
@@ -274,6 +327,10 @@ tree.
   gfx/font_layout.ml glyph advances, measuring, wrapping, float-message placement
   gfx/font.ml        a font atlas -> one texture, one batched run per line
   gfx/skin.ml        decoration by registry tag: backdrop, border, glow, plates
+  gfx/float_text.ml  which events become text, and its bounded message stack
+  gfx/sound_map.ml   which tag an event plays, including the recovered cascade ladder
+  gfx/audio.ml       the mixer, lazy chunk loading, do-not-restart
+  gfx/anim.ml        board snapshots -> gem positions: slide, pop, column fall
   bin/pq_play_gfx.ml the playable window
 ```
 
@@ -340,11 +397,17 @@ rather than a measurement mistake.
 | 2 | real gem art from `Assets.zip` via imagelib, board interaction by mouse |
 | 3 | text - **done**, in the game's own bitmap fonts, with a HUD |
 | 3b | decoration - **done**: the registry as data, the backdrop and border at 1024x768 |
+| 3c | events and float text - **done**: `Battle.on_event`, messages, bounded stack |
+| 3d | sound - **done**: the registry's 82 tags, lazy mixer, recovered cascade ladder |
+| 3e | animation - **done**: board snapshots, swap slide, match pop, column fall |
 | 4 | `Tgles3` behind `lib/gfx_gl.ml` for Android, one GLSL header switch |
 
 Phase 3 needed no new dependency, which was not obvious when it was written down as
 a font pipeline. Phase 3b needed `imagelib` pinned to a fork, because the backdrop
 is a JPEG - so "no new dependency" was true of the text and not of the decoration.
+3c to 3e are engine instrumentation and front-end work rather than platform work, and
+3e needed the second observer described above precisely so that no recovered
+resolution loop had to be rewritten.
 
 ## Earlier versions, and why they changed
 

@@ -758,6 +758,218 @@ let () =
   check "and starts on turn zero"
     ((create (locked_board ()) (fighter 0 "h") (fighter 1 "f")).turns_elapsed = 0)
 
+(* ------------------------------------------------------------------ *)
+(* Observing the battle as it happens                                  *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* [Battle.on_event] exists so a front end can be told what happened *as* it
+     happened, rather than reading the log afterwards and replaying a burst. The
+     invariant that makes it trustworthy is that it sees exactly the log, in
+     order - anything else and a presentation layer would be showing a different
+     battle from the one that ran. *)
+  let b = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  check "a battle starts with nobody watching" (b.on_event = None);
+  let seen = ref [] in
+  b.on_event <- Some (fun _ e -> seen := e :: !seen);
+  ignore (run b);
+  let observed = List.rev !seen in
+  let logged = log_of b in
+  check_eq "the observer saw every event" (List.length observed) (List.length logged);
+  check "and saw them in the log's order" (observed = logged);
+  check "so a front end can trust either" (!seen <> []);
+  (* The event being handed over is already on the log when the callback runs, so
+     an observer that reads the log sees the event it was just given. Getting this
+     backwards is the off-by-one that shows up as a message one step late. *)
+  let b2 = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  let lengths = ref [] in
+  b2.on_event <-
+    Some (fun bb _ -> lengths := List.length (log_of bb) :: !lengths);
+  ignore (run b2);
+  let ascending = List.rev !lengths in
+  check "the log is already up to date when the observer runs"
+    (ascending = List.init (List.length ascending) (fun i -> i + 1));
+  (* Leaving it unset must cost nothing, which is what every other test in this
+     file relies on. *)
+  let quiet = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  check "an unwatched battle still logs"
+    (quiet.on_event = None && log_of (run quiet) <> [])
+
+(* ------------------------------------------------------------------ *)
+(* Watching the board change                                          *)
+(* ------------------------------------------------------------------ *)
+
+(** A board's gems in reading order, so two boards can be compared without
+    depending on how the map is laid out internally. *)
+let gems_of (b : board) : gem list =
+  List.concat
+    (List.init b.height (fun y -> List.init b.width (fun x -> get_gem b { x; y })))
+
+let count_of (g : gem) (b : board) : int =
+  List.length (List.filter (fun x -> x = g) (gems_of b))
+
+(** Every cell of a board, in reading order. *)
+let positions_of (b : board) : position list =
+  List.concat (List.init b.height (fun y -> List.init b.width (fun x -> { x; y })))
+
+(** A view of [Battle.step] in ordinary records.
+
+    [Battle.step] uses inline records, and an inline record cannot be handed to a
+    helper function or returned from one - so a test that wanted to say "for every
+    cascade, check this" could only repeat the match once per property. Copying the
+    fields into a plain variant is what makes the properties below expressible. *)
+type seen_cascade = {
+  step : int;
+  before : board;
+  cleared : board;
+  after : board;
+  runs : (position list * gem) list;
+}
+
+type seen_swap = { before : board; after : board; a : position; b : position }
+
+type seen_step = Cascade of seen_cascade | Swap of seen_swap
+
+let view_step = function
+  | Cascaded c ->
+      Cascade
+        {
+          step = c.step;
+          before = c.before;
+          cleared = c.cleared;
+          after = c.after;
+          runs = c.runs;
+        }
+  | Swapped s ->
+      Swap { before = s.before; after = s.after; a = s.a; b = s.b }
+
+(** The step numbers of a run of consecutive cascade steps.
+
+    Numbering restarts with every resolution - once per combatant per turn - so
+    "1, 2, 3" is the invariant within one cascade, not across the battle. Checking
+    it matters because the cascade *sound* is keyed off this number: a step
+    numbered zero or skipping one would be heard as well as seen. *)
+let rec numbers_of = function
+  | Cascade { step; _ } :: rest -> step :: numbers_of rest
+  | _ -> []
+
+let rec groups_of l =
+  match l with
+  | Cascade _ :: _ ->
+      let ns = numbers_of l in
+      ns :: groups_of (List.drop (List.length ns) l)
+  | _ :: rest -> groups_of rest
+  | [] -> []
+
+let () =
+  (* [on_step] is the half of the presentation seam that [on_event] cannot carry: an
+     event is a fact, and animating a cascade needs the boards on either side of it.
+     What has to hold is that the boards handed over are the real ones - a front end
+     given a reconstructed board animates the wrong gems, which looks like a
+     rendering bug rather than an instrumentation one. *)
+  let b = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  check "a battle starts with nobody watching its board" (b.on_step = None);
+  let steps = ref [] in
+  b.on_step <- Some (fun _ s -> steps := s :: !steps);
+  ignore (run b);
+
+let seen = List.rev_map view_step !steps in
+  check "a battle on a board with a productive swap reports steps" (seen <> []);
+  let cascades = List.filter (function Cascade _ -> true | Swap _ -> false) seen in
+  let swaps = List.filter (function Swap _ -> true | Cascade _ -> false) seen in
+  check "and it reports both kinds of step" (cascades <> [] && swaps <> []);
+  check "and every cascade is numbered from one, in order"
+    (List.for_all
+       (fun ns -> ns = List.init (List.length ns) (fun i -> i + 1))
+       (groups_of seen));
+  (* Each property is checked across the whole battle at once rather than per step:
+     a battle plays dozens of steps, so a per-step check prints dozens of lines and
+     buries the failure that matters. *)
+  let gem_count b = List.length (List.filter (fun g -> g <> Empty) (gems_of b)) in
+  let on_cascade f = List.for_all (function Cascade c -> f c | Swap _ -> true) cascades in
+  let on_swap f = List.for_all (function Swap w -> f w | Cascade _ -> true) swaps in
+  check "a match takes gems off the board"
+    (on_cascade (fun c -> gem_count c.cleared < gem_count c.before));
+  check "and the refill leaves no gaps behind" (on_cascade (fun c -> count_of Empty c.after = 0));
+  (* Every cell the run named is gone - or has become a wildcard, which is what a
+     five-run leaves behind in the middle of itself. Asserting "empty" here rather
+     than "gone" would have been wrong, and wrong in a way that looked like the
+     instrumented boards being inaccurate. *)
+  check "and every cell a run names is gone or has become a wildcard"
+    (on_cascade (fun c ->
+         List.for_all
+           (fun (positions, _) ->
+             List.for_all
+               (fun p ->
+                 match get_gem c.cleared p with
+                 | Empty | Wildcard _ -> true
+                 | _ -> false)
+               positions)
+           c.runs));
+  (* A swap moves exactly two gems and leaves every other cell alone, which is what
+     lets a front end draw [before] and slide two cells of it onto [after]. *)
+  check "a swap puts one gem where the other was"
+    (on_swap (fun w ->
+         get_gem w.after w.a = get_gem w.before w.b
+         && get_gem w.after w.b = get_gem w.before w.a));
+  check "and touches nothing else"
+    (on_swap (fun w ->
+         List.for_all
+           (fun p -> p = w.a || p = w.b || get_gem w.before p = get_gem w.after p)
+           (positions_of w.after)));
+  (* Continuity between neighbours: a swap's [after] is the cascade's [before], and
+     one cascade step's [after] is the next one's [before]. The same board handed
+     over twice under two names - if they ever disagree, the gems animate back to
+     where they came from. *)
+  let rec consecutive_pairs = function
+    | x :: y :: rest -> (x, y) :: consecutive_pairs (y :: rest)
+    | _ -> []
+  in
+  let neighbours = consecutive_pairs seen in
+  let handover (x, y) =
+    match (x, y) with
+    | Swap { after; _ }, Cascade { before; _ }
+    | Cascade { after; _ }, Cascade { before; _ } -> gems_of after = gems_of before
+    | _ -> true
+  in
+  check "and one step always hands its board to the next"
+    (List.for_all handover neighbours);
+  (* The ordering the front end depends on: a step is announced after the events it
+     caused, so its message and its sound are up before its gems move. If this ever
+     inverts, every float text lands one cascade late. *)
+  let b2 = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  let trace = ref [] in
+  b2.on_event <- Some (fun _ e -> trace := `E e :: !trace);
+  b2.on_step <- Some (fun _ s -> trace := `S s :: !trace);
+  ignore (run b2);
+  let announced = Hashtbl.create 8 in
+  let in_order = ref true in
+  List.iter
+    (fun item ->
+      match item with
+      | `E (MatchResolved (n, _)) -> Hashtbl.replace announced n ()
+      | `S (Cascaded { step; _ }) ->
+          if not (Hashtbl.mem announced step) then in_order := false
+      | _ -> ())
+    (List.rev !trace);
+  check "every cascade step follows the match that caused it" !in_order;
+  (* And the callbacks must be inert. Watching a battle has to leave the battle
+     exactly as it was, or these tests are testing a different game from the one
+     that ships. *)
+  let watched = create ~rng:(lcg 59) (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  watched.on_event <- Some (fun _ _ -> ());
+  watched.on_step <- Some (fun _ _ -> ());
+  let unwatched = create ~rng:(lcg 59) (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  let w = run watched and u = run unwatched in
+  check "watching a battle changes nothing about it"
+    (log_of w = log_of u
+    && w.winner = u.winner
+    && w.turns_elapsed = u.turns_elapsed
+    && w.mana_burns = u.mana_burns);
+  let quiet = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  check "an unwatched battle still resolves"
+    (quiet.on_step = None && log_of (run quiet) <> [])
+
 let () =
   if !failures = 0 then print_endline "\nAll battle tests passed."
   else begin

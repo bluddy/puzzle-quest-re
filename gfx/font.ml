@@ -45,7 +45,15 @@ let face_path (name : string) : string = Filename.concat (face_dir ()) (name ^ "
     read all of them: a font that is never drawn should not cost a decode.
 
     Returns [None] only if nothing at all could be loaded, which is the caller's
-    cue to carry on without text. A missing atlas is otherwise not fatal. *)
+    cue to carry on without text. A missing atlas is otherwise not fatal.
+
+    **A style that resolved but whose atlas did not load is reported, not
+    tolerated.** That combination is the one that cannot be worked out from the
+    screen: the metrics are fine, the text is laid out, and [draw_into] returns no
+    quads because there is no texture - so the battle plays perfectly and the
+    labels are simply absent. It happened here: the float-message fonts all share
+    the WC_Message face, which was not among the faces the first call asked for,
+    and every damage number in the game was invisible with nothing in the log. *)
 let create ~(styles : Font_layout.metrics list) : t option =
   let t = Hashtbl.create 8 in
   let wanted =
@@ -68,6 +76,16 @@ let create ~(styles : Font_layout.metrics list) : t option =
             (Printexc.to_string e)
       else Printf.printf "  no atlas for face %s (%s)\n" name path)
     wanted;
+  (* Now say so, per style, if the text it names will not be drawn. *)
+  List.iter
+    (fun (m : Font_layout.metrics) ->
+      let n = m.Font_layout.face.Font_data.name in
+      if not (Hashtbl.mem t n) then
+        Printf.printf
+          "  font %s (face %s) has no atlas loaded - anything drawn in it will be \
+           missing\n%!"
+          m.Font_layout.style.Font_data.tag n)
+    styles;
   if Hashtbl.length t = 0 then None else Some t
 
 let face_of (t : t) (m : Font_layout.metrics) : face option =
@@ -124,7 +142,7 @@ let draw_into (win : Gl.context) (t : t) (m : Font_layout.metrics) ?colour (s : 
         placed;
       (match !first with
       | None -> []
-      | Some first -> [ { Gl.first; count = !count * 6; tex = Some f.texture; colour = col } ])
+      | Some first -> [ { Gl.first; count = !count * 6; tex = Some f.texture; colour = col; clip = None } ])
 
 (** Draw several lines, stacked by the style's line height. *)
 let draw_lines (win : Gl.context) (t : t) (m : Font_layout.metrics) ?colour

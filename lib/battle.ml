@@ -103,6 +103,40 @@ let default_rules =
     player = None;
   }
 
+(** One visible step of a turn, with the board states needed to animate it.
+
+    Separate from [event] on purpose. An event says *what happened*; a step says
+    *what the board looked like before and after*, which is a different thing and
+    arrives at a different time. `MatchResolved` fires while the matched gems are
+    still on the board; the animation needs the board with them gone, and then the
+    board after gravity has pulled everything down.
+
+    The three states in a cascade are all necessary and none is derivable from the
+    others:
+
+    - [before] - the board as the player last saw it, with the matches still in it.
+    - [cleared] - the matches removed, gravity *not yet applied*. This is the state
+      with the gaps in it, and it is what a match pop resolves to.
+    - [after] - gravity applied and the gaps refilled. What a cascade fall resolves
+      to, and what the next step's [before] will be.
+
+    [Board.board] is persistent, so holding on to these costs nothing but a
+    reference. *)
+type step =
+  | Swapped of {
+      before : board;
+      after : board;
+      a : Board.position;
+      b : Board.position;
+    }
+  | Cascaded of {
+      step : int;
+      before : board;
+      cleared : board;
+      after : board;
+      runs : (Board.position list * Board.gem) list;
+    }
+
 type battle = {
   rules : rules;
   mutable board : board;  (** 8x8, all rows playable *)
@@ -114,7 +148,46 @@ type battle = {
   mutable gold : int;  (** won across the battle, as [Engine_ADD_GOLD] would *)
   mutable xp : int;
   mutable winner : outcome option;
-  mutable log : event list;  (** reversed *)
+  (* The battle's narration, newest first. See [Battle.log_of] to read it in
+     order. *)
+  mutable log : event list;
+  (** Called as each event happens, rather than the log being read back afterwards.
+
+      [None] - the default - means exactly what it meant before this existed: the
+      log accumulates and nothing observes it. Setting it costs the recovered code
+      path nothing, because [emit] was already the single place an event is
+      recorded, so this is a second call at a point that already existed rather
+      than a new interposition in the battle logic.
+
+      What it buys is *ordering*. Reading the log after a turn hands a
+      presentation layer every event in that turn at once, so it replays a burst;
+      being called as they occur gives the same events in sequence.
+      [MatchResolved] is already emitted once per cascade step and carries which
+      runs matched, so cascades arrive individually with no further change here.
+
+      It lives on the battle rather than in [rules] because a rule is how the fight
+      is played and this is who is watching it - and because [rules] and [battle]
+      refer to each other, so a callback mentioning [battle] cannot be a field of
+      [rules]. It is mutable so a front end can attach one after [create], which is
+      the only point at which the battle exists to hand it.
+
+      The callback receives the battle as it stands at that moment, so it can read
+      live state - the board, the mana pools, whose turn it is - instead of
+      reconstructing them. It must not mutate the battle. *)
+  mutable on_event : (battle -> event -> unit) option;
+  (** Called as each {e visible} step of a turn happens, with the board states
+      around it. See [step].
+
+      This is the second half of the presentation seam, and it exists because
+      [on_event] cannot carry it: an event is a fact, and animating a cascade needs
+      the boards on either side of it. Kept as a separate callback rather than
+      folded into the event type so that the log stays a log - putting a board in
+      every event would make reading it a rendering concern, and every faithful
+      test that inspects the log would have to know about it.
+
+      Defaults to [None] and costs one branch at each of the three points it is
+      called, so an unwatched battle resolves exactly as it did before. *)
+  mutable on_step : (battle -> step -> unit) option;
   rng : int -> int;
   (** The three board bonus flags, mutable and shared with the spell effect
       context. [rules.extra_turns_enabled] seeds the first of them; the other two
@@ -144,7 +217,22 @@ type battle = {
 let loadout_of (b : battle) (c : combatant) : Item.loadout =
   if c.id = b.hero.id then b.hero_items else b.enemy_items
 
-let emit (b : battle) (e : event) = b.log <- e :: b.log
+(** Record an event, and tell the observer about it if there is one.
+
+    This was a one-liner that consed onto the log. It is still that, plus an
+    optional callback - see [Battle.rules.on_event] for why the callback lives
+    here and what it is for.
+
+    The order matters and is deliberate: the event is on the log {e before} the
+    observer runs, so an observer that reads [log_of] sees the event it was handed
+    and everything before it. An observer reading a log that does not yet contain
+    the event it was just given is the kind of off-by-one that only shows up as a
+    message appearing one step late. *)
+let emit (b : battle) (e : event) =
+  b.log <- e :: b.log;
+  match b.on_event with
+  | None -> ()
+  | Some f -> f b e
 let log_of (b : battle) = List.rev b.log
 
 (** Presents the 8x8 board to [Ai] as the engine's 9-row grid, with row 0 left
@@ -219,6 +307,22 @@ let credit_run (b : battle) (attacker : combatant) (e : element) (n : int) : uni
     emit b (BankedTurn attacker.name)
   end
 
+(** Tell the observer about a step, if anyone is watching. *)
+let step_to (b : battle) (s : step) =
+  match b.on_step with None -> () | Some f -> f b s
+
+(** Apply a swap and hand the observer the two boards around it.
+
+    Both the human's move and the AI's go through here, so the slide animation
+    cannot exist on one path and not the other - which is the kind of asymmetry that
+    looks like a bug in the player's own turns only. *)
+let apply_swap (b : battle) (a : Board.position) (c : Board.position)
+    (dir : Ai.direction) =
+  let before = b.board in
+  b.board <- swap_gems before a c;
+  emit b (Swap (a.Board.x, a.Board.y, dir));
+  step_to b (Swapped { before; after = b.board; a; b = c })
+
 (** Resolves every match, cascading until quiet. Returns the total damage.
 
     Matching, Red Skull explosions, 5-run wildcards, gold and XP all come from
@@ -256,12 +360,21 @@ let resolve_cascades (b : battle) (defender : combatant) : int =
               emit b (SizeTurn attacker.name)
             end)
           res.runs;
-        emit b (MatchResolved (!step, res));
+emit b (MatchResolved (!step, res));
         if res.gold > 0 then emit b (GoldGained (attacker.name, res.gold));
         if res.xp > 0 then emit b (XpGained (attacker.name, res.xp));
+        (* The three boards, captured around the two assignments rather than
+           reconstructed afterwards: [before] is what the player was looking at,
+           [cleared] is the same board with the matches gone and the gaps still
+           open, and [after] is gravity having pulled everything down and the gaps
+           been refilled. *)
+        let before = b.board in
         b.board <- cleared;
-        refill b
-  done;
+        refill b;
+        step_to b
+          (Cascaded
+             { step = !step; before; cleared; after = b.board; runs = res.runs })
+    done;
   (* Heroic Effort: the original's [FUN_0047AE80] fires when a swap's cascade
      counter reaches 5, awarding +100 XP and an extra turn. The counter is the
      per-swap step number and starts at 1 for the first step, so the award is for
@@ -309,15 +422,11 @@ let rec play_move (b : battle) (defender : combatant) : unit =
          engine would have accepted; only the ranking is skipped. *)
       (match p.choose_swap (find_all_legal_moves b.board) with
       | Some m ->
-          b.board <- swap_gems b.board m.from_pos m.to_pos;
           (* [swap] carries two positions rather than a direction, and the event
              wants the direction, so derive it. A legal swap is always
              orthogonal, so one of the two is strictly greater. *)
-          emit b
-            (Swap
-               ( m.from_pos.x,
-                 m.from_pos.y,
-                 if m.to_pos.x > m.from_pos.x then Horizontal else Vertical ));
+          apply_swap b m.from_pos m.to_pos
+            (if m.Board.to_pos.x > m.Board.from_pos.x then Horizontal else Vertical);
           play_swap_result b defender
       | None ->
           (* Declining the swap ends the turn without one, which is what a player
@@ -342,8 +451,7 @@ let rec play_move (b : battle) (defender : combatant) : unit =
             | Horizontal -> { x = sx + 1; y = sy }
             | Vertical -> { x = sx; y = sy + 1 }
           in
-          b.board <- swap_gems b.board src dst;
-          emit b (Swap (sx, sy, c.cand_direction));
+          apply_swap b src dst c.cand_direction;
           play_swap_result b defender
       | _ ->
           (* No legal move. The original regenerates the board and calls it Mana
@@ -648,6 +756,10 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
     xp = 0;
     winner = None;
     log = [];
+    (* Nobody is watching by default, which is what every faithful test and the
+       headless runner rely on. See [Battle.on_event]. *)
+    on_event = None;
+    on_step = None;
     rng;
     multipliers =
       { Spell.wildcard_chance = true

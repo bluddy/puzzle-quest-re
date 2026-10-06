@@ -189,7 +189,23 @@ let destroy_texture (t : texture) =
    drawn gem by gem is one draw call per gem run rather than one per gem - and when
    the real atlas lands, a whole row of same-sheet gems collapses into one. *)
 
-type run = { first : int; count : int; tex : texture option; colour : Layout.colour }
+(** One batched draw.
+
+    [clip] is a scissor rectangle in window pixels, or [None] for the whole
+    window. It lives on the run rather than being toggled around [push_quad]
+    because **the batcher does not draw when you push** - vertices accumulate and
+    [submit] issues every draw at the end of the frame. A scissor set before
+    pushing the gems and cleared straight after is therefore still set when
+    [submit] runs, and clips everything in the frame; a scissor set and cleared
+    before [submit] clips nothing at all. State has to travel with the run that
+    wants it. *)
+type run = {
+  first : int;
+  count : int;
+  tex : texture option;
+  colour : Layout.colour;
+  clip : Layout.rect option;
+}
 
 let buf_set v i x = v.{i} <- x
 
@@ -248,6 +264,21 @@ let begin_frame (win : context) =
   Tgl3.Gl.enable Tgl3.Gl.blend;
   Tgl3.Gl.blend_func Tgl3.Gl.src_alpha Tgl3.Gl.one_minus_src_alpha
 
+(** Confine one run's drawing to a rectangle, in window pixels.
+
+    The scissor is applied inside [submit], per run, which is why it is a field of
+    [run] rather than a pair of calls around the pushes.
+
+    The framebuffer is flipped ([dump_png] exists because of it), so scissor
+    coordinates are bottom-up, unlike everything else here. Getting that wrong
+    clips the wrong end of the board, which looks like a rendering bug rather than
+    a coordinate one. Used to keep gems that drop in from above the top row inside
+    the board instead of painting over the title art. *)
+let clip_rect (win : context) (rect : Layout.rect) =
+  Tgl3.Gl.enable Tgl3.Gl.scissor_test;
+  Tgl3.Gl.scissor rect.Layout.x (win.height - rect.Layout.y - rect.Layout.h) rect.Layout.w
+    rect.Layout.h
+
 let submit (win : context) (runs : run list) =
   if win.n_verts = 0 then ()
   else begin
@@ -273,6 +304,11 @@ let submit (win : context) (runs : run list) =
         let cg = float_of_int c.Layout.g /. 255.0 in
         let cb = float_of_int c.Layout.b /. 255.0 in
         let ca = float_of_int c.Layout.a /. 255.0 in
+        (* The run's scissor, if it has one. Applied here rather than at push time
+           because this is where the drawing actually happens. *)
+        (match r.clip with
+        | None -> Tgl3.Gl.disable Tgl3.Gl.scissor_test
+        | Some rect -> clip_rect win rect);
         (match r.tex with
         | Some t ->
             Tgl3.Gl.use_program win.prog_textured;

@@ -47,8 +47,27 @@ FONT_PREFIX = "Assets/Fonts/"
 FONT_SUFFIX = ".png"
 FONT_SUBDIR = "Fonts"
 
+# Sound banks. The layout is preserved rather than flattened, because the registry
+# records where each file lives - `Assets/Sounds/Damage.wav` for the shared bank and
+# `English/Sounds/VHeroicEffort.wav` for a voice line - and lib/skin_data.ml holds
+# those paths verbatim. Flattening them would make the table wrong.
+#
+# The voice lines ship once per language (English, French, German), so extracting
+# all of them triples the bank for files this build cannot play: only one language
+# is ever resolved by the generator. `LANGUAGE` picks which.
+LANGUAGE = "English"
+SOUND_BANKS = [("Assets/Sounds/", ""), (LANGUAGE + "/Sounds/", LANGUAGE + "/")]
+
 def is_font(name: str) -> bool:
     return name.startswith(FONT_PREFIX) and name.endswith(FONT_SUFFIX)
+
+
+def sound_dest(name: str) -> pathlib.Path | None:
+    """Where a sound file lands, or None if it is not one we extract."""
+    for prefix, subdir in SOUND_BANKS:
+        if name.startswith(prefix) and name.lower().endswith(".wav"):
+            return pathlib.Path(subdir + "Sounds") / pathlib.Path(name).name
+    return None
 
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -67,6 +86,8 @@ def main() -> int:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / FONT_SUBDIR).mkdir(parents=True, exist_ok=True)
+    for _, subdir in SOUND_BANKS:
+        (args.out_dir / subdir / "Sounds").mkdir(parents=True, exist_ok=True)
     missing = []
     written = 0
     try:
@@ -89,6 +110,15 @@ def main() -> int:
                 written += 1
                 print(f"  extracted {dest.relative_to(args.out_dir)!s:32s} "
                       f"{dest.stat().st_size:>9,d} bytes")
+            # Sound banks last, and quietly: 83 files is a wall of output for
+            # something the reader does not need itemised.
+            for n in sorted(names):
+                rel = sound_dest(n)
+                if rel is None:
+                    continue
+                dest = args.out_dir / rel
+                dest.write_bytes(z.read(n))
+                written += 1
     except zipfile.BadZipFile as e:
         print(f"error: {args.zip} is not a readable zip: {e}", file=sys.stderr)
         return 1

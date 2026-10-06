@@ -20,6 +20,12 @@ let check name cond =
     incr failures
   end
 
+let check_str name got want =
+  if got = want then Printf.printf "ok   - %s\n" name
+  else begin
+    Printf.printf "FAIL - %s (got %s, want %s)\n" name got want;
+    incr failures
+  end
 let check_int name got want =
   if got = want then Printf.printf "ok   - %s\n" name
   else begin
@@ -186,6 +192,63 @@ let test_frames_on () =
   check "and a sheet with none comes back empty"
     (Array.length (Skin_data.frames_on "no_such_sheet") = 0)
 
+let test_sounds () =
+  check_int "82 named sounds" (List.length (Array.to_list Skin_data.sounds)) 82;
+  check "tags are unique"
+    (let seen = Hashtbl.create 128 in
+     Array.for_all
+       (fun (s : Skin_data.sound) ->
+         if Hashtbl.mem seen s.Skin_data.tag then false
+         else begin
+           Hashtbl.add seen s.Skin_data.tag ();
+           true
+         end)
+       Skin_data.sounds);
+  (* The tag is what the engine passes to PLAY_SOUND, so the mapping is only
+     faithful if it is the tag rather than the filename. *)
+  check "snd_damage is that tag" (Skin_data.sound_file "snd_damage" = Some "Sounds/Damage.wav");
+  check "snd_cascade3 is that tag"
+    (Skin_data.sound_file "snd_cascade3" = Some "Sounds/Cascade3.wav");
+  check_str "and a tag nobody uses has no file" (match Skin_data.sound_file "snd_nope" with None -> "none" | Some p -> p)
+    "none"
+
+let test_sound_resolution_is_recorded () =
+  (* `snd_damage` -> `Damage.wav` is a filename match; `snd_earth` -> `EarthMana.wav`
+     is a rename, and the difference matters because a rename is a fact somebody
+     had to read off the archive. If every tag claimed to be a match, a broken
+     convention would look like a working one. *)
+  let how tag =
+    match Skin_data.sound_of_tag tag with Some s -> s.Skin_data.how | None -> "unknown"
+  in
+  check_str "a straight stem match is Exact" (how "snd_damage") "Exact";
+  check_str "an element sound is Renamed" (how "snd_earth") "Renamed";
+  check_str "and so is a button" (how "snd_buttdown") "Renamed";
+  (* `snd_voice_victory` resolves to `VVictorious`, so the voice tags cannot be
+     derived from the tag either. *)
+  check_str "a voice line is Renamed too" (how "snd_voice_victory") "Renamed";
+  check "the voice lives in a language directory"
+    (match Skin_data.sound_file "snd_voice_victory" with
+    | Some p -> String.contains p '/'
+    | None -> false)
+
+let test_music_is_absent () =
+  (* Every music tag is declared and none has audio behind it. Worth pinning: it
+     is the difference between "the bank was not extracted" and "there is no music
+     in this build at all", and the registry is the only place that knows. *)
+  let music =
+    List.filter (fun (s : Skin_data.sound) -> s.Skin_data.kind = "music")
+      (Array.to_list Skin_data.sounds)
+  in
+  check "the registry declares music" (music <> []);
+  check "and none of it has a file"
+    (List.for_all (fun (s : Skin_data.sound) -> s.Skin_data.file = None) music);
+  check "so playable sounds are interface sounds only"
+    (Array.for_all
+       (fun (s : Skin_data.sound) -> s.Skin_data.kind = "interface")
+       Skin_data.playable_sounds);
+  check "and 68 of the 82 have audio"
+    (Array.length Skin_data.playable_sounds = 68)
+
 let () =
   test_shape ();
   test_paths ();
@@ -194,6 +257,9 @@ let () =
   test_selection_glow ();
   test_draw_scale ();
   test_frames_on ();
+  test_sounds ();
+  test_sound_resolution_is_recorded ();
+  test_music_is_absent ();
   if !failures = 0 then print_endline "all skin data tests passed"
   else begin
     Printf.printf "%d skin data test(s) failed\n" !failures;

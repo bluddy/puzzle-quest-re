@@ -125,7 +125,7 @@ let draw (t : t) (runs : Gl.run list ref) ?(colour = Layout.rgba 255 255 255 255
           let first =
             Gl.push_quad ~tex_size:(s.tex_w, s.tex_h) t.gl dst (Some (uv f)) colour
           in
-          runs := !runs @ [ { Gl.first; count = 6; tex = Some s.texture; colour } ];
+          runs := !runs @ [ { Gl.first; count = 6; tex = Some s.texture; colour; clip = None } ];
           true)
 
 (** Draw a named frame centred in [place] horizontally and vertically. *)

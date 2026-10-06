@@ -540,3 +540,133 @@ let draw_scale (f : frame) : int * int =
     let g = gcd f.w f.dest_w in
     (f.dest_w / g, f.w / g)
 
+(** A sound the registry names.
+
+   The tag is what the game asks for - `snd_damage`, `snd_cascade3` - and it is
+   what [Engine_PLAY_SOUND_4b38a0] is passed, so the port addresses sounds the
+   same way rather than by filename.
+
+   [file] is where the audio actually is, and it is **not** derivable from the tag
+   by one rule: most tags are `snd_<stem>` for a `<Stem>.wav`, the four element
+   sounds carry a `Mana` suffix, the buttons are `Button*`, and the voices sit in
+   a per-language directory behind a `V` prefix. [how] records which of those got
+   the tag, so a reader can tell a straight filename match from a rename.
+
+   [Absent] is worth noticing: **every `music_*` tag has no file behind it in this
+   archive.** There is no music to play, and a music player written against this
+   table would find that out at runtime. *)
+type sound = {
+  tag : string;
+  kind : string;  (* "interface" or "music" *)
+  priority : int;
+  fade : int;
+  file : string option;  (** relative to assets/gfx *)
+  how : string;  (* "Exact" | "Renamed" | "Absent" *)
+}
+
+let sounds : sound array =
+  [|
+    { tag = "snd_buttdown"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ButtonDown.wav"; how = "Renamed" };
+    { tag = "snd_buttup"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ButtonUp.wav"; how = "Renamed" };
+    { tag = "snd_damage"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Damage.wav"; how = "Exact" };
+    { tag = "snd_earth"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/EarthMana.wav"; how = "Renamed" };
+    { tag = "snd_air"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/AirMana.wav"; how = "Renamed" };
+    { tag = "snd_fire"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/FireMana.wav"; how = "Renamed" };
+    { tag = "snd_water"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/WaterMana.wav"; how = "Renamed" };
+    { tag = "snd_xp"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/XP.wav"; how = "Exact" };
+    { tag = "snd_gold"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Gold.wav"; how = "Exact" };
+    { tag = "snd_wildcard"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Wildcard.wav"; how = "Exact" };
+    { tag = "snd_manadrain"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ManaDrain.wav"; how = "Exact" };
+    { tag = "snd_illegal"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/IllegalMove.wav"; how = "Renamed" };
+    { tag = "snd_redskull"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/RedSkull.wav"; how = "Exact" };
+    { tag = "snd_stopgem0"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/StopGem0.wav"; how = "Exact" };
+    { tag = "snd_stopgem1"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/StopGem1.wav"; how = "Exact" };
+    { tag = "snd_stopgem2"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/StopGem2.wav"; how = "Exact" };
+    { tag = "snd_stopgem3"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/StopGem3.wav"; how = "Exact" };
+    { tag = "snd_extraturn"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ExtraTurn.wav"; how = "Exact" };
+    { tag = "snd_newturn"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/NewTurn.wav"; how = "Exact" };
+    { tag = "snd_enemyturn"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/EnemyTurn.wav"; how = "Exact" };
+    { tag = "snd_tick"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Tick.wav"; how = "Exact" };
+    { tag = "snd_forceendturn"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ForceEndTurn.wav"; how = "Exact" };
+    { tag = "snd_spellnature"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellNature.wav"; how = "Exact" };
+    { tag = "snd_spellbuff"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellBuff.wav"; how = "Exact" };
+    { tag = "snd_spelldebuff"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellDebuff.wav"; how = "Exact" };
+    { tag = "snd_spellfire"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellFire.wav"; how = "Exact" };
+    { tag = "snd_spellheal"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellHeal.wav"; how = "Exact" };
+    { tag = "snd_spellalter"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellAlter.wav"; how = "Exact" };
+    { tag = "snd_extrainput"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ExtraInput.wav"; how = "Exact" };
+    { tag = "snd_taunt"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Taunt.wav"; how = "Exact" };
+    { tag = "snd_victory"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Victory.wav"; how = "Exact" };
+    { tag = "snd_defeat"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Defeat.wav"; how = "Exact" };
+    { tag = "snd_aispell"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/AISpell.wav"; how = "Exact" };
+    { tag = "snd_buy"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Buy.wav"; how = "Exact" };
+    { tag = "snd_useitem"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/UseItem.wav"; how = "Exact" };
+    { tag = "snd_misceffect"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/MiscEffect.wav"; how = "Exact" };
+    { tag = "snd_howl"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Howl.wav"; how = "Exact" };
+    { tag = "snd_victoryquest"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/VictoryQuest.wav"; how = "Exact" };
+    { tag = "snd_heroiceffort"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/HeroicEffort.wav"; how = "Exact" };
+    { tag = "snd_stun"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Stun.wav"; how = "Exact" };
+    { tag = "snd_stone"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Stone.wav"; how = "Exact" };
+    { tag = "snd_travel"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Travel.wav"; how = "Exact" };
+    { tag = "snd_arrive"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Arrive.wav"; how = "Exact" };
+    { tag = "snd_addruin"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/AddRuin.wav"; how = "Exact" };
+    { tag = "snd_addencounter"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/AddEncounter.wav"; how = "Exact" };
+    { tag = "snd_removeencounter"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/RemoveEncounter.wav"; how = "Exact" };
+    { tag = "snd_questmessage"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/QuestMessage.wav"; how = "Exact" };
+    { tag = "snd_questconv"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/QuestConversation.wav"; how = "Renamed" };
+    { tag = "snd_questconvclick"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/QuestConversationClick.wav"; how = "Renamed" };
+    { tag = "snd_battle"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Battle.wav"; how = "Exact" };
+    { tag = "snd_activatecompanion"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ActivateCompanion.wav"; how = "Exact" };
+    { tag = "snd_donategold"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/DonateGold.wav"; how = "Exact" };
+    { tag = "snd_rebellion"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Rebellion.wav"; how = "Exact" };
+    { tag = "snd_resistspell"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/ResistSpell.wav"; how = "Exact" };
+    { tag = "snd_spellcategory"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/SpellCategory.wav"; how = "Exact" };
+    { tag = "snd_cascade1"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Cascade1.wav"; how = "Exact" };
+    { tag = "snd_cascade2"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Cascade2.wav"; how = "Exact" };
+    { tag = "snd_cascade3"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Cascade3.wav"; how = "Exact" };
+    { tag = "snd_cascade4"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Cascade4.wav"; how = "Exact" };
+    { tag = "snd_cascade5"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Cascade5.wav"; how = "Exact" };
+    { tag = "snd_cascade6"; kind = "interface"; priority = 6; fade = 0; file = Some "Sounds/Cascade6.wav"; how = "Exact" };
+    { tag = "snd_voice_defeat"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VDefeat.wav"; how = "Renamed" };
+    { tag = "snd_voice_heroiceffort"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VHeroicEffort.wav"; how = "Renamed" };
+    { tag = "snd_voice_neardeath"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VNearDeath.wav"; how = "Renamed" };
+    { tag = "snd_voice_newspell"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VNewSpell.wav"; how = "Renamed" };
+    { tag = "snd_voice_questcomplete"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VQuestComplete.wav"; how = "Renamed" };
+    { tag = "snd_voice_queststage"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VQuestStage.wav"; how = "Renamed" };
+    { tag = "snd_voice_victory"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VVictorious.wav"; how = "Renamed" };
+    { tag = "snd_cutscene"; kind = "interface"; priority = 7; fade = 0; file = None; how = "Absent" };
+    { tag = "music_intro"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_map"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_boss"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_background0"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_background1"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_background2"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_background3"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_background4"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_victory"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_defeat"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_theme"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_about_to_win"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_about_to_lose"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+  |]
+
+let sound_of_tag (tag : string) : sound option =
+  let rec go (l : sound list) =
+    match l with
+    | [] -> None
+    | (s : sound) :: rest -> if s.tag = tag then Some s else go rest
+  in
+  go (Array.to_list sounds)
+
+(** The file for a sound tag, or [None] if the registry has no audio for it.
+
+    This is the one place a missing sound is allowed to be missing: the original
+    also asks for sounds that are not there - every music tag - and
+    `Engine_PLAY_SOUND_4b38a0` looks the name up in a map and plays what it finds,
+    which is nothing. *)
+let sound_file (tag : string) : string option =
+  match sound_of_tag tag with Some s -> s.file | None -> None
+
+(** The sounds that actually have audio behind them. *)
+let playable_sounds : sound array =
+  Array.of_list (List.filter (fun (s : sound) -> s.file <> None) (Array.to_list sounds))

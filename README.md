@@ -66,6 +66,7 @@ spells, because that state lives in a VM the C++ side cannot see. See
   - A sprite batcher, an 8x8 board drawn from live battle state, and mouse play through the same two hooks the ASCII runner uses.
   - Real gem sprites, cut from the frames `Assets/Assets.xml` names.
   - Text in the game's own bitmap fonts, and a HUD. See [Graphics](#graphics-sdl2--opengl).
+  - Floating text driven by the battle's own event stream, placed by the recovered rule.
 - [x] **Option I: Decoration**:
   - `Assets/Assets.xml` read as data: 44 sheets and 422 named rectangles, with the size each is meant to be drawn at.
   - The window is 1024x768, which is what the backdrop and the border frame are cut for.
@@ -103,6 +104,10 @@ ranked, so there is nothing to keep out of the default.
   * `layout.ml`: Board geometry and gem colours. Pure.
   * `input.ml`: What a click means, given which prompt is open. Pure.
   * `font_layout.ml`: Glyph advances, measuring, wrapping, and float-message placement. Pure.
+  * `float_text.ml`: Which battle events become floating text, and its bounded stack. Pure apart from the draw call.
+  * `sound_map.ml`: Which sound an event plays, including the recovered cascade ladder. Pure.
+  * `audio.ml`: The mixer, lazy chunk loading, and the recovered do-not-restart rule.
+  * `anim.ml`: Board snapshots to gem positions - swap slide, match pop, column fall. Pure.
   * `gl.ml`: The only file naming `Tgl3`/`Tgles3`; the window, the context and the sprite batcher.
   * `png.ml`: PNG and JPEG to an RGBA bigarray, shared by the sheets and the font atlases.
   * `assets.ml`: The gem sheet's frames, looked up in the registry rather than hardcoded.
@@ -113,7 +118,7 @@ ranked, so there is nothing to keep out of the default.
   * `pq_battle.ml`: Plays a seeded headless battle and prints the trace or a summary.
   * `pq_play_gfx.ml`: The same battle in a window, with a mouse and a HUD.
 * `pq_play.ml`: The same battle with you on the hero's turns.
-* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`, `test_gfx_float_text.ml`, `test_gfx_sound_map.ml`, `test_gfx_anim.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
@@ -135,7 +140,7 @@ ranked, so there is nothing to keep out of the default.
 ### Requirements
 * OCaml 5.x with Opam
 * Dune 3.x
-* Required opam packages: `tsdl`, `tsdl-mixer`, `tgls`, `imagelib`, `containers`
+* Required opam packages: `tsdl`, `tsdl-mixer`, `tgls`, `imagelib`, `containers` (all from the opam release; only `imagelib` is pinned, see below)
 * **`imagelib` must be the `jpeg-codec` fork.** The opam release cannot read the
   game's backdrop, which is a JPEG, and there is no PNG of it — the only copy is
   `Assets/Skin/Skin_Backdrop_Standard.jpg`. Pin it with:
@@ -192,7 +197,7 @@ the battle screen needs once:
 python tools/extract_gfx_assets.py
 ```
 
-That pulls three sheets and all ten font atlases into `assets/gfx/`. Python is the
+That pulls three sheets, all ten font atlases and the sound banks into `assets/gfx/` - 82 files, of which 69 are audio. Python is the
 default because PowerShell script execution is gated by policy on some machines,
 and a build step you cannot run is one that will not be run. Two equivalents, if
 you prefer:
@@ -227,6 +232,133 @@ click a gem then an adjacent one to swap, or a button on the bar to cast. It dra
 at 1024x768, the game's own screen size, with its backdrop, its border and its
 own bitmap fonts. Gems are the game's sprites, text is set in the game's fonts,
 and there is no CRT filter and no placeholder typography.
+
+```
+dune exec bin/pq_play_gfx.exe -- --seed 7
+dune exec bin/pq_play_gfx.exe -- --shot frame.ppm        # one frame, no input
+dune exec bin/pq_play_gfx.exe -- --demo 14 --shot f.ppm # play 14 turns, then shoot
+```
+
+`--demo N` plays `N` turns with nobody at the keyboard before drawing. It exists
+because `--shot` on its own photographs the board before the battle has done
+anything, which cannot show a damage number or a cascade - and "the float text
+renders" is not a claim worth making on the strength of a screenshot of an empty
+board.
+
+### The screen reacts to the battle
+
+The engine narrates itself: `Battle.event` has 21 variants, and `Battle.on_event`
+hands them over **as they occur** rather than in a batch at the end of a turn.
+That is what lets floating text appear one at a time in the order the cascade
+happened, and it cost one optional field - `emit` was already the single place an
+event is recorded. It defaults to `None`, so every faithful test and the headless
+runner are untouched.
+
+Float messages are placed by the recovered rule (anchor on the box's smaller
+corner, clamp to a 20px margin) and coloured by the font itself - `font_msg_red`
+for damage, `font_msg_green` for mana, and six more. Which *events* become text is
+our choice, not a recovery: the original's float text is driven by spell scripts
+calling `ADD_TEXT_MESSAGE`, and a headless battle runs no scripts. That boundary
+is asserted event by event in `test_gfx_float_text`, including the events that
+deliberately say nothing.
+
+The stack is bounded at eight, because a cascade emits mana events faster than
+they expire and an unbounded column walks off the bottom of the screen taking the
+damage number with it. The original bounds it too - a fixed ring of 60-unit slots.
+
+### Sound
+
+`Assets/Assets.xml` has a third section after the bitmaps: **82 named sounds**.
+The port addresses them by the tag the engine passes to `PLAY_SOUND` -
+`snd_damage`, `snd_cascade3` - rather than by filename, which matters because the
+tag doesn't *give* the filename:
+
+| tag | file | |
+| --- | --- | --- |
+| `snd_damage` | `Damage.wav` | straight stem match |
+| `snd_earth` | `EarthMana.wav` | renamed |
+| `snd_buttdown` | `ButtonDown.wav` | renamed |
+| `snd_voice_victory` | `VVictorious.wav` | renamed, in a per-language directory |
+| `music_theme` | *nothing* | no audio in the archive |
+
+`lib/skin_data.ml` records *how* each tag resolved - `Exact`, `Renamed` or
+`Absent` - so a filename match is never confused with a rule applied on top. **68 of
+the 82 have audio; all 14 music tags have none**, and there is no Ogg, MP3 or module
+file anywhere in the archive. If you extend this, that is the thing to know first.
+
+Two rules are recovered rather than chosen:
+
+- **A match does not make a noise.** `FUN_0047AE80` switches on the cascade counter
+  and *skips the sound for the first two values*, so step 1 is silent, step 2 plays
+  `snd_cascade1`, and seven or more keeps `snd_cascade6`. A port that gave every
+  match a noise would look and behave almost identically and nothing in a screenshot
+  would show it.
+- **A sound already sounding is not restarted.** That matters more than it sounds: a
+  cascade emits several `ManaGained` events in quick succession, and without the rule
+  each one cuts the last off and restarts it, which is a click rather than a sound.
+
+Heroic effort plays **two** sounds, the voice line then the effect, which is why
+the event-to-sound mapping returns a list rather than a tag.
+
+One deliberate divergence: the original compares against a single global "currently
+playing" sound, so two sounds never overlap from this path. Here each tag has its
+own channel, so a cascade rumbles *under* the damage numbers instead of replacing
+them. Which sound a *spell* plays is a guess, and is recorded as one - see
+`port.spell_sound_is_guessed`.
+
+Audio is silent by construction: no device, no extracted bank, or an unknown tag
+all mean "play nothing", never an error. The demo line reports how many sounds were
+started, because otherwise "is it wired up" has no observable answer.
+
+### Gems move
+
+`Battle.on_event` narrates what happened; it cannot animate, because an event is a
+fact and a falling gem needs the board on either side of the change. So there is a
+second observer. `Battle.step` carries the boards:
+
+| step | carries |
+| --- | --- |
+| `Swapped` | the board before, the board after, and the two cells |
+| `Cascaded` | `before` (what you were looking at), `cleared` (matches gone, gaps open), `after` (gravity and refill), and the runs |
+
+`Battle.on_step` hands those over at the three points that produce them. It is one
+optional field, it defaults to `None`, and `test_battle` asserts that a watched
+battle and an unwatched one produce identical logs - so this is instrumentation
+rather than a change to the fight.
+
+The part that took a second pass is pacing. `Battle` resolves a whole turn
+synchronously, so all six steps of a cascade arrive back to back while nothing is
+drawing; queueing them means the board is already final by the time anything is
+shown, and the player watches the board rewind through states it has already been
+in. So the front end **blocks in `on_step` until the animation it just queued has
+finished**. The engine is single-threaded and has no clock, so the only thing that
+can happen meanwhile is that no further steps are produced - which is the point.
+
+What that buys, all driven off the snapshots rather than off a timeline:
+
+- **Swap slide** - the two gems cross, in one 0.13s phase, on both axes.
+- **Match pop** - only the matched gems shrink and fade. The fade is per gem, not
+  per frame; one alpha for the whole board would dim the stationary board too, which
+  reads as the board flashing.
+- **Cascade fall** - gems pair off **bottom-up within a column**, which is what
+  gravity does to a column, and newcomers drop in from above row 0. The board clips
+  them: a scissor rides on each draw batch, because the vertex batcher does not draw
+  when you push.
+
+The durations (0.14s pop, 0.18s fall, 0.13s slide) are ours - nothing in the port
+knows the original's timing table. The pairing is what `test_gfx_anim` pins hardest,
+because a fall that pairs every gem with *something* still looks plausible and still
+teleports the wrong ones.
+
+```sh
+dune exec bin/pq_play_gfx.exe -- --demo 6 --pace          # play 6 turns, animated, then exit
+dune exec bin/pq_play_gfx.exe -- --demo 6 --shot-at 0.2 --shot fall.ppm
+```
+
+`--pace` plays a demo through the same blocking loop the interactive game uses, so
+the paced path can be exercised without a keyboard, and reports how many animation
+frames it drew. `--shot-at T` stops inside the first phase, which is how a fall gets
+looked at.
 
 ### Decoration comes from the game's own registry
 

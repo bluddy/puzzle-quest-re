@@ -1142,6 +1142,126 @@ claims:
       archive's 63 JPGs are backgrounds and none are needed for a board. That was
       true and it left the one image the screen is mostly made of unreadable.
 
+  - id: sound.registry_and_bank
+    title: The registry names 82 sounds, 68 of which have audio; every music tag has none
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: sound_pass
+    summary: >
+      `Assets/Assets.xml` has a third section after `<Bitmap>` and `<BitmapImage>`:
+      82 `<Sound tag="snd_*" type="interface|music" priority fade>` entries. The tag
+      is what `Engine_PLAY_SOUND_4b38a0` is handed, so the port addresses sounds by
+      tag rather than by filename.
+
+      **The tag does not give the filename**, which is the thing worth recording.
+      Most are `snd_<stem>` for a `<Stem>.wav` - `snd_damage` is `Damage.wav` - but
+      the four element sounds carry a `Mana` suffix (`snd_earth` is `EarthMana.wav`),
+      the buttons are `ButtonDown`/`ButtonUp`, three interface sounds are named after
+      what they are (`snd_illegal` is `IllegalMove.wav`), and the voice lines sit in
+      a per-language directory behind a `V` prefix with **the tag and the file
+      disagreeing**: `snd_voice_victory` is `VVictorious.wav`. So the mapping is a
+      convention with exceptions, and `lib/skin_data.ml` records *how* each tag was
+      resolved - `Exact`, `Renamed`, or `Absent` - so a reader can tell a filename
+      match from a rule applied on top.
+
+      **Every `music_*` tag has no audio behind it in this archive.** There are no
+      Ogg, MP3 or module files at all; the 83 WAVs are the whole bank. A music player
+      written against this registry would find that out at runtime, which is the
+      argument for checking rather than assuming.
+
+      Voice lines ship three times over, once per language - `English/Sounds`,
+      `French/Sounds`, `German/Sounds` - which is why there are more voice files than
+      voice tags. The generator resolves one language and says which.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Assets.xml
+        quote: '<Sound tag="snd_buttdown" precache="1" cache="cachelocked" type="interface" priority="6" fade="0">'
+      - kind: xml
+        ref: game/Assets.zip!Assets/Assets.xml
+        note: 82 Sound entries, 30 of them music
+      - kind: binary
+        ref: game/Assets.zip
+      - kind: binary
+        ref: game/Assets.zip
+        note: 'snd_voice_victory resolves here, and the names do not match'
+    affects: [lib/skin_data.ml, gfx/audio.ml, gfx/sound_map.ml, tools/extract_skin_data.py, tools/extract_gfx_assets.py]
+    notes: >
+      Sound banks are extracted preserving their directory layout rather than
+      flattened, because the generated table holds those paths verbatim - flattening
+      would make the table wrong rather than merely untidy.
+
+      `type="music"` is a real distinction in the registry and not a comment: all 14
+      music tags are `Absent`, all 68 playable ones are `interface`.
+
+  - id: sound.cascade_sound_per_step
+    title: A match does not make a noise - the first cascade step is silent and the sound climbs to a ceiling
+    area: render
+    verdict: presentation
+    status: recovered
+    confidence: high
+    audited: true
+    source_pass: sound_pass
+    summary: >
+      `FUN_0047AE80` - the per-swap cascade function - increments a counter and
+      switches on it to choose a sound, and the first two counter values **skip the
+      sound entirely**:
+
+      ```c
+      counter = read_dword(param_1 + 0x3c8) + 1;
+      write_dword(param_1 + 0x3c8, counter);
+      switch (counter) {
+        case 0:
+        case 1: goto skip;                  // silent
+        case 2: pwVar5 = L"snd_cascade1"; break;
+        case 3: pwVar5 = L"snd_cascade2"; break;
+        case 4: pwVar5 = L"snd_cascade3"; break;
+        case 5: pwVar5 = L"snd_cascade4"; break;
+        case 6: pwVar5 = L"snd_cascade5"; break;
+        default: pwVar5 = L"snd_cascade6";
+      }
+      Engine_PLAY_SOUND_4b38a0(pwVar5);
+      ```
+
+      `Battle.MatchResolved` carries that post-increment counter, which starts at 1
+      for the first step, so in practice **step 1 is silent and step 2 plays
+      `snd_cascade1`**. Seven or more keeps `snd_cascade6` rather than running off
+      the end of the table.
+
+      This is the kind of rule that is invisible until it is missing: a port that
+      gave every match a noise would look and behave almost identically, and nothing
+      in a screenshot or a log would show it.
+
+      **Heroic effort plays two sounds, voice then effect**, in the same function:
+      `snd_voice_heroiceffort` and then `snd_heroiceffort`. The battle end does the
+      same shape - `snd_voice_victory` then `snd_victory`. That is why the port's
+      event-to-sound mapping returns a *list*: most events play one, and a mapping
+      that could only express one would have to drop either the voice or the effect.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/mana_burn/Sub_47ae80.c
+        quote: |
+          case 1:
+            goto switchD_0047ae9a_caseD_0;
+          case 2:
+            pwVar5 = L"snd_cascade1";
+        note: the silent arms and the ladder of six
+      - kind: decompiled
+        ref: docs/decompiled/mana_burn/Sub_47ae80.c
+        quote: |
+          Engine_PLAY_SOUND_4b38a0(L"snd_voice_heroiceffort");
+          Engine_PLAY_SOUND_4b38a0(L"snd_heroiceffort");
+        note: heroic effort plays the voice line, then the effect
+    affects: [gfx/sound_map.ml, test/test_gfx_sound_map.ml]
+    notes: >
+      Which sound a *spell* plays is **not** recovered. The registry names six
+      spell sounds - nature, buff, debuff, fire, heal, alter - and the choice depends
+      on what the spell does, which is not in this project. `Sound_map.spell_sound`
+      guesses by whether the spell costs mana and is recorded as a guess; see
+      `port.spell_sound_is_guessed`.
+
   - id: pres.play_sound
     title: PLAY_SOUND looks a named sound up and plays it, skipping one already playing
     area: render
@@ -1947,6 +2067,41 @@ open_questions:
     related: [font.glyph_advance_is_stored, font.glyph_tables_not_parsed_at_runtime]
     status: open
 
+  - id: render.cascade_snapshots
+    question: What is the cheapest honest way to animate a cascade - instrument Board, or replay the log?
+    why_it_matters: >
+      Gems currently teleport. Swap slide and cascade fall need the board as it
+      was between cascade steps, and Battle.on_event reports *that* a step
+      happened without saying what the board looked like afterwards. The engine
+      assigns b.board <- ... in a handful of places, so an observer at each of
+      them would be cheap - but it is instrumentation in code the tests pin, and
+      the alternative (re-deriving intermediate states from the log) can drift
+      from what the engine actually did, which is worse than no animation.
+    would_be_settled_by:
+      - >
+        Deciding whether an observer at each board assignment is worth it, which
+        depends on how the cascades actually look once stepped through.
+    related: [pres.add_text_message]
+    status: refuted
+    resolution: >
+      Neither option: the engine was not instrumented at its board assignments, and
+      the log is not re-read. `Battle.step` carries the boards themselves - a swap's
+      before and after, and for each cascade step the board as the player saw it, the
+      same board with the matches gone and the gaps still open, and the board after
+      gravity and refill - and `Battle.on_step` hands them over at the three points
+      where they are produced.
+
+      Three things made that the cheap option rather than the expensive one. The
+      boards are persistent, so a snapshot is a reference and costs nothing. The
+      match result already carried the run groupings, so the cleared board is the
+      engine's own rather than a reconstruction. And the callback defaults to `None`
+      and is one branch at each of those three points, so `test_battle` can assert
+      that a watched battle and an unwatched one produce byte-identical logs.
+
+      Re-deriving the states from the log was the option that lost: it can only ever
+      guess what the engine did, and a cascade animation that is subtly wrong is
+      worse than no cascade animation. See `port.animate_from_board_snapshots`.
+
   - id: spell.sfba_target_writeback
     question: How does SFBA's SET_INPUT_DATA target reach CastSpell?
     why_it_matters: >
@@ -2053,3 +2208,141 @@ port_decisions:
       "recovered".
     supersedes: null
     date: 2026-10-05
+
+  - id: port.spell_sound_is_guessed
+    decision: A cast plays a spell sound chosen by whether it costs mana
+    rationale: >
+      The registry names six spell sounds - nature, buff, debuff, fire, heal,
+      alter - and which one a spell uses depends on what the spell actually does.
+      That mapping is not recovered, so rather than leave casts silent or invent a
+      plausible-looking table, `Sound_map.spell_sound` picks `snd_spellfire` for a
+      spell that spends mana and `snd_aispell` for one that does not.
+
+      Every tag it can return is a real one, so nothing can come out as a
+      wrong-file-but-plausible noise; the risk is a mismatched category, which is
+      the lesser one. It is one function, and a caller with the real mapping should
+      replace it.
+    supersedes: null
+    date: 2026-10-05
+
+  - id: port.sound_channels_are_per_tag
+    decision: Each sound tag tracks its own mixer channel, rather than one global active sound
+    rationale: >
+      `Engine_PLAY_SOUND_4b38a0` compares the entry against one "currently active"
+      entry held under a global manager, so two different sounds never overlap from
+      this path - a cascade sound and a damage sound would cut each other off.
+
+      The port gives each tag its own channel, so they can sound together. That is a
+      deliberate divergence: it is closer to what the game sounds like, where a
+      cascade rumbles under the damage numbers rather than replacing them. The
+      recovered part - not restarting a sound that is already sounding - is kept per
+      tag, which is what stops a burst of mana events turning into a click.
+    supersedes: null
+    date: 2026-10-05
+
+  - id: port.present_from_the_event_log
+    decision: The presentation layer is driven by Battle.on_event, not by re-reading the log after the fact
+    rationale: >
+      The engine resolves a whole turn internally, so a front end that waits for
+      `take_turn` to return sees every event in that turn at once and replays a
+      burst; one that polls the log misses the order. An optional observer on
+      `Battle.emit` gives the same events in sequence, and `emit` was already the
+      single place an event is recorded, so this is a second call at an existing
+      point rather than a new interposition in the recovered logic.
+
+      `MatchResolved` turned out to be emitted **once per cascade step**, carrying
+      which runs matched, so cascades already arrive individually and the cascade
+      granularity needed no engine change at all. That was not known when this was
+      decided; it is why the change is one optional field rather than an
+      instrumentation layer threaded through `resolve_matches`.
+
+      Defaults to `None`, so every faithful test and the headless runner are
+      unaffected - `test_battle` asserts that an unwatched battle still logs
+      exactly as before.
+
+      Animating gems - swap slide, cascade fall, match pop - needs board snapshots
+      at each cascade step, which this does not provide. That is
+      `port.animate_from_board_snapshots`, decided since.
+    supersedes: null
+    date: 2026-10-05
+
+  - id: port.float_text_mapping_is_ours
+    decision: Which battle events become floating text, and where they sit, is our choice; the placement rule is a port
+    rationale: >
+      The engine's float text is driven by spell scripts calling
+      `ADD_TEXT_MESSAGE`, and a headless battle runs no scripts - the effects are
+      inlined in `spell_effects.ml`. So nothing in the original decides that a
+      `Damage` event shows a red number; that mapping is ours, and is recorded as
+      such rather than presented as recovered.
+
+      What {e is} recovered is everything around it: the positioning is a
+      transcription of `Engine_ADD_TEXT_MESSAGE_415120` (see
+      `pres.float_text_anchors_on_min_corner`), the colours come from the seven
+      `font_msg_*` styles in `<Language>/Font.xml`, and the stack is bounded because
+      the original's message stack is a fixed ring of 60-unit slots.
+
+      The mapping is asserted event by event in `test_gfx_float_text`, including
+      the events that deliberately produce nothing - a turn boundary, a swap, gold,
+      XP - because that boundary is where a headless battle quietly decides what a
+      player sees.
+    supersedes: null
+    date: 2026-10-05
+
+  - id: port.animate_from_board_snapshots
+    decision: Gems are animated from Battle.step board snapshots delivered by a second observer, and each step is played out before the engine continues
+    rationale: >
+      `Battle.on_event` cannot carry this: an event is a fact, and a cascade fall
+      needs the board on either side of the change. `Battle.step` therefore carries
+      the boards - the swap's before and after, and for each cascade step the board
+      as the player saw it, the same board with the matches gone and the gaps still
+      open, and the board after gravity and refill - and `Battle.on_step` hands them
+      over where they are produced rather than at a new interposition in the
+      resolution loop. Keeps the log a log: putting a board inside every event would
+      have made reading the log a rendering concern.
+
+      The second half of the decision is the one that was not obvious. `Battle`
+      resolves a whole turn synchronously, so every step of a six-step cascade
+      arrives back to back while nothing is drawing. Merely queueing them means the
+      board is already final by the time the queue drains, and what the player then
+      watches is the board rewinding through states it already passed through. So
+      the front end blocks in `on_step` until the animation it just queued has
+      finished. That costs nothing: the engine is single-threaded and has no clock,
+      so the only thing that can happen meanwhile is that no further steps are
+      produced, which is the point.
+
+      Each step's events have already been emitted by the time its callback runs -
+      the engine emits the match, the gold and the mana, then mutates and refills -
+      so the message and the sound for a step are up before its gems move. That
+      ordering is the reason the block is in `on_step` and not in the event
+      callback, and `test_battle` pins it: every cascade step must follow the
+      `MatchResolved` carrying its number.
+
+      The durations - a 0.14s pop, a 0.18s fall, a 0.13s slide - are ours, chosen to
+      read as motion rather than recovered; nothing in the port knows the original's
+      timing table. `--pace` plays a demo through the blocking loop so the paced
+      path can be exercised without a keyboard, and `--shot-at` stops inside the
+      first phase for a screenshot of a fall.
+
+  - id: port.animation_geometry_is_ours
+    decision: The scissor rides on the draw run rather than around the pushes, and only the matched gems fade
+    rationale: >
+      Two small things about `Gl`, both of which look like rendering bugs rather
+      than like state management.
+
+      The vertex batcher does not draw when you push: `push_quad` accumulates and
+      `submit` issues every draw at the end of the frame. A scissor enabled around
+      the pushes and disabled straight after is therefore still enabled when
+      `submit` runs, and clips the whole frame; the same pair around `submit` clips
+      nothing. So the rectangle is a field of `Gl.run` and `submit` applies it per
+      batch. It is what confines a gem dropping in from above row 0 to the board
+      instead of painting over the title art - and the scissor box is bottom-up
+      while everything else in the file is top-down, so the y is flipped.
+
+      The pop's fade is carried per gem rather than per frame. One alpha for the
+      frame would dim the stationary board along with the matched three, which
+      reads as the entire board flashing; only the matched gems shrink and fade, and
+      the fall is opaque throughout, because a gem that arrives while fading up
+      looks like it materialised instead of landing. Both are asserted in
+      `test_gfx_anim`.
+    supersedes: null
+    date: 2026-10-06
