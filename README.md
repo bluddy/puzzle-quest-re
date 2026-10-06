@@ -108,6 +108,8 @@ ranked, so there is nothing to keep out of the default.
   * `sound_map.ml`: Which sound an event plays, including the recovered cascade ladder. Pure.
   * `audio.ml`: The mixer, lazy chunk loading, and the recovered do-not-restart rule.
   * `anim.ml`: Board snapshots to gem positions - swap slide, match pop, column fall. Pure.
+  * `fx.ml`: Effect descriptors to sprites - keyframes, emitters, gravity. Pure.
+  * `fx_data.ml`, `spell_fx.ml`: Generated. Which effect a spell asks for, and what that effect is.
   * `gl.ml`: The only file naming `Tgl3`/`Tgles3`; the window, the context and the sprite batcher.
   * `png.ml`: PNG and JPEG to an RGBA bigarray, shared by the sheets and the font atlases.
   * `assets.ml`: The gem sheet's frames, looked up in the registry rather than hardcoded.
@@ -118,7 +120,7 @@ ranked, so there is nothing to keep out of the default.
   * `pq_battle.ml`: Plays a seeded headless battle and prints the trace or a summary.
   * `pq_play_gfx.ml`: The same battle in a window, with a mouse and a HUD.
 * `pq_play.ml`: The same battle with you on the hero's turns.
-* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`, `test_gfx_float_text.ml`, `test_gfx_sound_map.ml`, `test_gfx_anim.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`, `test_gfx_float_text.ml`, `test_gfx_sound_map.ml`, `test_gfx_anim.ml`, `test_spell_fx.ml`, `test_gfx_fx.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
@@ -220,9 +222,11 @@ tables are turned into OCaml separately, and those files *are* committed:
 python tools/extract_fonts.py            # -> lib/font_data.ml
 python tools/extract_skin_data.py        # -> lib/skin_data.ml
 python tools/extract_spell_fx.py         # -> lib/spell_fx.ml
+python tools/extract_fx_data.py          # -> lib/fx_data.ml
 python tools/extract_fonts.py --check    # fail if the committed file is stale
 python tools/extract_skin_data.py --check
 python tools/extract_spell_fx.py --check
+python tools/extract_fx_data.py --check
 ```
 
 Without the atlases the board still runs and the battle is still playable, on flat
@@ -316,8 +320,22 @@ the constant up by spell id and plays what the game plays. See
 `port.spell_fx_follows_the_script`, which supersedes `port.spell_sound_is_guessed`.
 
 The same table names the *picture*: `Std_GetSpellFXAsset` maps 21 constants to effect
-assets, which are keyframed particle descriptors under `Assets/Effects`. Nothing
-plays those yet - `lib/spell_fx.ml` has the names, and the next step is the player.
+assets, and those are keyframed descriptors - 48 of them under `Assets/Effects`, with
+51 particle emitters under `Assets/Particles`. `tools/extract_fx_data.py` turns both
+into `lib/fx_data.ml`, and `gfx/fx.ml` plays them: keyframes ramp per parameter,
+emitters release `release` particles every `interval` up to `max`, particles fall
+under their own gravity, and each one fades between a start and an end size and
+colour once its `start` fraction of life is past.
+
+So a spell's timing is the game's: `SpellHealing` runs for 2.1 seconds because its
+descriptor says so, rather than because this port guessed a duration. `fx.ml` is
+pure, so all of that is asserted in `test_gfx_fx` rather than watched on screen.
+
+Three things it deliberately does not interpret, each recorded rather than papered
+over: `Shape steps` (2 in seven particles), the planar `planes` codes, and
+`AnimPosition`. The five Ring particles - which is what `SpellHealing` actually
+plays - use the last two, so a healing ring is emitted from its centre rather than
+around a ring until the engine's particle code has been read.
 
 Audio is silent by construction: no device, no extracted bank, or an unknown tag
 all mean "play nothing", never an error. The demo line reports how many sounds were

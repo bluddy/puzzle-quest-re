@@ -312,11 +312,33 @@ anything that cost mana) and leaves the picture data addressed but unplayed: the
 effect assets are keyframed particle descriptors in Assets/Effects, each with a
 duration, an Initialize block of parameters and a list of timed Animate steps.
 
-So the timing table this animation lacks is 48 effect descriptors and 59 particle
-descriptors away, and it is data rather than an experiment. The grid form is the part
-that cannot be recovered from the table alone: Std_GridSpellEffect(x,y,...) takes a
-cell the spell body has just chosen, so the cell comes from the ported body and the
-constant comes from the script.
+So the timing table this animation lacked was 48 effect descriptors and 51 particle
+descriptors away, and it was data rather than an experiment. Both are extracted now,
+and `gfx/fx.ml` plays them: keyframes ramp per parameter, emitters release on their
+interval up to their cap, particles fall under their own gravity, and each one fades
+between a start and an end once its `start` fraction of life is past.
+
+Three things that reading taught, all cheaper to find than to guess:
+
+  * **Keyframes ramp *towards* the next one.** Stopping at the first keyframe in the
+    future means a value only changes on the frame its keyframe lands. Almost every
+    spell effect has one keyframe per parameter, so the symptom is "nothing animates
+    smoothly" rather than anything visibly wrong.
+  * **The two directories are not separate.** `Spell0` and `Spell1` are particles
+    reached through the effect API, and `SpellGood` names an effect from a particle
+    child. Names resolve against both.
+  * **One shipped particle file is not well-formed XML.** `NewRuin.xml` carries a
+    stray digit inside a tag. The extractor repairs that one token and says so on
+    stderr every run, because a silently repaired asset is worse than a broken one.
+
+`Shape steps`, the planar `planes` codes and `AnimPosition` are still not
+interpreted - they belong to the engine's particle code. The five Rings use the last
+two, so a healing ring comes out of its centre rather than around a ring until
+somebody reads that code.
+
+The grid form is the part that cannot be recovered from the tables alone:
+`Std_GridSpellEffect(x,y,...)` takes a cell the spell body has just chosen, so the
+cell comes from the ported body and the constant comes from the script.
 
 ## What to reuse from rails
 
@@ -352,6 +374,7 @@ tree.
   gfx/sound_map.ml   which tag an event plays, including the recovered cascade ladder
   gfx/audio.ml       the mixer, lazy chunk loading, do-not-restart
   gfx/anim.ml        board snapshots -> gem positions: slide, pop, column fall
+  gfx/fx.ml          effect descriptors -> sprites: keyframes, emitters, gravity
   lib/spell_fx.ml    generated: which effect and sound each spell asks for
   bin/pq_play_gfx.ml the playable window
 ```
@@ -422,7 +445,7 @@ rather than a measurement mistake.
 | 3c | events and float text - **done**: `Battle.on_event`, messages, bounded stack |
 | 3d | sound - **done**: the registry's 82 tags, lazy mixer, recovered cascade ladder |
 | 3e | animation - **done**: board snapshots, swap slide, match pop, column fall |
-| 3f | spell fx - **half**: the tables and per-spell constants are recovered; the player is not |
+| 3f | spell fx - **done**: the tables, the per-spell constants, the 48 effect and 51 particle descriptors, and a player for them |
 | 4 | `Tgles3` behind `lib/gfx_gl.ml` for Android, one GLSL header switch |
 
 Phase 3 needed no new dependency, which was not obvious when it was written down as

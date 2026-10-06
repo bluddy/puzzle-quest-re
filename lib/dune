@@ -16,6 +16,7 @@
   status_effect_hooks
   font_data
   skin_data
+  fx_data
   ai
   score
   battle

@@ -8,6 +8,6 @@
 ; own stanza because pq_gfx pulls in tsdl and tgls, which the engine tests should
 ; not have to link.
 (tests
-(names test_gfx_layout test_gfx_input test_gfx_assets test_gfx_font_layout test_gfx_float_text test_gfx_sound_map test_gfx_anim
+(names test_gfx_layout test_gfx_input test_gfx_assets test_gfx_font_layout test_gfx_float_text test_gfx_sound_map test_gfx_anim test_gfx_fx
          test_spell_fx)
   (libraries puzzle_quest_lib pq_gfx))
