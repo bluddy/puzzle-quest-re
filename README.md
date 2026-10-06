@@ -344,6 +344,29 @@ decoration is (`bmp_skin_battlemisc` plus a rectangle); its particles are six wh
 six are named by file in the descriptors, so `assets/gfx/Particles/Sparkle.png` is
 found by the same string the archive used.
 
+**Which cell is the part that cannot be looked up.** Eleven spells put an effect on a
+grid cell, and the cell is whatever the spell body had just chosen: a random isolated
+cell for `SBAC`, the aimed cell for `SFOD`, three literals for `SCON`. So the battle
+carries it - `Battle.on_grid_fx` is a third observer, called by the spell body through
+the same primitive the Lua used, and the front end is *told* where rather than working
+it out. Not an event: a log entry is something that happened, and reading the log
+should not require knowing about a sparkle.
+
+Getting that seam in place turned up a bug behind it. An effect context holds the
+board, the gold and the xp as refs, and they are *copies* - `Board` is persistent, so
+`ref b.board` is a fresh cell - while the combatants are shared mutable records. The
+cast path applied gravity and a refill to the battle's board without reading the
+body's back, so **every spell's board edit was silently discarded**, along with its
+gold and xp, while its damage, its mana cost and its status effects all worked. The
+visible half of a cast was fine, which is why it survived: the spell bodies are tested
+against their own board, and the battle tests assert the log and the totals. It was
+found by asking a question the new seam made askable - *is the cell the spell reported
+the cell the board now holds?* - and getting `no`.
+
+What it does not settle is whether a line completed by a spell should then resolve.
+It is now reachable for the first time, and recorded as
+`spell.match_resolution_after_a_spell` rather than guessed at.
+
 Three things it deliberately does not interpret, each recorded rather than papered
 over: `Shape steps` (2 in seven particles), the planar `planes` codes, and
 `AnimPosition`. The five Ring particles - which is what `SpellHealing` actually

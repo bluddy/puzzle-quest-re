@@ -137,6 +137,19 @@ type step =
       runs : (Board.position list * Board.gem) list;
     }
 
+(** A spell's request for an effect on one grid cell: `Std_GridSpellEffect`.
+
+    The cell and the constant are both the spell's, and the caster's name is
+    carried because the effect is aimed at the caster's *side* of the board in the
+    common case - `Std_EnemySpellEffect` aims at the other one - and a front end
+    showing a sparkle needs to know which side that is without also holding the
+    spell table. *)
+type grid_fx = {
+  grid_fx_cell : Board.position;
+  grid_fx_effect : Spell_fx.fx;
+  grid_fx_caster : string;
+}
+
 type battle = {
   rules : rules;
   mutable board : board;  (** 8x8, all rows playable *)
@@ -188,6 +201,22 @@ type battle = {
       Defaults to [None] and costs one branch at each of the three points it is
       called, so an unwatched battle resolves exactly as it did before. *)
   mutable on_step : (battle -> step -> unit) option;
+  (** Called when a spell asks for an effect on a grid cell.
+
+      Thirteen call sites across eleven spells do, and the *cell* is the whole
+      point: it comes from the spell body, which is where the game gets it, so it
+      cannot be recovered from the script's text and cannot be guessed by a front
+      end. Routing it through the battle is what keeps that true - a front end that
+      tried to work out where a sparkle went would be reconstructing the spell's
+      control flow.
+
+      A separate observer rather than an event, for the reason [on_step] is: this is
+      not something that happened, it is something that should be shown. Putting a
+      board cell in every log entry would make reading the log a rendering concern.
+
+      Defaults to [None], and the spell body then does nothing - so a headless
+      battle, and every faithful test, are unaffected. *)
+  mutable on_grid_fx : (grid_fx -> unit) option;
   rng : int -> int;
   (** The three board bonus flags, mutable and shared with the spell effect
       context. [rules.extra_turns_enabled] seeds the first of them; the other two
@@ -574,10 +603,17 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant)
 
 (** The context a [CastSpell] body runs against.
 
-    [fx_board] is a reference to the battle's own cell rather than a copy, which
-    is what lets a spell's board edits survive the call. [fx_gold] and [fx_xp] are
-    likewise shared, because they belong to the battle rather than to either
-    combatant. *)
+    [fx_board], [fx_gold] and [fx_xp] are boxed *copies* of the battle's values, and
+    the caller has to write them back - which [cast_spell] does, and which is worth
+    saying out loud because the alternative reading of a field named [fx_board]
+    holding a [board ref] is that it *is* the battle's board. It is not: [Board] is a
+    persistent value, so [ref b.board] is a fresh cell holding a copy, and a body's
+    [SET_GEM] lands in that cell and nowhere else unless someone reads it back.
+
+    The combatants are the other way round. [fx_caster] and the defender are the
+    battle's own mutable records, so mana, life and status effects survive a call
+    with no write-back - and that asymmetry is why the missing write-back was
+    invisible for so long: the half of a cast that a player notices worked. *)
 let effect_context (b : battle) (actor : combatant) (defender : combatant)
     (s : Spell.spell) (p : int) : Spell.effect_context =
   { Spell.fx_caster = actor
@@ -592,6 +628,13 @@ let effect_context (b : battle) (actor : combatant) (defender : combatant)
   ; Spell.fx_flags = b.multipliers
   ; Spell.fx_spell = Some s
   ; Spell.fx_percentile = p
+  ; Spell.fx_grid_effect =
+      (match b.on_grid_fx with
+      | None -> None
+      | Some f ->
+          Some
+            (fun cell fx ->
+              f { grid_fx_cell = cell; grid_fx_effect = fx; grid_fx_caster = actor.Combat.name }))
   }
 
 (** One turn for the acting side: at most one spell, then a swap only if the
@@ -662,16 +705,28 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
            [cost_charged] and suppresses the charge below. Paying first would
            charge those twice - [SIST] costs 60 mana, and 120 is not a number the
            game could intend. *)
-        (match s.Spell.cast_spell with
-        | Some f ->
-            let fx = effect_context b actor defender s percentile in
-            f fx;
-            (* A board sweep empties cells; the board has to resolve them before
-               the next move or the grid is left short of gems. *)
-            b.board <- Board.apply_gravity b.board;
-            b.board <- Board.refill_board ~rng:b.rng b.board;
-            if actor.is_dead then emit b (Death actor.name)
-        | None -> ());
+         (match s.Spell.cast_spell with
+         | Some f ->
+             let fx = effect_context b actor defender s percentile in
+             f fx;
+             (* The body's writes go through three boxed values, and nothing else
+                picks them up: the board it edited, and the battle's gold and xp
+                totals. A combatant is a mutable record, so mana and life survive on
+                their own - which is precisely why this stayed hidden: the visible
+                half of every cast worked.
+
+                Read back *before* the sweep below, or the gravity and refill run on
+                the board as it was before the spell and every cell the spell edited
+                is thrown away. *)
+             b.board <- !(fx.Spell.fx_board);
+             b.gold <- !(fx.Spell.fx_gold);
+             b.xp <- !(fx.Spell.fx_xp);
+             (* A board sweep empties cells; the board has to resolve them before
+                the next move or the grid is left short of gems. *)
+             b.board <- Board.apply_gravity b.board;
+             b.board <- Board.refill_board ~rng:b.rng b.board;
+             if actor.is_dead then emit b (Death actor.name)
+         | None -> ());
         (* Charged last, and only if the body did not charge itself. See
            [Spell_effects.handle_spell_cost]. The free-spell latch suppresses it
            the same way. *)
@@ -760,6 +815,7 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
        headless runner rely on. See [Battle.on_event]. *)
     on_event = None;
     on_step = None;
+    on_grid_fx = None;
     rng;
     multipliers =
       { Spell.wildcard_chance = true

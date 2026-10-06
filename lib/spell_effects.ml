@@ -189,6 +189,27 @@ let aimed_at (fx : effect_context) : (int * int) option =
   | None -> None
   | Some p -> Some (p.Board.x, p.Board.y)
 
+(** [Std_GridSpellEffect(x, y, typ, useSound)]: the sparkle on one cell.
+
+    The one primitive here that is purely cosmetic, and the only reason this module
+    needs a callback at all. `ADD_EFFECT_TO_GRID` was audited as computing the
+    cell's pixel coordinates and making one effect call, touching nothing the
+    simulation reads - so calling it changes nothing about the battle, which is what
+    makes putting it back safe.
+
+    The constant is passed as written rather than resolved to a file name, because
+    resolving it is the front end's business: `lib/spell_fx.ml` is the transcription
+    of the table the helper itself consults, and a name this module invented would
+    be a second place to be wrong.
+
+    Thirteen call sites across eleven spells ask for one, and four of them ask for it
+    *without* a sound - which the event mapping already knows, so [useSound] is not
+    carried here. *)
+let grid_spell_effect (fx : effect_context) (x : int) (y : int) (typ : Spell_fx.fx) : unit =
+  match fx.fx_grid_effect with
+  | None -> ()
+  | Some f -> f { Board.x; y } typ
+
 (** The grid utilities from [Assets/Scripts/GridUtilities.lua].
 
     These are Lua, not engine natives, and they are the layer the spell bodies are
@@ -606,7 +627,9 @@ let effect_sthr fx =
   handle_spell_cost fx;
   set_multiplier_effects fx false;
   (match fx.fx_input with
-  | Some p -> fx.fx_board := Board.set_gem p Board.Empty !(fx.fx_board)
+  | Some p ->
+      fx.fx_board := Board.set_gem p Board.Empty !(fx.fx_board);
+      grid_spell_effect fx p.Board.x p.Board.y Spell_fx.War
   | None -> ());
   set_multiplier_effects fx true
 
@@ -638,7 +661,10 @@ let effect_sspa fx =
           if in_bounds && not is_centre then
             fx.fx_board := Board.set_gem { Board.x; y } Board.Empty !(fx.fx_board)
         done
-      done);
+      done;
+      (* The script passes the loop's leftover x and y, not the input, which puts it
+         on the cell after the aimed one in its own numbering - the same cell. *)
+      grid_spell_effect fx c.Board.x c.Board.y Spell_fx.Spin);
   set_multiplier_effects fx true
 
 (** SBSG: charge itself, then detonate a random cell. A 3x3 blast, so the effect
@@ -648,7 +674,8 @@ let effect_sbsg fx =
   let x, y = random_grid fx in
   set_multiplier_effects fx false;
   explode_gem fx x y;
-  set_multiplier_effects fx true
+  set_multiplier_effects fx true;
+  grid_spell_effect fx x y Spell_fx.Fireball
 
 (** SHGO: charge itself, then take one random cell and pay out according to what
     was in it. The reward table is a flat switch on the gem kind, and the amounts
@@ -678,6 +705,7 @@ let effect_shgo fx =
   handle_spell_cost fx;
   let amt = 20 in
   let x, y = random_grid fx in
+  grid_spell_effect fx x y Spell_fx.Fireball;
   let b = !(fx.fx_board) in
   let taken = Board.get_gem b { Board.x; y } in
   set_multiplier_effects fx false;
@@ -932,6 +960,7 @@ let effect_ssho fx =
   match fx.fx_enemies with
   | [] -> ()
   | e :: _ ->
+      grid_spell_effect fx 3 3 Spell_fx.Fear;
       add_mana e Earth (Combat.mana e Earth);
       List.iter (fun el -> subtract_mana e el (Combat.mana e el / 2)) [ Fire; Air; Water ]
 
@@ -1499,7 +1528,12 @@ let effect_scon fx =
   | None -> ()
   | Some c ->
       let typ = Board.get_gem !(fx.fx_board) c in
-      rewrite_all ~from_want:typ ~to_want:gem_fire fx
+      rewrite_all ~from_want:typ ~to_want:gem_fire fx;
+      (* Three fixed cells, not the aimed one - the script spells them out. Its grid
+         counts from one, so these are (2,2), (5,3) and (3,5) there. *)
+      grid_spell_effect fx 1 1 Spell_fx.Fireball;
+      grid_spell_effect fx 4 2 Spell_fx.Fireball;
+      grid_spell_effect fx 2 4 Spell_fx.Fireball
 
 (** SPRO: the same shape, but the replacement is gem id 6, which is the experience
     gem. The Lua spells it numerically because there is no [GEM_XP] constant. *)
@@ -1629,8 +1663,10 @@ let effect_swtd fx =
   let n = Combat.mana fx.fx_caster Earth / 5 in
   for _ = 1 to n do
     let x, y = random_grid_type ~want:Board.Skull fx in
-    if Board.equal_gem (Board.get_gem !(fx.fx_board) { Board.x; y }) Board.Skull then
-      fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board)
+    if Board.equal_gem (Board.get_gem !(fx.fx_board) { Board.x; y }) Board.Skull then begin
+      fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board);
+      grid_spell_effect fx x y Spell_fx.Necro
+    end
   done
 
 (** ------------------------------------------------------------------ *)
@@ -1831,6 +1867,7 @@ let effect_shbt fx =
     together in one loop over the enemies. *)
 let effect_sstu fx =
   let damage = 5 + (Combat.mana fx.fx_caster Fire / 8) in
+  grid_spell_effect fx 3 3 Spell_fx.Stone;
   List.iter
     (fun e ->
       miss_turns e 2;
@@ -2040,6 +2077,7 @@ let effect_swmg fx =
     let x, y = random_grid fx in
     if not (is_wildcard (Board.get_gem !(fx.fx_board) { Board.x = x; y })) then begin
       decr amt;
+      grid_spell_effect fx x y Spell_fx.Chaos;
       let my_gem = Board.Wildcard (2 + (fx.fx_roll 7)) in
       fx.fx_board := Board.set_gem { Board.x = x; y } my_gem !(fx.fx_board)
     end;
@@ -2059,12 +2097,15 @@ let effect_swmg fx =
 let effect_sbac fx =
   let x, y = random_grid_isolated2 ~a:Board.Skull ~b:Board.RedSkull fx in
   fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board);
+  grid_spell_effect fx x y Spell_fx.War;
   if Combat.mana fx.fx_caster Fire >= 15 then extra_turn fx.fx_caster
 
 (** [SFOD]: turn the aimed cell into a red skull. *)
 let effect_sfod fx =
   match aimed_at fx with
-  | Some (x, y) -> fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board)
+  | Some (x, y) ->
+      fx.fx_board := Board.set_gem { Board.x; y } Board.RedSkull !(fx.fx_board);
+      grid_spell_effect fx x y Spell_fx.Necro
   | None -> ()
 
 (** [MISS_TURNS(idx, 0)] is a removal, not a no-op: the other [MISS_TURNS] bodies

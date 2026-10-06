@@ -35,7 +35,8 @@ let caster ?(mana = zero_mana) ?(life = 100) () =
 
 let foe ?(mana = zero_mana) ?(life = 100) () = make_combatant ~mana ~life ~max_life:100 1 "foe"
 
-let fx ?(spell = None) ?(percentile = 0) ?(input = None) ?(roll = fun n -> if n <= 0 then 0 else 0 mod n) ~caster ~foe (board : board ref) =
+let fx ?(spell = None) ?(percentile = 0) ?(input = None) ?(grid_effect = None)
+    ?(roll = fun n -> if n <= 0 then 0 else 0 mod n) ~caster ~foe (board : board ref) =
   { Spell.fx_caster = caster
   ; Spell.fx_enemies = [ foe ]
   ; Spell.fx_board = board
@@ -48,6 +49,7 @@ let fx ?(spell = None) ?(percentile = 0) ?(input = None) ?(roll = fun n -> if n 
   ; Spell.fx_flags = Spell.default_multiplier_flags
   ; Spell.fx_spell = spell
   ; Spell.fx_percentile = percentile
+  ; Spell.fx_grid_effect = grid_effect
   }
 
 (** Runs a ported effect by id. Fails loudly rather than silently skipping: a
@@ -55,14 +57,14 @@ let fx ?(spell = None) ?(percentile = 0) ?(input = None) ?(roll = fun n -> if n 
 
     [?spell] supplies the descriptor for the bodies that charge themselves, since
     [HANDLE_SPELL_COST] reads the caster's own costs off it. *)
-let rec run ?(spell = None) id ~caster:c ~foe:f (b : board ref) : unit =
-  ignore (run_ctx ~spell id ~caster:c ~foe:f b)
+let rec run ?(spell = None) ?(grid_effect = None) id ~caster:c ~foe:f (b : board ref) : unit =
+  ignore (run_ctx ~spell ?grid_effect id ~caster:c ~foe:f b)
 
-and run_ctx ?(spell = None) id ~caster:c ~foe:f (b : board ref) =
+and run_ctx ?(spell = None) ?(grid_effect = None) id ~caster:c ~foe:f (b : board ref) =
   match Spell_effects.effect_of id with
   | None -> failwith ("no ported effect for " ^ id)
   | Some g ->
-      let ctx = fx ~spell ~caster:c ~foe:f b in
+      let ctx = fx ~spell ?grid_effect ~caster:c ~foe:f b in
       g ctx;
       ctx
 
@@ -1544,6 +1546,127 @@ let () =
   Spell_effects.effect_sstl
     (fx ~roll:(fun _ -> 0) ~caster:c2 ~foe:rich (solid_board ()));
   check "SSTL caps the haul at 25" (rich.Combat.gold = 75 && c2.Combat.gold = 25)
+
+(* ------------------------------------------------------- grid effects -- *)
+
+(** The thirteen Std_GridSpellEffect call sites, and where each one lands.
+
+    The cell is the point of the whole thing: it comes from the spell body, because
+    that is where the game gets it. So these assert the *cell*, not merely that
+    something was asked for - a sparkle in the right place on the wrong cell is
+    indistinguishable from a correct one in a screenshot of a busy board. *)
+let grid_calls ?input ?(mana = zero_mana)
+    ?(roll = fun n -> if n <= 0 then 0 else 0 mod n) id b =
+  let seen = ref [] in
+  let sink cell (f : Spell_fx.fx) = seen := (cell, f) :: !seen in
+  (match Spell_effects.effect_of id with
+  | None -> failwith ("no ported effect for " ^ id)
+  | Some g ->
+      g (fx ?input ~grid_effect:(Some sink) ~roll ~caster:(caster ~mana ()) ~foe:(foe ()) b));
+  List.rev !seen
+
+let empty_board () = ref (Board.of_array_matrix (Array.init 8 (fun _ -> Array.init 8 (fun _ -> Board.Mana Board.Earth))))
+
+let () =
+  (* SBAC: a war effect on the cell it just put a red skull on. The cell comes from
+     GetRandomGrid_Isolated2, and with a roll of zero it is the first one offered. *)
+  let b = empty_board () in
+  check "SBAC asks for one effect" (List.length (grid_calls "SBAC" b) = 1);
+  (match grid_calls "SBAC" b with
+  | [ (c, fx) ] ->
+      check "and it is a war effect" (fx = Spell_fx.War);
+      check "on the cell the red skull went to"
+        (Board.get_gem !b c = Board.RedSkull)
+  | _ -> check "and it is a war effect" false);
+  (* SWTD: one per skull turned, and silent - the sound is the event mapping's
+     business, so the constant is all that crosses here. *)
+  let b =
+    ref (Board.of_array_matrix
+           (Array.init 8 (fun y ->
+                Array.init 8 (fun x -> if y = 0 && x < 3 then Board.Skull else Board.Mana Board.Earth))))
+  in
+  (* SWTD converts one skull per five Earth, so the caster needs some to convert
+     any at all - with an empty pool the loop never runs and asks for nothing. *)
+  let with_earth : Combat.mana = { Combat.zero_mana with Combat.earth = 15 } in
+  (* The roll has to walk the skull row rather than be pinned. GetRandomGrid draws
+     two coordinates and GetRandomGrid_Type keeps drawing until it lands on the
+     kind it wants, so a roll pinned at zero offers the same cell every iteration and
+     the spell converts it once and then finds it already red.
+
+     This one alternates: odd draws keep y on row 0, even draws walk x along it.
+     The parity is that way round because 
+andom_grid is a tuple and OCaml
+     evaluates tuple components right to left - which is worth a comment because
+     getting it the other way round produces a plausible-looking test that never
+     sees the second cell. *)
+  let n = ref 0 in
+  let roll _k = incr n; if !n mod 2 = 0 then (!n / 2) mod 3 else 0 in
+  let calls = grid_calls ~mana:with_earth ~roll "SWTD" b in
+  check "SWTD asks for one effect per skull it turns" (List.length calls = 3);
+  check "and every one of them is necro"
+    (List.for_all (fun (_, fx) -> fx = Spell_fx.Necro) calls);
+  check "each on a cell that now holds a red skull"
+    (List.for_all (fun (c, _) -> Board.get_gem !b c = Board.RedSkull) calls);
+  (* SFOD and STHR take the aimed cell from the input, not from anywhere else. *)
+  let aimed = Some { Board.x = 5; y = 2 } in
+  let b = empty_board () in
+  check "SFOD puts its effect on the cell it was aimed at"
+    (match grid_calls "SFOD" ~input:aimed b with
+    | [ (c, fx) ] -> fx = Spell_fx.Necro && c = { Board.x = 5; y = 2 }
+    | _ -> false);
+  let b = empty_board () in
+  check "STHR puts its effect on the cell it emptied"
+    (match grid_calls "STHR" ~input:aimed b with
+    | [ (c, fx) ] -> fx = Spell_fx.War && c = { Board.x = 5; y = 2 }
+    | _ -> false);
+  (* SCON's three cells are literal in the script and are *not* the aimed one. Its
+     grid counts from one, so (2,2), (5,3) and (3,5) are (1,1), (4,2) and (2,4). *)
+  let b = empty_board () in
+  let calls = grid_calls "SCON" ~input:(Some { Board.x = 0; y = 0 }) b in
+  check "SCON asks for three" (List.length calls = 3);
+  check "on the three cells its script spells out, in order"
+    (calls
+    = List.map
+        (fun (x, y) -> ({ Board.x; y }, Spell_fx.Fireball))
+        [ (1, 1); (4, 2); (2, 4) ]);
+  (* SSHO and SSTU also use a literal cell, (4,4) in a grid that counts from one. *)
+  let b = empty_board () in
+  check "SSHO uses the middle of the board"
+    (match grid_calls "SSHO" b with
+    | [ (c, fx) ] -> fx = Spell_fx.Fear && c = { Board.x = 3; y = 3 }
+    | _ -> false);
+  let b = empty_board () in
+  check "and SSTU the same one"
+    (match grid_calls "SSTU" b with
+    | [ (c, fx) ] -> fx = Spell_fx.Stone && c = { Board.x = 3; y = 3 }
+    | _ -> false);
+  (* SSPA passes the loop's leftover x and y, which in the script's numbering is the
+     cell after the aimed one - the same cell in ours. So the effect lands on the
+     target, which is worth pinning because it is a quirk rather than an intent. *)
+  let b = empty_board () in
+  check "SSPA lands on the cell it was aimed at, despite the script's leftover loop"
+    (match grid_calls "SSPA" ~input:aimed b with
+    | [ (c, fx) ] -> fx = Spell_fx.Spin && c = { Board.x = 5; y = 2 }
+    | _ -> false);
+  (* SHGO and SBSG take a random cell; the roll of zero makes it the first one, so
+     the check is that the effect and the cell the spell touched agree. *)
+  let b = empty_board () in
+  check "SHGO's effect is on the cell it destroyed"
+    (match grid_calls "SHGO" b with
+    | [ (c, fx) ] -> fx = Spell_fx.Fireball && Board.get_gem !b c = Board.Empty
+    | _ -> false);
+  let b = empty_board () in
+  check "and SBSG asks for a fireball effect too"
+    (match grid_calls "SBSG" b with
+    | [ (_, fx) ] -> fx = Spell_fx.Fireball
+    | _ -> false)
+
+let () =
+  (* And the absent case, which is the one a headless battle runs: no callback, no
+     error, and the mechanic unchanged. *)
+  let b = empty_board () in
+  run "SBAC" ~caster:(caster ()) ~foe:(foe ()) b;
+  check "a spell still works with no observer attached" (count_of !b RedSkull >= 1)
 
 let () =
   if !failures = 0 then print_endline "All spell effect tests passed."

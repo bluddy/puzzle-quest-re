@@ -199,6 +199,21 @@ and effect_context = {
       picks which pool to drain from it, so a different draw would have the spell
       drain a different element than the one it advertised. *)
   fx_percentile : int;
+  (** Called where the spell script calls [Std_GridSpellEffect(x, y, typ, useSound)].
+
+      Dropped in the first port because it is cosmetic, and this is where it comes
+      back: as a callback carrying the cell and the constant, so that the *battle*
+      decides which cell rather than the front end guessing it. [ADD_EFFECT_TO_GRID]
+      was audited as a sparkle on one cell and nothing else, so this cannot change
+      the simulation - which is the property [port.presentation_dropped] relies on
+      and the reason putting it back is safe.
+
+      [None] by default, and a spell body that calls it with none does nothing, so a
+      headless battle is unaffected. The `useSound` argument is *not* carried: the
+      sound for a cast is already decided by the event-to-sound mapping from the
+      script, which knows the flag, and passing it twice is how the two would
+      disagree. *)
+  fx_grid_effect : (Board.position -> Spell_fx.fx -> unit) option;
 }
 
 let total_cost (s : spell) =

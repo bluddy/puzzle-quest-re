@@ -197,7 +197,14 @@ let skill n =
 
 let spell_of id = Spell_data.descriptor_of id |> Option.map (fun (d : Spell.descriptor) -> Spell.spell_of_descriptor d ~name:d.id ())
 
-let demo_spells = List.filter_map spell_of [ "SBAC"; "SBAV"; "SBNA"; "SBRA" ]
+(* SHGO is in this list for a reason that is only visible in the demo line: it is
+   one of the eleven spells that puts an effect on a *grid cell*, and unlike SBAC -
+   which is also in the list, and was there first - its AI hook asks for a real
+   chance of being cast. A demo list made only of zero-chance spells never
+   exercises the grid-effect path, and a path that never runs is
+   indistinguishable from a path that is broken. *)
+let demo_spells =
+  List.filter_map spell_of [ "SBAC"; "SBAV"; "SBNA"; "SBRA"; "SHGO"; "SBSG" ]
 
 let fresh_board rng =
   let gems =
@@ -687,6 +694,42 @@ let choose_swap (_legal : Board.swap list) : Board.swap option =
   in
   ask ()
 
+(** How many grid effects this process has been asked for.
+
+    Reported with the demo line, and in a demo it reads zero - which is the game's
+    AI rather than a broken wire. Four of the eleven spells that put an effect on a
+    cell ask for `Std_AISpellcastingChance(0)`, and the rest are gated behind the
+    rule that the AI only casts when the board is worth 30 points or less, so a
+    six-turn demo almost always just plays moves.
+
+    It is printed anyway, for the reason the sound counter is: "wired up but never
+    reached" and "not wired up" look identical from the outside, and a number that
+    says which is cheaper than finding out by eye. The path itself is proven by
+    `test_battle`, which drives one through the human hook where the choice is
+    scripted rather than probabilistic. *)
+let grid_fx_played = ref 0
+
+(** A spell asked for an effect on one grid cell.
+
+    The cell comes from the spell body - the game gets it there too - so this does
+    not work out where the sparkle went, it is told. The constant names the effect,
+    through the same table `lib/spell_fx.ml` was transcribed from, and the caster's
+    name says whose side of the board to aim from.
+
+    Aimed at the middle of the cell rather than its top-left corner, because an
+    effect's own rectangle is centred on its aim point: `dest_x` is negative half
+    its width, so a point at the corner would push the effect down and right by
+    half a sprite. *)
+let on_grid_fx (g : Battle.grid_fx) =
+  incr grid_fx_played;
+  let lay = layout () in
+  let cell = Layout.cell_rect lay g.Battle.grid_fx_cell.Board.x g.Battle.grid_fx_cell.Board.y in
+  let at = { Fx.x = float_of_int (cell.Layout.x + (cell.Layout.w / 2));
+             y = float_of_int (cell.Layout.y + (cell.Layout.h / 2)) } in
+  match Spell_fx.asset_of g.Battle.grid_fx_effect with
+  | None -> ()
+  | Some asset -> ignore (Fx.play (ui ()).fx asset ~at)
+
 (** Called by the battle as each event happens.
 
     This is the whole point of `Battle.on_event`: the engine resolves a turn
@@ -927,6 +970,7 @@ let () =
   b.Battle.on_event <-
     Some (on_battle_event ~pause_ms:(if !shot = "" then 90 else 0));
   b.Battle.on_step <- Some on_battle_step;
+  b.Battle.on_grid_fx <- Some on_grid_fx;
   paced := (!demo_turns = 0 && !shot = "") || !pace;
   (ui ()).b <- Some b;
   if !demo_turns > 0 then begin
@@ -967,13 +1011,14 @@ let () =
           ignore (Fx.advance fx 0.05)
         done);
     Printf.printf
-      "  demo: %d turns, %d events, %d messages live, %d sounds started, %d animation frames, %d effects\n"
+      "  demo: %d turns, %d events, %d messages live, %d sounds started, %d animation frames, %d effects, %d of them on a grid cell\n"
       b.Battle.turns_elapsed
       (List.length (Battle.log_of b))
       (Float_text.count (ui ()).float_text)
       (ui ()).audio.Audio.played
       !drained_frames
-      (Fx.played (ui ()).fx);
+      (Fx.played (ui ()).fx)
+      !grid_fx_played;
     flush stdout
   end;
   (* `--pace` is a smoke run, not a game: the turns are played and animated and then

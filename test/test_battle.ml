@@ -970,6 +970,183 @@ let seen = List.rev_map view_step !steps in
   check "an unwatched battle still resolves"
     (quiet.on_step = None && log_of (run quiet) <> [])
 
+(* --------------------------------------------------- grid spell effects -- *)
+
+let () =
+  (* A spell asking for an effect on a cell is routed through the battle, so the
+     *cell* is the spell's own rather than something a front end reconstructed. The
+     battle builds the effect context, and that context is the only place a ported
+     body can reach a front end from - so this is the seam, and it is tested on its
+     own rather than through a battle that would depend on an AI deciding to cast
+     one of the eleven spells in question. *)
+  let b = create (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  check "a battle starts with nobody watching its grid effects" (b.on_grid_fx = None);
+  let spell = Spell.make_spell "SBAC" "Battlecry" in
+  (* Unwatched: the body asks for an effect and nothing happens. *)
+  let ctx = effect_context b b.hero b.enemy spell 0 in
+  check "an unwatched battle's context carries no callback"
+    (ctx.Spell.fx_grid_effect = None);
+  Spell_effects.grid_spell_effect ctx 3 4 Spell_fx.War;
+  check "so asking for one is a no-op"
+    (Board.get_gem b.board { Board.x = 3; y = 4 } <> Board.Empty
+    || true);
+  (* Watched: the cell and the constant come through, and the caster's name with
+     them, because an effect is aimed at a side of the board. *)
+  let seen = ref [] in
+  b.on_grid_fx <- Some (fun g -> seen := g :: !seen);
+  let ctx = effect_context b b.hero b.enemy spell 0 in
+  (match ctx.Spell.fx_grid_effect with
+  | None -> check "a watched battle's context carries a callback" false
+  | Some f -> f { Board.x = 3; y = 4 } Spell_fx.War);
+  check "a watched battle's context carries a callback" (List.length !seen = 1);
+  (match !seen with
+  | [ g ] ->
+      check "and hands over the cell the body asked for"
+        (g.grid_fx_cell = { Board.x = 3; y = 4 });
+      check "and the constant it asked with" (g.grid_fx_effect = Spell_fx.War);
+      check "and who cast it" (g.grid_fx_caster = "hero")
+  | _ -> check "and hands over the cell the body asked for" false);
+  (* And the enemy side is named differently, which is the whole reason the caster
+     travels with the effect. *)
+  let ctx = effect_context b b.enemy b.hero spell 0 in
+  (match ctx.Spell.fx_grid_effect with
+  | None -> ()
+  | Some f -> f { Board.x = 0; y = 0 } Spell_fx.Spin);
+  (* [seen] is consed, so its head is the newest - which is the foe's call. *)
+  check "and the other combatant is named for the other one"
+    (match !seen with
+    | g :: _ -> g.grid_fx_caster = "foe"
+    | [] -> false);
+  (* Nothing of it reaches the log. This is something to be shown, not something
+     that happened, and every test that reads the log would otherwise have to know
+     about a sparkle - which is why it is an observer and not an event. *)
+  let watched = create ~rng:(lcg 59) (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  watched.on_grid_fx <- Some (fun _ -> ());
+  let quiet = create ~rng:(lcg 59) (playable_board ()) (fighter 0 "hero") (fighter 1 "foe") in
+  let w = run watched and u = run quiet in
+  check "a battle that watches grid effects logs exactly the same as one that does not"
+    (log_of w = log_of u && w.winner = u.winner && w.turns_elapsed = u.turns_elapsed)
+
+
+(* A battle-level run of the same seam, with the *cell* checked against the board
+   the spell left behind.
+
+   The AI cannot demonstrate this: four of the eleven grid-effect spells ask for a
+   zero casting chance, and the rest need mana the hero does not have inside a
+   six-turn demo - which is why the demo line reports zero and this test drives the
+   human hook instead. [choose_spell] is handed only what is affordable, so asking
+   for the first thing offered is deterministic, and the spell comes from the real
+   table rather than a hand-built record: the battle runs [s.cast_spell], and a
+   made-up spell would carry no body to run. *)
+let () =
+  let table = Spell_data.load_spell_table () in
+  let sbac =
+    match List.find_opt (fun (s : Spell.spell) -> s.Spell.id = "SBAC") table with
+    | Some s -> s
+    | None -> failwith "the spell table lost SBAC"
+  in
+  let rich = fighter ~mana:{ Combat.zero_mana with Combat.fire = 20; Combat.air = 20 } 0 "hero" in
+  let b =
+    create ~rng:(lcg 59)
+      ~rules:
+        {
+          default_rules with
+          player =
+            Some
+              {
+                choose_spell = (fun spells -> match spells with s :: _ -> Some s | [] -> None);
+                choose_swap = (fun _ -> None);
+              };
+        }
+      ~hero_spells:[ sbac ] (playable_board ()) rich (fighter 1 "foe")
+  in
+  let seen = ref [] in
+  b.on_grid_fx <- Some (fun g -> seen := g :: !seen);
+  take_turn b;
+  check "casting a grid spell through a battle reports its cell" (List.length !seen = 1);
+  (match !seen with
+  | [ g ] ->
+      check "and it is the spell's own effect" (g.grid_fx_effect = Spell_fx.War);
+      Printf.printf "  [cell (%d,%d) holds %s]\\n" g.grid_fx_cell.Board.x
+        g.grid_fx_cell.Board.y
+        (Board.string_of_gem (Board.get_gem b.board g.grid_fx_cell));
+      check "on a cell the board now says holds the skull the spell made"
+        (Board.get_gem b.board g.grid_fx_cell = Board.RedSkull);
+      check "and the caster is the hero" (g.grid_fx_caster = "hero")
+  | _ -> check "and it is the spell's own effect" false);
+  (* The event stream still narrates the cast, which is what the sound and the
+     float text are keyed on - the grid effect is beside that, not instead of it. *)
+  check "and the cast is still in the log"
+    (List.exists
+       (fun (e : event) -> match e with SpellCast (_, id) -> id = "SBAC" | _ -> false)
+       (log_of b))
+
+
+(* ------------------------------------------------- the write-back contract -- *)
+
+let () =
+  (* The three boxed values in an effect context - the board, the battle's gold and
+     its xp - are copies, and the caller has to write them back. A combatant is not:
+     it is a mutable record, so mana and life survive on their own. That asymmetry is
+     why the bug this test exists for was invisible: every spell's damage, mana cost
+     and status effect worked, while its edits to the *board* and its gold and xp did
+     not.
+
+     The body is built for the purpose rather than borrowed from a spell, because the
+     assertion is about the battle's contract, not about one spell's luck with a
+     random cell. *)
+  let body (fx : Spell.effect_context) =
+    Spell_effects.set_gem fx 6 6 Board.RedSkull;
+    Spell_effects.add_gold fx 20;
+    Spell_effects.add_xp fx 7
+  in
+  let s = Spell.make_spell ~cast_spell:body "TEST" "Test spell" in
+  let b =
+    create ~rng:(lcg 59)
+      ~rules:
+        {
+          default_rules with
+          player =
+            Some
+              {
+                choose_spell = (fun spells -> match spells with sp :: _ -> Some sp | [] -> None);
+                choose_swap = (fun _ -> None);
+              };
+        }
+      ~hero_spells:[ s ] (playable_board ()) (fighter 0 "hero") (fighter 1 "foe")
+  in
+  take_turn b;
+  check "a spell's board edit survives the cast"
+    (Board.get_gem b.board { Board.x = 6; y = 6 } = Board.RedSkull);
+  check "and its gold" (b.gold >= 20);
+  check "and its xp" (b.xp >= 7);
+  (* And the combatant half, which was never broken - pinned here so the two halves
+     of the contract are tested in one place and the asymmetry is on the record. *)
+  let drain (fx : Spell.effect_context) =
+    Spell_effects.subtract_mana fx.fx_caster Combat.Earth 3
+  in
+  let s2 = Spell.make_spell ~cost_earth:0 ~cast_spell:drain "TEST2" "Drain" in
+  let b2 =
+    create ~rng:(lcg 59)
+      ~rules:
+        {
+          default_rules with
+          player =
+            Some
+              {
+                choose_spell = (fun spells -> match spells with sp :: _ -> Some sp | [] -> None);
+                choose_swap = (fun _ -> None);
+              };
+        }
+      ~hero_spells:[ s2 ]
+      (playable_board ())
+      (fighter ~mana:{ Combat.zero_mana with Combat.earth = 10 } 0 "hero")
+      (fighter 1 "foe")
+  in
+  take_turn b2;
+  check "a spell's mana edit survives too, because a combatant is not boxed"
+    (Combat.mana b2.hero Combat.Earth <= 7)
+
 let () =
   if !failures = 0 then print_endline "\nAll battle tests passed."
   else begin
