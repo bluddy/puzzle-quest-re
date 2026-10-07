@@ -1,5 +1,6 @@
 (library
  (name puzzle_quest_lib)
+ (libraries yojson)
  (modules
   board
   item
@@ -22,4 +23,14 @@
   battle
   crypto
   save_file
-  rng))
+  rng
+  campaign_types
+  campaign_map
+  campaign_encounters
+  campaign_quests
+  campaign_items
+  campaign_professions
+  campaign_monsters
+  campaign_conversations
+  campaign
+  campaign_save))
