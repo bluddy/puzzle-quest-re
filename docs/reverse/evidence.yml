@@ -2683,6 +2683,44 @@ claims:
       choice beyond each hook's own board reads remain open - see the
       monster-AI rows in GAPS.
 
+  - id: campaign.encounter_travel
+    title: Encounters answer when the hero moves, and the journey asks on the road
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Every OnQueryAppearance carries the same comment - it is "called when
+      a hero moves to a new location" - so the appearance roll belongs to
+      movement itself, not to some combat prelude. The conditions were
+      already ported (hero level at or above the encounter's my_level, and
+      PERCENTILE_CHANCE at or below its chance); this wires the journey they
+      hang off. begin_travel accepts only a road that exists and is
+      revealed, the same both-endpoints rule the map draws by;
+      advance_travel walks it against the nodes' distance, and arrival is
+      the new location the scripts name. road_encounter asks a road's own
+      list with the appearance roll, once, at departure.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Encounters/EAGO.lua
+        note: OnQueryAppearance - called when a hero moves to a new location
+      - kind: code
+        ref: lib/campaign.ml
+        note: travel_time, begin_travel, advance_travel, road_encounter
+      - kind: code
+        ref: test/test_campaign.ml
+    affects:
+      [lib/campaign.ml]
+    notes: >
+      How fast a hero walks is not recovered: travel time is node_distance
+      itself, already labelled a distance heuristic for travel time, at one
+      unit a tick with no mount modifier - port.travel_model, which also
+      records the departure-time ask and the data-order tie-break when two
+      encounters appear at once. OnQueryDisappearance rides the same moment
+      at 1 percent; a front end that re-asks at every departure inherits it
+      without a second mechanism. The popup and the window drawing the
+      journey are the UI half still open - GAPS, World Map UI.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -3417,5 +3455,26 @@ port_decisions:
       evaluator's hero-level jitter at bands 0 and 1, and with nothing
       recovered about the engine's value the default is the honest one rather
       than a guessed ceiling.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.travel_model
+    decision: >
+      Travel time is node_distance measured in map units at one unit per
+      tick, with no mount or speed modifier. The encounter roll happens
+      once, at departure from a road, against that road's list, and the
+      first encounter that appears in data order is the one that stops the
+      hero.
+    rationale: >
+      Nothing recovered carries a speed: node_distance exists and the file
+      itself calls it a distance heuristic for travel time, so measuring
+      time in the same units keeps the only number the data gives, and
+      mount speed stays a documented gap rather than a guessed constant
+      here. The Lua comments fix when appearance is asked - a move to a new
+      location - but not how often a road is polled while it is being
+      crossed; one ask at departure matches the comment without inventing a
+      polling rate, and a caller that wants a mid-road popup can re-ask
+      every tick of its own choosing. Two encounters active on one road at
+      once has no recovered tie-break, so data order decides.
     supersedes: null
     date: 2026-10-08

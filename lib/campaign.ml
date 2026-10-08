@@ -211,6 +211,52 @@ let encounters_on_road_visible (player: player) (start: string) (end_: string) :
   List.filter (fun e -> check_encounter_appearance player e = Appears) all
 
 (* ------------------------------------------------------------------ *)
+(* The journey step                                                    *)
+(* ------------------------------------------------------------------ *)
+
+(* How long the crossing takes: the file's own distance heuristic, measured
+   in map units. How fast a hero walks those units is not recovered, so one
+   unit passes per tick - a constant speed, no mount modifier (mount speed
+   stays a GAPS quick win). The encounter scripts say when appearance is
+   asked - OnQueryAppearance is "called when a hero moves to a new location"
+   - but not how often a road is polled while it is being crossed, so the
+   port asks once, at departure. Both readings are port.travel_model. *)
+
+let travel_time (from_: string) (to_: string) : float = node_distance from_ to_
+
+let road_exists (start_: string) (end_: string) : bool =
+  Hashtbl.mem road_table (start_, end_)
+
+(* Begin a journey: the road has to be in the graph and revealed - the same
+   both-endpoints rule the map draws by, so a hidden road cannot be walked. *)
+let begin_travel (from_: string) (to_: string) : travel_state option =
+  if road_exists from_ to_ && get_road_visible from_ to_ then
+    Some (Traveling { from_ = from_; to_ = to_; progress = 0.0;
+                      total_time = travel_time from_ to_ })
+  else None
+
+(* One tick of walking: [dt] distance units at the port's one-unit speed.
+   Arrival is a move to a new location - the moment the encounter scripts
+   name - so [AtNode] is where a completed walk lands. The other
+   constructors pass through: a journey step does not interpret the states
+   around it. *)
+let advance_travel (ts: travel_state) (dt: float) : travel_state =
+  match ts with
+  | Traveling t ->
+      let progress = t.progress +. dt in
+      if progress >= t.total_time then AtNode t.to_
+      else Traveling { t with progress }
+  | _ -> ts
+
+(* The encounter waiting on a road, asked once at departure: the road's own
+   list filtered by each script's appearance roll, first active in data order.
+   Nothing recovered says the engine picks between two that appear at once. *)
+let road_encounter (player: player) (start_: string) (end_: string) : encounter option =
+  match encounters_on_road_visible player start_ end_ with
+  | [] -> None
+  | e :: _ -> Some e
+
+(* ------------------------------------------------------------------ *)
 (* Quest logic - ported from Lua quest state machines *)
 (* ------------------------------------------------------------------ *)
 

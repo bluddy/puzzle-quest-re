@@ -88,7 +88,7 @@
 | Gap | Details |
 |-----|---------|
 | Map rendering | No node/road drawing, no hero marker, no fog-of-war overlay |
-| Travel UI | No path selection, no travel animation, no encounter popup |
+| Travel UI | Journey engine ✓ (`begin_travel` / `advance_travel` / `road_encounter`, tested); no path selection, no travel animation, no encounter popup - the window is the rest |
 | City entry | No city screen, no shop UI, no tavern/rumors |
 
 ### 8. City Services UI
@@ -240,5 +240,5 @@ Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters). Pick one:
 
-- **World map SDL2 + travel UI** — the journey step, an encounter popup,
-  and a path to click (priority 7)
+- **Map window (SDL2)** — draw the Map00..33 segments, a path to click,
+  and the encounter popup; the journey engine is in (priority 7)

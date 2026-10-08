@@ -2,17 +2,18 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync closed Known Gap 1 with tests,
-not code. Four areas went from demo-only to asserted: travel primitives
-(node_distance, roads_from_node, the seed city's edge), encounter
-appearance (both extracted conditions - the level gate on synthetic
-chances that make each side certain, and the real goblin's 2 percent
-walked over a thousand rolls), city income (CBAR 100, CDRA 150, no city
-pays nothing), and level-up (the warrior table's thresholds, the
-leveladd fallback, the life gain, the level's spell, one call per
-level). test_campaign is now 159 assertions; the four campaign suites
-total 400. Evidence unchanged at 80 claims / 24 decisions. Build, all
-28 suites and the extractor/validator checks verified green.
+**Sync:** working tree clean. This sync built the journey step. Every
+OnQueryAppearance says it is called when a hero moves to a new
+location, so the engine now has a journey to move through:
+`begin_travel` takes only a road that exists and is revealed (the
+both-endpoints rule), `advance_travel` walks it against `node_distance`
+and lands on `AtNode`, and `road_encounter` asks the road's list with
+the appearance roll once at departure - speed, ask-rate and tie-break
+recorded as `port.travel_model`. The window that draws it and pops the
+encounter is the UI half still open (GAPS, World Map UI). Plus the
+`campaign.encounter_travel` claim. test_campaign is 168 assertions,
+the four campaign suites 409. Build, all 28 suites and the
+extractor/validator checks verified green.
 
 ---
 
@@ -38,7 +39,7 @@ total 400. Evidence unchanged at 80 claims / 24 decisions. Build, all
   `English/*Text.xml` TextLibrary files; `Text_data.text` resolves a tag or returns
   it unchanged. Quest titles, city/item/monster/profession names now render as
   strings (`Family Reunion`, `Bartonia`, `Warrior`) instead of `[TAG]`.
-- **Engine:** Player creation, travel, encounter triggering, city shops/income, level-up
+- **Engine:** Player creation, travel (journey step: begin, advance, arrival, departure encounter roll), encounter triggering, city shops/income, level-up
 - **Quest prerequisites (NEW):** `is_quest_available` checks every extracted condition —
   `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`,
   `item`, `notitem`, `award`, `notaward` — plus level band and not-already-active.
@@ -103,8 +104,8 @@ total 400. Evidence unchanged at 80 claims / 24 decisions. Build, all
   companion pass; `loadout_of_equipment` folds the nine-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (159), `test/test_capture.ml` (57),
-  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 400
+- **Tests:** `test/test_campaign.ml` (168), `test/test_capture.ml` (57),
+  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 409
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -209,8 +210,9 @@ source assets.
    quest lifecycle, the visibility rule, the ruin registry, the save
    round-trip, companion removal and battle setup, and now travel
    primitives, encounter appearance, income and level-up (400 assertions
-   across four campaign suites); the travel journey step has no engine to
-   test yet (world map UI)
+   across four campaign suites); the journey step is tested now too
+   (begin/walk/arrive, departure roll) - drawing it and its popup is the
+   world map UI
 2. **Companion edges** — arrival removal is extracted and run
    (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival
    event to run under, and no travel step calls enter_location yet); the rune's

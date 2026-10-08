@@ -677,7 +677,50 @@ let () =
     (List.exists (fun (r : Campaign_map.road) -> r.Campaign_map.end_ = "WTHR")
        (Campaign.roads_from_node "CBAR"));
   check "a node with no roads returns an empty list, not an exception"
-    (Campaign.roads_from_node "ZZZZ" = [])
+    (Campaign.roads_from_node "ZZZZ" = []);
+
+  (* The journey step: begin only on a revealed road, walk it against the
+     nodes' distance, arrive at the far node - and the departure roll can
+     stop the hero on a road that holds an active encounter. *)
+  Campaign.set_location_visible "CBAR" true;
+  Campaign.set_location_visible "WTHR" true;
+  (match Campaign.begin_travel "CBAR" "WTHR" with
+  | Some (Campaign.Traveling t) ->
+      check "the journey is timed by the nodes' distance"
+        (abs_float (t.total_time -. d) < 1e-9
+         && t.progress = 0.0
+         && t.to_ = "WTHR");
+      check "one tick walks but does not arrive"
+        (match Campaign.advance_travel (Campaign.Traveling t) (d /. 2.) with
+         | Campaign.Traveling t2 ->
+             t2.progress = d /. 2. && t2.to_ = "WTHR"
+         | _ -> false);
+      check "the arrival tick lands on the far node"
+        (match Campaign.advance_travel (Campaign.Traveling t) d with
+         | Campaign.AtNode "WTHR" -> true
+         | _ -> false)
+  | _ -> check "a revealed road opens a journey" false);
+  Campaign.set_location_visible "WTHR" false;
+  check "a journey on a hidden road cannot begin"
+    (Campaign.begin_travel "CBAR" "WTHR" = None);
+  Campaign.set_location_visible "WTHR" true;
+  check "a journey into the void cannot begin"
+    (Campaign.begin_travel "CBAR" "ZZZZ" = None);
+  check "and a step outside traveling changes nothing"
+    (match Campaign.advance_travel (Campaign.AtNode "CBAR") 5.0 with
+     | Campaign.AtNode "CBAR" -> true
+     | _ -> false);
+  let walker = { (fresh ()) with Campaign.level = 1 } in
+  check "a road with no encounter stops nobody"
+    (Campaign.road_encounter walker "CBAR" "WTHR" = None);
+  let rec stopped n =
+    n = 0 || (Campaign.road_encounter walker "CGAL" "WRAR" <> None || stopped (n - 1))
+  in
+  check "the goblin eventually stops a journey out of its road"
+    (stopped 1000);
+  check "a hero under its level is never stopped"
+    (Campaign.road_encounter { walker with Campaign.level = 0 } "CGAL" "WRAR"
+     = None)
 
 let () =
   (* Encounter appearance: the two extracted conditions from OnQueryAppearance
