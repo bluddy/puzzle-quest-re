@@ -450,6 +450,42 @@ let collect_income (player: player) : player =
   | None -> player
 
 (* ------------------------------------------------------------------ *)
+(* City transactions                                                   *)
+(* ------------------------------------------------------------------ *)
+
+(* The shop sells at the registry's own cost: [SHOPMENU_TEXT] says items
+   grey out when they are "too expensive for you to buy", and the only
+   number an item carries is [cost]. Buying does not check the skill the
+   same text mentions for red items - that marking is about {e wearing}
+   the item, and nothing recovered gates the purchase on it; equip stays
+   its own flow. *)
+let buy_item (player: player) (i: item) : player option =
+  if player.gold < i.cost then None
+  else
+    Some
+      { player with
+        gold = player.gold - i.cost;
+        inventory = i :: player.inventory }
+
+(* The tavern's rumors, resolved: every [RUMOR_*_NAME] in the TextLibrary
+   paired with its [RUMOR_*_DESC], in table order. Which tavern tells which
+   rumor first is in no asset, and the player keeps no book of them yet (the
+   INV_RUMORS strings describe one), so this is the raw sequence the window
+   cycles - port.city_services. *)
+let rumors : (string * string) list =
+  List.filter_map
+    (fun (k, v) ->
+      let n = String.length k in
+      if n > 12 && String.sub k 0 7 = "[RUMOR_"
+                && String.sub k (n - 6) 6 = "_NAME]"
+      then
+        match Text_data.lookup (String.sub k 0 (n - 6) ^ "_DESC]") with
+        | Some d -> Some (v, d)
+        | None -> None
+      else None)
+    Text_data.entries
+
+(* ------------------------------------------------------------------ *)
 (* Level up *)
 (* ------------------------------------------------------------------ *)
 

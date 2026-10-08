@@ -109,6 +109,32 @@ let () =
       check "a point geometrically clear of every node hits nothing" false
 
 let () =
+  (* The city panel: ShopMenu's own numbers - title, gold line, seven rows
+     stepping 26 from y=170 with a 22px hit each, and the two buttons. *)
+  check "the title sits where ShopMenu puts it"
+    (City_layout.title_x = 96 && City_layout.title_y = 50);
+  check "the gold line under it"
+    (City_layout.gold_x = 96 && City_layout.gold_y = 115);
+  check "row 0 is ShopMenu's first marker"
+    (City_layout.hit 75 175 = City_layout.Row 0);
+  check "a click at the row's last pixel is still the row"
+    (City_layout.hit 75 191 = City_layout.Row 0);
+  check "row 1 starts after the 26px step"
+    (City_layout.hit 75 196 = City_layout.Row 1);
+  check "the gap between rows is not a row"
+    (City_layout.hit 75 193 = City_layout.Elsewhere);
+  check "the seventh row is the last"
+    (City_layout.hit 75 340 = City_layout.Row 6);
+  check "an eighth row does not exist"
+    (City_layout.hit 75 355 = City_layout.Elsewhere);
+  check "Done leaves" (City_layout.hit 500 420 = City_layout.Leave);
+  check "the mode button tabs" (City_layout.hit 100 420 = City_layout.Tab);
+  check "the panel body is elsewhere"
+    (City_layout.hit 400 100 = City_layout.Elsewhere);
+  check "right of the buttons is elsewhere"
+    (City_layout.hit 1000 420 = City_layout.Elsewhere)
+
+let () =
   if !failures = 0 then print_endline "all map view tests passed"
   else begin
     Printf.printf "%d map view test(s) failed\n" !failures;

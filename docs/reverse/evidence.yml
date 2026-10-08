@@ -2721,6 +2721,60 @@ claims:
       without a second mechanism. The popup and the window drawing the
       journey are the UI half still open - GAPS, World Map UI.
 
+  - id: campaign.city_services
+    title: The shop charges what the item says, the tavern reads the library, spells come from captives
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Three services behind a city click, each with its source in the
+      assets. The shop sells at the item's registry cost - SHOPMENU_TEXT
+      says items grey out when they are "too expensive for you to buy",
+      and the only number an item carries is cost - so buy_item pays that
+      or refuses, and the item joins the inventory; the skill the same
+      text mentions for red items is about wearing, not buying, and equip
+      stays its own flow. The tavern reads the TextLibrary itself: every
+      RUMOR_*_NAME paired with its RUMOR_*_DESC, fifty-five in tag order.
+      And the city's spell list is not for sale at all - LEARNTALLSPELLS
+      says spells come from captives, so the panel shows the list with
+      the research help line rather than a price. The panel's furniture
+      is ShopMenu's own: title, gold line, seven rows stepping 26 pixels
+      from y=170, mode and Done.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: SHOPMENU_TEXT - grey is too expensive; LEARNTALLSPELLS - spells from captives
+      - kind: xml
+        ref: game/Assets.zip!English/StandardRumorsText.xml
+        note: fifty-five rumor NAME/DESC pairs
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/ShopMenu.xml
+        note: the panel geometry - title, gold, buy rows, mode, Done
+      - kind: code
+        ref: lib/campaign.ml
+        note: buy_item and the rumors pairing
+      - kind: code
+        ref: gfx/city_layout.ml
+      - kind: code
+        ref: bin/pq_map_gfx.ml
+        note: the panel - tabs, rows, buy, rumor cycling
+      - kind: code
+        ref: test/test_campaign.ml
+      - kind: code
+        ref: test/test_gfx_map.ml
+    affects:
+      [lib/campaign.ml, gfx/city_layout.ml, bin/pq_map_gfx.ml]
+    notes: >
+      The shop has no sell side and no equip-on-buy (the OFFERTOEQUIP
+      prompt belongs to a flow this port equips through the equipment
+      panel instead). Which rumor a tavern tells first, and the player's
+      book of rumors already heard - the INV_RUMORS strings describe one -
+      are unmodelled; the window cycles all fifty-five in tag order. How
+      far right a buy row was clickable is not on the XML either, only
+      its 22px marker: the 480px span is a choice, and so are the rest of
+      the panel's interactions - port.city_services.
+
   - id: render.world_map_layout
     title: The world map is sixteen 512px segments in a 2048 square the nodes sit on
     area: render
@@ -3544,5 +3598,21 @@ port_decisions:
       the front end's to give - and 120 a second makes the seed city's own
       road about a second long. Visibility reuses the flags the quest and
       save machinery already maintain rather than a second fog.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.city_services
+    decision: >
+      Buying checks only gold against the item's cost - no skill gate, no
+      equip-on-buy, no sell side. The panel reuses ShopMenu's recovered
+      coordinates (title, gold line, seven rows at y=170+26, mode and
+      Done) with a 480-pixel row span; the mode button cycles Shop, Spells
+      and Tavern; the tavern cycles all fifty-five rumors in tag order;
+      and the window opens the panel when you click the city you stand in
+      or arrive at one.
+    rationale: >
+      The only price the assets carry is the item's cost, and
+      SHOPMENU_TEXT's greying is affordability - gating the purchase on      the skill the same text reserves for red items would take a
+      requirement list nothing recovered has, and equip already has its      own flow. ShopMenu's button geometry is drawn in the original and is      recoverable; how far right the clickable row ran is not, so 480 is      the span that holds a name and a price. The rumors have no per-city      mapping and the player keeps no book, so table order is the reading      that needs no invention. Opening on click-where-you-stand matches the      map window's own rule: one click means the thing you are already at.
     supersedes: null
     date: 2026-10-08

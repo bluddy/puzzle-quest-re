@@ -94,10 +94,10 @@
 ### 8. City Services UI
 | Gap | Details |
 |-----|---------|
-| Shop buy/sell | Item list shown in demo; no transaction logic, no gold check, no inventory add |
-| Spell learning | City spells listed; no learn action, no gold/mana cost |
+| Shop buy/sell | ✓ buy: gold checked against the registry cost, deducted, item to inventory (tested); no sell, no equip-on-buy (the OFFERTOEQUIP prompt) |
+| Spell learning | Premise corrected from the assets: spells come from captives (LEARNTALLSPELLS), not gold - the panel shows the city's list with the research help line; captive teaching and the SARC research mini-game remain open |
 | Companion management | No party screen, no equip/unequip companion |
-| Tavern rumors | `Rumors` XML extracted; no rumor display |
+| Tavern rumors | ✓ the window shows and cycles all 55 TextLibrary pairs; no per-city mapping, no "rumors known" book (INV_RUMORS) |
 
 ### 9. Equipment & Inventory
 | Gap | Details |
@@ -157,7 +157,7 @@
 | **5 ✅** | Grid spell targeting | Player aim (click-to-aim) and machine aim (six hook picks) both land; `spell.sfba_target_writeback` settled |
 | **6 ✅** | Monster spell AI + difficulty | Road rosters load; campaign fights compute their band from the levels |
 | **7 ✅** | World map SDL2 + travel UI | `pq_map_gfx`: segments, roads, nodes, hero, click-to-walk, encounter popup |
-| **7** | City UI (shop, spells, tavern) | Completes town loop |
+| **7 ✅** | City UI (shop, spells, tavern) | The panel buys, tabs and reads rumors on ShopMenu's own geometry |
 | **8** | Conversation branching + portraits | Narrative delivery |
 | **8** | Equipment/item effects + mount | Stat progression depth |
 | **9** | Character creation + main menu | Polish for "game" feel |
@@ -182,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`; still to add: monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`, `campaign.city_services`, `port.city_services`; still to add: monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -240,5 +240,5 @@ Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters). Pick one:
 
-- **City screen (SDL2)** — shop, spells and the tavern behind a city
-  click (priority 7)
+- **Conversation UI (SDL2)** — dialogue trees with portraits and
+  choice nodes (priority 8)

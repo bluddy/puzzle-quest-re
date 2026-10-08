@@ -814,6 +814,38 @@ let () =
      = 3)
 
 let () =
+  (* City transactions: the shop charges the registry's cost, takes the gold
+     or refuses, and the tavern's rumors are the TextLibrary's own pairs. *)
+  let p = fresh () in
+  let forsale = List.hd Campaign_items.items in
+  let price = forsale.Campaign_items.cost in
+  let rich = { p with Campaign.gold = price + 5 } in
+  (match Campaign.buy_item rich forsale with
+  | Some bought ->
+      check_int "the gold is paid exactly" bought.Campaign.gold 5;
+      check "the item lands in the inventory"
+        (List.exists
+           (fun (i : Campaign_items.item) ->
+             i.Campaign_items.id = forsale.Campaign_items.id)
+           bought.Campaign.inventory)
+  | None -> check "a rich buyer buys" false);
+  check "one gold piece short is refused"
+    (Campaign.buy_item { p with Campaign.gold = price - 1 } forsale = None);
+  check "and a broke hero's inventory never grows"
+    ((Campaign.buy_item { p with Campaign.gold = 0 } forsale) = None
+     && p.Campaign.inventory = []);
+  check "the tavern has its full fifty-five rumors"
+    (List.length Campaign.rumors = 55);
+  check "every rumor carries both halves"
+    (List.for_all (fun (n, d) -> n <> "" && d <> "") Campaign.rumors);
+  (match Campaign.rumors with
+  | (name, desc) :: _ ->
+      check "the first is the library's first"
+        (name = Text_data.text "[RUMOR_U000_NAME]"
+         && desc = Text_data.text "[RUMOR_U000_DESC]")
+  | [] -> check "the first is the library's first" false)
+
+let () =
   if !failures > 0 then begin
     Printf.printf "\n%d failure(s)\n" !failures;
     exit 1

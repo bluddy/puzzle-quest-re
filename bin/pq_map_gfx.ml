@@ -54,6 +54,14 @@ let load_segments () : ((int * int) * Gl.texture option) list =
              in
              ((r, c), tex))))
 
+type city_tab = Shop | Spells | Tavern
+
+type city_view = {
+  cid : string;
+  mutable tab : city_tab;
+  mutable rumor : int;
+}
+
 type ui = {
   gl : Gl.context;
   segments : ((int * int) * Gl.texture option) list;
@@ -62,6 +70,7 @@ type ui = {
   mutable player : Campaign.player;
   mutable journey : Campaign.travel_state option;
   mutable popup : Campaign_encounters.encounter option;
+  mutable city : city_view option;
 }
 
 let node_colour (k : Campaign.node_kind) : Layout.colour =
@@ -114,6 +123,178 @@ let hero_world (ui : ui) : int * int =
           | Some n -> (n.Campaign.x, n.Campaign.y)
           | None -> (0, 0))
       | None -> (0, 0))
+
+(** The city panel's tabs: the mode button walks them in this order, and the
+    labels are the game's own strings. *)
+let next_tab (t : city_tab) : city_tab =
+  match t with Shop -> Spells | Spells -> Tavern | Tavern -> Shop
+
+let tab_label (t : city_tab) : string =
+  match t with
+  | Shop -> Text_data.text "[BUYITEMS]"
+  | Spells -> Text_data.text "[SELECTSPELLMENU_HEADING]"
+  | Tavern -> Text_data.text "[RUMORS]"
+
+let open_city (ui : ui) (cid : string) : unit =
+  ui.city <- Some { cid; tab = Shop; rumor = 0 };
+  Printf.printf "  entered %s\n"
+    (Text_data.text (Campaign_map.city_by_id cid).Campaign_map.name_text);
+  flush stdout
+
+(** The console's half of the tavern: the name is on screen, the whole text     is where a paragraph can be read. The panel has no word-wrap - that is a     font feature this front does not use yet. *)
+let show_rumor (cv : city_view) : unit =
+  match List.nth_opt Campaign.rumors cv.rumor with
+  | Some (n, d) ->
+      Printf.printf "  rumor %d/%d - %s\n    %s\n" (cv.rumor + 1)
+        (List.length Campaign.rumors) n d;
+      flush stdout
+  | None -> ()
+
+let advance_rumor (cv : city_view) : unit =
+  let n = List.length Campaign.rumors in
+  if n > 0 then begin
+    cv.rumor <- (cv.rumor + 1) mod n;
+    show_rumor cv
+  end
+
+(** A click inside the city panel: Done leaves, the mode button tabs, rows     buy (shop) or advance the rumor (tavern), and the body advances it too. *)
+let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
+  match City_layout.hit mx my with
+  | City_layout.Leave ->
+      ui.city <- None;
+      print_endline "  left the city";
+      flush stdout
+  | City_layout.Tab ->
+      cv.tab <- next_tab cv.tab;
+      Printf.printf "  %s\n" (tab_label cv.tab);
+      flush stdout;
+      if cv.tab = Tavern then show_rumor cv
+  | City_layout.Row i -> (
+      match cv.tab with
+      | Shop -> (
+          let items =
+            Campaign.city_shop_items (Campaign_map.city_by_id cv.cid)
+          in
+          match List.nth_opt items i with
+          | None -> ()
+          | Some item -> (
+              match Campaign.buy_item ui.player item with
+              | Some p ->
+                  ui.player <- p;
+                  Printf.printf "  bought %s for %d gold\n"
+                    (Text_data.text item.Campaign_items.name_text)
+                    item.Campaign_items.cost;
+                  flush stdout
+              | None ->
+                  Printf.printf "  cannot afford %s (%d gold needed)\n"
+                    (Text_data.text item.Campaign_items.name_text)
+                    item.Campaign_items.cost;
+                  flush stdout))
+      | Spells ->
+          (* The list is a display: spells come from captives, not from the
+             purse - LEARNTALLSPELLS says so, and the research flow is
+             another workstream. *)
+          ()
+      | Tavern -> advance_rumor cv)
+  | City_layout.Elsewhere -> (
+      match cv.tab with Tavern -> advance_rumor cv | Shop | Spells -> ())
+
+(** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
+let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
+    (cv : city_view) : unit =
+  solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+    (Layout.rgba 0 0 0 150);
+  let px, py, pw, ph = (48, 30, 680, 440) in
+  solid rs gl { Layout.x = px; y = py; w = pw; h = ph }
+    (Layout.rgb 24 26 34);
+  solid rs gl { Layout.x = px; y = py; w = pw; h = 3 }
+    (Layout.rgb 240 210 90);
+  let sys = ui.system and f = ui.fonts in
+  let measure s =
+    match sys with
+    | Some m -> Font_layout.measure m s
+    | None -> 8 * String.length s
+  in
+  let text ?(colour = Layout.rgb 230 230 230) s x y =
+    match (f, sys) with
+    | Some ff, Some m -> rs := !rs @ Font.draw gl ff m s ~x ~y ~colour
+    | _ -> ()
+  in
+  let city = Campaign_map.city_by_id cv.cid in
+  text (Text_data.text city.Campaign_map.name_text) City_layout.title_x
+    City_layout.title_y;
+  text
+    (Printf.sprintf "Gold: %d" ui.player.Campaign.gold)
+    City_layout.gold_x City_layout.gold_y;
+  let row_y i = City_layout.row_y0 + (i * City_layout.row_step) in
+  (match cv.tab with
+  | Shop ->
+      List.iteri
+        (fun i (item : Campaign_items.item) ->
+          if i < City_layout.max_rows then begin
+            let afford = ui.player.Campaign.gold >= item.Campaign_items.cost in
+            let col =
+              if afford then Layout.rgb 230 230 230
+              else Layout.rgb 120 120 120
+            in
+            text ~colour:col
+              (Text_data.text item.Campaign_items.name_text)
+              (City_layout.row_x + 30) (row_y i + 3);
+            let price = string_of_int item.Campaign_items.cost in
+            text ~colour:col price
+              (City_layout.row_x + City_layout.row_w - measure price - 8)
+              (row_y i + 3)
+          end)
+        (Campaign.city_shop_items city)
+  | Spells ->
+      List.iteri
+        (fun i id ->
+          if i < City_layout.max_rows then begin
+            let name =
+              match Campaign.spells_of_ids [ id ] with
+              | s :: _ -> s.Spell.name
+              | [] -> id
+            in
+            text name (City_layout.row_x + 30) (row_y i + 3)
+          end)
+        (Campaign.city_shop_spells city);
+      text ~colour:(Layout.rgb 150 150 160)
+        (Text_data.text "[RESEARCHSPELLS_HELP1]")
+        City_layout.row_x
+        (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8)
+  | Tavern -> (
+      match List.nth_opt Campaign.rumors cv.rumor with
+      | Some (n, _) ->
+          text ~colour:(Layout.rgb 240 210 90) n
+            (City_layout.row_x + 30)
+            City_layout.row_y0;
+          text ~colour:(Layout.rgb 150 150 160)
+            (Printf.sprintf "rumor %d/%d - click for another"
+               (cv.rumor + 1) (List.length Campaign.rumors))
+            City_layout.row_x
+            (City_layout.row_y0 + 30)
+      | None -> ()));
+  solid rs gl City_layout.mode_btn (Layout.rgb 44 48 60);
+  solid rs gl City_layout.done_btn (Layout.rgb 44 48 60);
+  (match (f, sys) with
+  | Some ff, Some m ->
+      let l1 = tab_label (next_tab cv.tab) in
+      rs :=
+        !rs
+        @ Font.draw gl ff m l1
+            ~x:
+              (City_layout.mode_btn.Layout.x
+              + ((City_layout.mode_btn.Layout.w - Font_layout.measure m l1) / 2))
+            ~y:(City_layout.mode_btn.Layout.y + 16);
+      let l2 = Text_data.text "[DONE]" in
+      rs :=
+        !rs
+        @ Font.draw gl ff m l2
+            ~x:
+              (City_layout.done_btn.Layout.x
+              + ((City_layout.done_btn.Layout.w - Font_layout.measure m l2) / 2))
+            ~y:(City_layout.done_btn.Layout.y + 16)
+  | _ -> ())
 
 let draw ?(present = true) (ui : ui) : unit =
   let gl = ui.gl in
@@ -173,6 +354,10 @@ let draw ?(present = true) (ui : ui) : unit =
   let hx, hy = Map_view.world_to_screen hwx hwy in
   solid rs gl { Layout.x = hx - 7; y = hy - 7; w = 14; h = 14 }
     (Layout.rgb 235 70 60);
+  (* The city panel sits over the map, under the encounter popup - a fight     found on the road outranks browsing. *)
+  (match ui.city with
+  | Some cv -> draw_city rs gl ui cv
+  | None -> ());
   (* The encounter popup: dim the map, banner, and the one line that says     what a click does. *)
   (match ui.popup with
   | Some enc ->
@@ -206,7 +391,6 @@ let draw ?(present = true) (ui : ui) : unit =
   Gl.submit gl !rs;
   if present then Gl.present gl
 
-(** A click: the popup takes it as the fight; otherwise the map offers a     node to walk to. *)
 let handle_click (ui : ui) (mx : int) (my : int) : unit =
   match ui.popup with
   | Some enc ->
@@ -221,35 +405,42 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
         result.Campaign.gold_gained result.Campaign.xp_gained;
       flush stdout
   | None -> (
-      match Map_view.hit_node mx my with
-      | None -> ()
-      | Some id -> (
-          let here =
-            match ui.player.Campaign.current_city with
-            | Some c -> c
-            | None -> ""
-          in
-          if id = here then begin
-            Printf.printf "  already at %s\n" id;
-            flush stdout
-          end
-          else
-            match Campaign.begin_travel here id with
-            | None ->
-                Printf.printf "  no revealed road to %s\n" id;
-                flush stdout
-            | Some journey ->
-                ui.journey <- Some journey;
-                Printf.printf "  walking to %s\n" id;
-                flush stdout;
-                (* The departure roll: the port asks the road once, here. *)
-                (match Campaign.road_encounter ui.player here id with
-                | Some enc ->
-                    ui.popup <- Some enc;
-                    Printf.printf "  %s stops you on the road!\n"
-                      enc.Campaign_encounters.description;
+      match ui.city with
+      | Some cv -> handle_city_click ui cv mx my
+      | None -> (
+          match Map_view.hit_node mx my with
+          | None -> ()
+          | Some id -> (
+              let here =
+                match ui.player.Campaign.current_city with
+                | Some c -> c
+                | None -> ""
+              in
+              if id = here then
+                (* Clicking the city you stand in opens it - the city click     the screen exists for. Waypoints just say where you already are. *)
+                match Hashtbl.find_opt Campaign.map_nodes id with
+                | Some n when n.Campaign.kind = Campaign.City ->
+                    open_city ui id
+                | _ ->
+                    Printf.printf "  already at %s\n" id;
                     flush stdout
-                | None -> ())))
+              else
+                match Campaign.begin_travel here id with
+                | None ->
+                    Printf.printf "  no revealed road to %s\n" id;
+                    flush stdout
+                | Some journey ->
+                    ui.journey <- Some journey;
+                    Printf.printf "  walking to %s\n" id;
+                    flush stdout;
+                    (* The departure roll: the port asks the road once, here. *)
+                    (match Campaign.road_encounter ui.player here id with
+                    | Some enc ->
+                        ui.popup <- Some enc;
+                        Printf.printf "  %s stops you on the road!\n"
+                          enc.Campaign_encounters.description;
+                        flush stdout
+                    | None -> ()))))
 
 (** One frame's walking. The popup holds the journey where it is. *)
 let step (ui : ui) (dt : float) : unit =
@@ -262,19 +453,26 @@ let step (ui : ui) (dt : float) : unit =
           ui.journey <- None;
           ui.player <- { ui.player with Campaign.current_city = Some id };
           Printf.printf "  arrived at %s\n" id;
-          flush stdout
+          flush stdout;
+          (* Arriving in a city is entering it. *)
+          (match Hashtbl.find_opt Campaign.map_nodes id with
+          | Some n when n.Campaign.kind = Campaign.City -> open_city ui id
+          | _ -> ())
       | other -> ui.journey <- Some other)
   | None, _ -> ()
 
 let () =
   Random.self_init ();
-  let shot = ref "" in
+  let shot = ref "" and open_city_flag = ref false in
   Arg.parse
     [ ( "--shot",
         Arg.Set_string shot,
-        "draw one frame, write it as a P6 ppm, and exit" ) ]
+        "draw one frame, write it as a P6 ppm, and exit" );
+      ( "--city",
+        Arg.Set open_city_flag,
+        "open the start city's panel on startup (for --shot)" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE]";
+    "pq_map_gfx [--shot FILE] [--city]";
   let gl =
     Gl.create ~title:"Puzzle Quest - world map" ~width:window_w
       ~height:window_h
@@ -307,8 +505,9 @@ let () =
   let ui =
     { gl; segments; fonts; system = Font_layout.metrics_of_tag "font_system";
       player = { start with Campaign.current_city = Some start_city };
-      journey = None; popup = None }
+      journey = None; popup = None; city = None }
   in
+  if !open_city_flag then open_city ui start_city;
   Printf.printf
     "renderer: %s\n  GL: %s\n  map: %d world px at 3/8 scale, origin (%d, %d)\n"
     (Gl.renderer_name ()) (Gl.gl_version ()) Map_view.world Map_view.origin_x
