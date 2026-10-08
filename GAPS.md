@@ -153,7 +153,7 @@
 | **2 ✅** | Map visibility + road/ruin unlock | Gives purpose to quests, opens world |
 | **2 ✅** | Global text tables | Names render as strings; blocks every UI otherwise |
 | **3 ✅** | Capture engine ✅ + companion hooks ✅ | Core progression loop (capture → party → bonuses); equip bonuses remain in 8 |
-| **4 ✅** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
+| **4 ✅** | Campaign tests | Every area Known Gap 1 named is covered now - 400 assertions across the four campaign suites |
 | **5 ✅** | Grid spell targeting | Player aim (click-to-aim) and machine aim (six hook picks) both land; `spell.sfba_target_writeback` settled |
 | **6 ✅** | Monster spell AI + difficulty | Road rosters load; campaign fights compute their band from the levels |
 | **7** | World map SDL2 + travel UI | Makes campaign playable visually |
@@ -170,7 +170,7 @@
 1. ~~**Quest prerequisite checks**~~ ✅ wired to `is_quest_available`
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
-4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip (112 assertions)
+4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (159 assertions)
 5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (57 assertions); success adds the captive
 6. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
 7. **Mount speed** — `mount` slot → modify travel time between nodes
@@ -240,5 +240,5 @@ Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters). Pick one:
 
-- **Campaign tests (rest)** — travel, encounter triggering, income and
-  level-up; the rest of Known Gap 1
+- **World map SDL2 + travel UI** — the journey step, an encounter popup,
+  and a path to click (priority 7)

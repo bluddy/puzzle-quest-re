@@ -2,19 +2,17 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync wired the campaign fight setup.
-Both paths now compute rules through `rules_for_battle`: the recovered
-hero/task band (`difficulty_for_levels`, which had no caller) decides
-`rules.difficulty` - the gate on the AI's spell skip and the evaluator's
-jitter - and the hero's real level feeds the evaluator's hero-level band.
-The task level is the encounter's `my_level` on the road and the
-monster's registry `level_base` in a quest fight (a choice -
-`port.campaign_task_level`). Road fights also load the monster's
-registry spell roster: `run_encounter_battle` passed no enemy_spells at
-all, so no road monster had ever cast anything. Plus the
-`campaign.battle_setup` claim and the `port.campaign_task_level`
-decision. Build, all 28 suites and the extractor/validator checks
-verified green.
+**Sync:** working tree clean. This sync closed Known Gap 1 with tests,
+not code. Four areas went from demo-only to asserted: travel primitives
+(node_distance, roads_from_node, the seed city's edge), encounter
+appearance (both extracted conditions - the level gate on synthetic
+chances that make each side certain, and the real goblin's 2 percent
+walked over a thousand rolls), city income (CBAR 100, CDRA 150, no city
+pays nothing), and level-up (the warrior table's thresholds, the
+leveladd fallback, the life gain, the level's spell, one call per
+level). test_campaign is now 159 assertions; the four campaign suites
+total 400. Evidence unchanged at 80 claims / 24 decisions. Build, all
+28 suites and the extractor/validator checks verified green.
 
 ---
 
@@ -105,8 +103,8 @@ verified green.
   companion pass; `loadout_of_equipment` folds the nine-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (122), `test/test_capture.ml` (57),
-  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 363
+- **Tests:** `test/test_campaign.ml` (159), `test/test_capture.ml` (57),
+  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 400
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -178,7 +176,7 @@ source assets.
 | Priority | Area | Description |
 |----------|------|-------------|
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
-| **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, ruin registry, save; travel, encounters, income and level-up still untested |
+| **High** | **Campaign tests (rest)** | Landed: travel primitives, encounter appearance, income and level-up now tested (159 assertions in test_campaign); the travel journey step awaits the world map |
 | **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
@@ -207,9 +205,12 @@ source assets.
 
 ## Known Gaps
 
-1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
-   lifecycle, the visibility rule, the ruin registry and the save round-trip
-   (363 assertions across four campaign suites); travel, encounter triggering, income and level-up are untested
+1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the
+   quest lifecycle, the visibility rule, the ruin registry, the save
+   round-trip, companion removal and battle setup, and now travel
+   primitives, encounter appearance, income and level-up (400 assertions
+   across four campaign suites); the travel journey step has no engine to
+   test yet (world map UI)
 2. **Companion edges** — arrival removal is extracted and run
    (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival
    event to run under, and no travel step calls enter_location yet); the rune's

@@ -660,6 +660,116 @@ let () =
   check "the whole roster lands, not just its first spell"
     (List.length b.Battle.enemy_spells = 3)
 
+(* ------------------------------------------------------------------ *)
+(* 6. Travel, encounter appearance, income, level-up                  *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* Travel: the map answers where and how far, and a road is an edge only     between nodes the graph knows. These are the primitives a front end moves
+     along; there is no journey step in the engine yet (GAPS, World Map). *)
+  let d = Campaign.node_distance "CBAR" "WTHR" in
+  check "distance is positive between distinct nodes" (d > 0.);
+  check "distance is symmetric"
+    (abs_float (d -. Campaign.node_distance "WTHR" "CBAR") < 1e-9);
+  check "a node is zero from itself"
+    (Campaign.node_distance "CBAR" "CBAR" = 0.);
+  check "the seed city reaches its waypoint"
+    (List.exists (fun (r : Campaign_map.road) -> r.Campaign_map.end_ = "WTHR")
+       (Campaign.roads_from_node "CBAR"));
+  check "a node with no roads returns an empty list, not an exception"
+    (Campaign.roads_from_node "ZZZZ" = [])
+
+let () =
+  (* Encounter appearance: the two extracted conditions from OnQueryAppearance
+     patterns - the hero's level reaches the encounter's, and a chance roll
+     against its percentage. The shipped goblin rolls 2 percent, so the gates
+     are tested on synthetic chances (100 and 0 make each side certain) and
+     the real encounter over many rolls, where "sometimes" is the only honest
+     word. The suite runs on OCaml's fixed default seed, so the walk is the
+     same walk every run. *)
+  let eago =
+    List.find (fun (e : Campaign_encounters.encounter) -> e.Campaign_encounters.id = "EAGO")
+      Campaign_encounters.encounters
+  in
+  let low = { (fresh ()) with Campaign.level = 1 } in
+  let hidden = { low with Campaign.level = 0 } in
+  let with_chance c = { eago with Campaign_encounters.chance = c } in
+  check "at chance 100 a level-1 hero meets a level-1 encounter"
+    (Campaign.check_encounter_appearance low (with_chance 100) = Campaign.Appears);
+  check "the level gates even at chance 100"
+    (Campaign.check_encounter_appearance hidden (with_chance 100) = Campaign.StaysHidden);
+  check "the roll gates even a qualified hero at chance 0"
+    (Campaign.check_encounter_appearance low (with_chance 0) = Campaign.StaysHidden);
+  check "a hero below the encounter's level never does"
+    (Campaign.check_encounter_appearance hidden eago = Campaign.StaysHidden);
+  let rec walk n appeared hidden_seen =
+    if n = 0 then (appeared, hidden_seen)
+    else
+      let a = Campaign.check_encounter_appearance low eago = Campaign.Appears in
+      walk (n - 1) (appeared || a) (hidden_seen || not a)
+  in
+  let appeared, hidden_seen = walk 1000 false false in
+  check "the real goblin appears within a thousand rolls" appeared;
+  check "and stays hidden within them too" hidden_seen;
+  check "the encounter sits on its road in the data"
+    (List.exists (fun (e : Campaign_encounters.encounter) -> e.Campaign_encounters.id = "EAGO")
+       (Campaign_encounters.encounters_on_road "CGAL" "WRAR"));
+  check "and not on the seed city's road"
+    (not (List.exists (fun (e : Campaign_encounters.encounter) -> e.Campaign_encounters.id = "EAGO")
+            (Campaign_encounters.encounters_on_road "CGAL" "WTHR")));
+  (* The visible list is that data filtered by the roll, so walk the filter
+     until its 2 percent lands: empty-after-a-thousand is one roll in 10^9. *)
+  let rec roll n =
+    if n = 0 then []
+    else
+      let l = Campaign.encounters_on_road_visible low "CGAL" "WRAR" in
+      if l <> [] then l else roll (n - 1)
+  in
+  check "the road's visible list eventually shows the goblin"
+    (List.exists (fun (e : Campaign_encounters.encounter) -> e.Campaign_encounters.id = "EAGO")
+       (roll 1000))
+
+let () =
+  (* Income: standing in a city pays its registry value per visit; standing
+     nowhere pays nothing. *)
+  let p = fresh () in
+  check_int "the seed city pays its income"
+    (Campaign.collect_income { p with Campaign.current_city = Some "CBAR" }).Campaign.gold
+    (p.Campaign.gold + 100);
+  check "collecting with no city changes nothing"
+    ((Campaign.collect_income p).Campaign.gold = p.Campaign.gold);
+  check_int "a second city pays its own rate"
+    (Campaign.collect_income { p with Campaign.current_city = Some "CDRA" }).Campaign.gold
+    (p.Campaign.gold + 150)
+
+let () =
+  (* Level-up: the profession table decides the threshold, one call pays one
+     level's life, and a spell due at that level lands in the book. The warrior
+     table (level 2 costs 40 xp, life 2 per level, SWLO at 2, no level-1
+     grant) is the fixture. *)
+  let p = fresh () in
+  check_int "level 2 costs 40 on the warrior table"
+    (Campaign.xp_for_level p.Campaign.profession 2) 40;
+  check_int "level 3 costs 80"
+    (Campaign.xp_for_level p.Campaign.profession 3) 80;
+  check_int "a level the table does not list falls back to leveladd"
+    (Campaign.xp_for_level p.Campaign.profession 51) (5000 * 51);
+  check "level-up below the threshold is a no-op"
+    ((Campaign.check_level_up { p with Campaign.xp = 39 }).Campaign.level = 1);
+  check "exactly at the threshold it fires"
+    ((Campaign.check_level_up { p with Campaign.xp = 40 }).Campaign.level = 2);
+  let up = Campaign.check_level_up { p with Campaign.xp = 40 } in
+  check_int "the level gains its life" up.Campaign.max_life (p.Campaign.max_life + 2);
+  check_int "current life gains with it" up.Campaign.life (p.Campaign.life + 2);
+  check "the level's spell is learned"
+    (List.mem "SWLO" up.Campaign.known_spells);
+  check "one call pays exactly one level, whatever the xp holds"
+    ((Campaign.check_level_up { p with Campaign.xp = 9999 }).Campaign.level = 2);
+  check "a second call pays the next one"
+    ((Campaign.check_level_up
+        (Campaign.check_level_up { p with Campaign.xp = 9999 })).Campaign.level
+     = 3)
+
 let () =
   if !failures > 0 then begin
     Printf.printf "\n%d failure(s)\n" !failures;
