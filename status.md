@@ -1,7 +1,11 @@
 # Puzzle Quest Clean-Room Reimplementation — Status
 
-**Date:** 2026-10-07  
-**Branch:** main (clean-room OCaml port)
+**Date:** 2026-10-08  
+**Branch:** master (clean-room OCaml port)  
+**Sync note:** working tree carries the campaign quest-lifecycle work below —
+builds, all tests green, demo verified; **not yet committed** (6 files:
+`bin/campaign_demo.ml`, `lib/campaign.ml`, `lib/campaign_quests.ml`,
+`lib/campaign_save.ml`, `tools/extract_quests.py`, `pq_save_test.json`).
 
 ---
 
@@ -16,17 +20,35 @@
 - **Spell effects:** 21 caster/grid effects, 22 sound tags, 24 constants; particle system (6 textures, gravity/velocity/color/size interpolation, additive/alpha blending)
 - **Write-back fix:** Spell board/gold/XP edits now persist (was silently discarded)
 - **Text:** 10 bitmap fonts, float-text event messages, bounded stack
-- **Tests:** 4 test suites (battle, spell_fx, spell_effects, gfx_fx) — all green
 
-### Campaign Layer (Complete — First Playable Loop with Save/Load)
+### Campaign Layer (Data + engine complete; UI not started)
 - **Map data:** 20 cities, 40 waypoints, 28 ruins, 93 roads (typed graph)
 - **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua)
-- **Quests:** 142 quests with state machines, prerequisites, localized text, battle rewards
+- **Quests:** 142 quests with state machines, prerequisites, per-quest text, battle rewards
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
 - **Conversations:** 273 dialogue trees with backdrops, portraits, branching
-- **Engine:** Player creation, travel, encounter triggering, city shops/income, quest state machine, level-up
-- **Save/Load:** JSON serialization for player, quests, map visibility, location; round-trip tested in demo
-- **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle → quests → shop → income → level-up → save → load
+- **Engine:** Player creation, travel, encounter triggering, city shops/income, level-up
+- **Quest prerequisites (NEW):** `is_quest_available` checks every extracted condition —
+  `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`,
+  `item`, `notitem`, `award`, `notaward` — plus level band and not-already-active.
+- **Quest lifecycle (NEW):** `quest_accept` (OnBegin → reveals) → `quest_battle_complete`
+  (state 1→2 on win, no-op on loss) → `quest_turn_in` (OnEnd → gold/XP/items/awards/
+  companions + `CompleteQuest` bookkeeping). Road encounters no longer advance quest
+  state — quest Lua drives its own fight (`QUEST_BATTLE`), that separation is now real.
+- **Map visibility (NEW):** mutable node/road tables, `set_location_visible` implements
+  the recovered rule (road visible only when **both** endpoints are, citing
+  `Engine_QUEST_SET_VISIBILITY_450e40.c`); reveals come from extracted
+  `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN` calls grouped by hook
+  (`reveal_on_begin` / `reveal_on_end` / `ruin_reveals`).
+- **Rewards (NEW):** gold/XP/items/awards/companions read from the quest script by
+  `tools/extract_quests.py`, which now statically scans quest Lua (file-scope string
+  constants + `QUEST_*` calls per top-level function).
+- **Save/Load:** JSON; now snapshots **live** map visibility (not static defaults),
+  restores it into the tables on load, and persists `awards`; quest states stored as
+  the same ints the player record uses.
+- **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
+  quest accept (prints reveals) → battle win → turn-in (prints rewards) → shop → income →
+  level-up → save → load. Verified green 2026-10-08.
 
 ---
 
@@ -34,12 +56,16 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 67 | 10 | 17 |
+| `docs/reverse/evidence.yml` | 67 | 10 (5 open) | 17 |
 
 Key decisions recorded:
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
-- `spell.match_resolution_after_a_spell` — open: does engine cascade after spell board edits?
+- `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
+
+Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
+`quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
+`spell.sfba_target_writeback`.
 
 ---
 
@@ -49,7 +75,7 @@ Key decisions recorded:
 # Build everything
 opam exec -- dune build
 
-# Run all tests
+# Run all tests (23 suites: 14 engine + 9 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -59,7 +85,8 @@ opam exec -- dune exec bin/campaign_demo.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 ```
 
-All tests pass. Extractor `--check` modes validate against source assets.
+All 23 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+source assets.
 
 ---
 
@@ -67,11 +94,14 @@ All tests pass. Extractor `--check` modes validate against source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → Quest.on_complete → rewards → map` |
-| **High** | **Save / Load** | ~~Binary format (or JSON) for player + quest states + map progress~~ **DONE** |
+| **High** | **Global text tables** | Quest/city/item/monster names print as raw tags (`[QUEST_Q0T0_NAME]`, `[CITY_CBAR_NAME]`) — the strings live in `English/Standard*Text.xml`, not extracted. Blocks every UI. |
+| **High** | **Campaign tests** | `test/` has zero campaign suites; prerequisites, lifecycle, visibility and save-restore are verified only by demo output. |
+| **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → quest_battle_complete → turn-in → rewards → map` into one loop (partly landed; still demo-scripted) |
+| **High** | **Commit campaign work** | Working tree holds the quest/visibility/save changes uncommitted |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
-| **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags) |
+| **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
+| **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
 | **Medium** | **Companions / Mounts** | Capture mini-game, party slots, mount speed/fly, banner effects |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |
@@ -82,8 +112,11 @@ All tests pass. Extractor `--check` modes validate against source assets.
 ## Architecture Notes
 
 - **No Lua at runtime** — all logic ported to OCaml; extractors run once at dev time
+  (quest Lua is now *statically scanned* by `extract_quests.py`, not interpreted)
 - **Data-driven** — generated `lib/campaign_*.ml` modules are pure data + lookup fns
 - **Observer pattern** — `Battle.on_event`, `on_step`, `on_grid_fx` keep battle headless-testable
+- **Map state is mutable** — node/road visibility lives in tables (restored by save/load),
+  everything else campaign-side is pure `player -> player`
 - **Asset pipeline** — `assets/gfx/` holds extracted PNGs (fonts, particles, sheets); `PQ_GFX_ASSETS` env var
 - **Module graph:** `lib/dune` exports `Campaign` + 7 data modules under `Puzzle_quest_lib`
 
@@ -91,12 +124,23 @@ All tests pass. Extractor `--check` modes validate against source assets.
 
 ## Known Gaps
 
-1. **Quest prerequisite checks** — `donequest*`, `companion*`, `item`, `award` conditions stubbed
-2. **Ruins / companion capture** — mini-game board logic not implemented
-3. **Map visibility progression** — roads/ruins unlock via quests (`visible="no"` → `"yes"`)
-4. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics
-5. **Monster spell rosters** — AI only uses `Spell` tags from monster XML; no dynamic selection
-6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`) not wired to dialogue UI
+1. **Global localization** — `English/Standard*Text.xml` (quests, sites, items, monsters,
+   spells, professions, awards, companions, rumors, groups) not extracted; quests carry
+   only their own `*_Text.xml` strings, so titles/descriptions and all entity names render
+   as `[TAG]`. Five languages available.
+2. **No campaign tests** — prerequisites/lifecycle/visibility/save round-trip untested
+   in `test/`.
+3. **Ruins / companion capture** — mini-game board logic not implemented
+4. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
+   no hero position on the map and no visible-range logic
+5. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics
+6. **Monster spell rosters** — AI only uses `Spell` tags from monster XML; no dynamic selection
+7. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`)
+   not wired to dialogue UI
+8. **Conditional quest rewards** — if/else reward branches take the first source-order
+   value (recorded as `campaign.quest_rewards_conditional`)
+9. **Stray scratch files** at repo root — `test2.ml`, `test_min.ml`, `test_syntax.ml`,
+   `test2.cmi` are untracked leftovers; delete before committing
 
 ---
 
@@ -122,20 +166,20 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe
 
 ```
 lib/
-  campaign.ml              # Engine core
+  campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility
   campaign_map.ml          # 20 cities, 40 waypoints, 28 ruins, 93 roads
   campaign_encounters.ml   # 57 encounters (my_level, chance)
-  campaign_quests.ml       # 142 quests + localized text
+  campaign_quests.ml       # 142 quests + per-quest text + extracted rewards/reveals
   campaign_items.ml        # 160 items
   campaign_professions.ml  # 4 classes (skills, spells, XP)
   campaign_monsters.ml     # 60 monsters (capture grids)
   campaign_conversations.ml# 273 dialogues
   campaign_types.ml        # Shared type aliases
-  campaign_save.ml         # JSON save/load
+  campaign_save.ml         # JSON save/load incl. live map visibility + awards
 tools/
   extract_campaign_map.py
   extract_encounters.py
-  extract_quests.py
+  extract_quests.py        # XML + static Lua scan (QUEST_* calls, rewards, reveals)
   extract_items_professions_monsters.py
   extract_conversations.py
 bin/

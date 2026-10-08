@@ -66,7 +66,7 @@ let () =
   let quests = Campaign.available_quests_at player start_city in
   print_endline ("Available quests at " ^ start_city ^ ":");
   List.iter (fun (q: Campaign_quests.quest) ->
-    print_endline ("  " ^ q.id ^ ": " ^ q.name_text ^ " (lvl " ^ string_of_int q.avail_minlevel ^ "-" ^ string_of_int q.avail_maxlevel ^ ") monster=" ^ q.battle_monster)
+    print_endline ("  " ^ q.id ^ ": " ^ Campaign_quests.quest_name q ^ " (lvl " ^ string_of_int q.avail_minlevel ^ "-" ^ string_of_int q.avail_maxlevel ^ ") monster=" ^ q.battle_monster)
   ) quests;
   print_endline "";
 
@@ -91,38 +91,37 @@ let () =
   print_endline ("Known spells: " ^ String.concat ", " player5.known_spells);
   print_endline "";
 
-  (* Test quest instance *)
-  if quests <> [] then
+  (* Quest lifecycle: accept -> battle -> turn in *)
+  if quests <> [] then begin
     let q = List.hd quests in
-    print_endline ("Starting quest: " ^ q.id);
-    let qi = { Campaign.quest = q; state = Campaign.Inactive; vars = [] } in
-    let qi2, effects = Campaign.run_quest_on_begin qi in
-    print_endline ("  State: " ^ (match qi2.state with Campaign.Inactive -> "Inactive" | Campaign.Active s -> "Active("^string_of_int s^")" | Campaign.Completed -> "Completed" | Campaign.Failed -> "Failed"));
-    print_endline ("  Effects: " ^ String.concat ", " (List.map (function
-      | Campaign.RewardGold g -> "Gold " ^ string_of_int g
-      | Campaign.RewardXP x -> "XP " ^ string_of_int x
-      | Campaign.RewardItem i -> "Item " ^ i
-      | Campaign.AddQuest q -> "AddQuest " ^ q
-      | Campaign.CompleteQuest q -> "Complete " ^ q
-      | Campaign.FailQuest q -> "Fail " ^ q
-      | Campaign.SetState s -> "State " ^ string_of_int s
-      | Campaign.EncounterBattle (c, m, _) -> "Battle " ^ c ^ " " ^ m
-      | Campaign.ShowRewardMenu _ -> "Menu"
-      | Campaign.None -> "None"
-    ) effects));
+    print_endline ("Quest: " ^ Campaign_quests.quest_name q ^ " (" ^ q.id ^ ")");
+    let pq0 = Campaign.quest_accept player5 q.id in
+    print_endline ("  accepted: active=" ^ String.concat ", " (List.map fst pq0.Campaign.active_quests));
+    if q.Campaign_quests.reveal_on_begin <> [] then
+      List.iter (fun n -> print_endline ("  revealed at accept: " ^ n ^ " visible=" ^ string_of_bool (Campaign.node_visible n)))
+        q.Campaign_quests.reveal_on_begin;
+    let pq1 = Campaign.quest_battle_complete pq0 q.id true in
+    print_endline ("  battle won: state=" ^ (match List.assoc_opt q.id pq1.Campaign.active_quests with
+      | Some s -> string_of_int s | None -> "n/a"));
+    let pq2 = Campaign.quest_turn_in pq1 q.id in
+    print_endline ("  turned in: gold=" ^ string_of_int pq2.Campaign.gold
+      ^ " xp=" ^ string_of_int pq2.Campaign.xp
+      ^ " completed=" ^ String.concat ", " pq2.Campaign.completed_quests
+      ^ " still-active=" ^ string_of_int (List.length pq2.Campaign.active_quests));
     print_endline "";
+  end;
 
   (* Test save/load *)
   print_endline "=== Testing Save/Load ===";
   let save_file = "pq_save_test.json" in
   let player_with_quests = { player5 with active_quests = [("Q0Q0", 1)] } in
-  let save_data = Campaign_save.create_save_data player_with_quests [("Q0Q0", Campaign.Active 1)] start_city 0 in
+  let save_data = Campaign_save.create_save_data player_with_quests player_with_quests.Campaign.active_quests start_city 0 in
   Campaign_save.save_to_file save_file save_data;
   print_endline ("Saved to " ^ save_file);
   let loaded_save = Campaign_save.load_from_file save_file in
-  let loaded_player, loaded_quests, _, _, _ = Campaign_save.apply_save loaded_save in
+  let loaded_player, loaded_quests, _, _, _, _ = Campaign_save.apply_save loaded_save in
   print_endline ("Loaded player: " ^ loaded_player.name ^ ", level " ^ string_of_int loaded_player.level ^ ", gold " ^ string_of_int loaded_player.gold);
-  print_endline ("Loaded quests: " ^ String.concat ", " (List.map (fun (qid, state) -> qid ^ "=" ^ (match state with Campaign.Inactive -> "0" | Campaign.Active n -> string_of_int n | Campaign.Completed -> "3" | Campaign.Failed -> "4")) loaded_quests));
+  print_endline ("Loaded quests: " ^ String.concat ", " (List.map (fun (qid, state) -> qid ^ "=" ^ string_of_int state) loaded_quests));
   print_endline ("Save/Load test passed!");
 
   print_endline "=== Demo complete ==="

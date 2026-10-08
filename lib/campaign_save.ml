@@ -37,6 +37,7 @@ type save_player = {
   active_quests: (string * int) list;
   completed_quests: string list;
   companions: string list;
+  awards: string list;
   current_city: string option;
 }
 
@@ -99,6 +100,7 @@ let save_player_to_json (p: save_player) =
     "active_quests", `List (List.map (fun (qid, state) -> `Assoc [("quest_id", `String qid); ("state", `Int state)]) p.active_quests);
     "completed_quests", `List (List.map (fun s -> `String s) p.completed_quests);
     "companions", `List (List.map (fun s -> `String s) p.companions);
+    "awards", `List (List.map (fun s -> `String s) p.awards);
     "current_city", (match p.current_city with Some s -> `String s | None -> `Null);
   ]
 
@@ -159,6 +161,7 @@ let save_player_of_json json =
     active_quests = (json |> member "active_quests" |> to_list) |> List.map (fun v -> (v |> member "quest_id" |> to_string, v |> member "state" |> to_int));
     completed_quests = (json |> member "completed_quests" |> to_list) |> List.map to_string;
     companions = (json |> member "companions" |> to_list) |> List.map to_string;
+    awards = (json |> member "awards" |> to_list) |> List.map to_string;
     current_city = match json |> member "current_city" with `Null -> None | `String s -> Some s | _ -> None; }
 
 let save_quest_state_of_json json =
@@ -236,6 +239,7 @@ module SaveConvert = struct
       inventory = List.map (fun (i: Campaign_items.item) -> i.id) p.inventory;
       known_spells = p.known_spells; active_quests = p.active_quests;
       completed_quests = p.completed_quests; companions = p.companions;
+      awards = p.awards;
       current_city = p.current_city }
 
   let skill_affinities_from_save (s: skill_affinities) : Campaign_types.skill_affinities =
@@ -263,6 +267,7 @@ module SaveConvert = struct
       inventory = List.map (fun id -> Campaign_items.item_by_id id) s.inventory;
       known_spells = s.known_spells; active_quests = s.active_quests;
       completed_quests = s.completed_quests; companions = s.companions;
+      awards = s.awards;
       current_city = s.current_city }
 end
 
@@ -271,23 +276,15 @@ end
 (* ------------------------------------------------------------------ *)
 
 let create_save_data player active_quests current_location travel_state =
-  let _player_save = SaveConvert.player_to_save player in
-  let quests = List.map (fun (qid, state) ->
-    { quest_id = qid; state = (match state with
-        | Campaign.Inactive -> 0 | Campaign.Active s -> s | Campaign.Completed -> 3 | Campaign.Failed -> 4);
-      vars = [] }) active_quests in
+  let quests = List.map (fun (qid, state) -> { quest_id = qid; state; vars = [] }) active_quests in
   { player = SaveConvert.player_to_save player;
     quests;
-    map_visibility = (let module M = struct
-      let cities : Campaign_map.city list = Campaign_map.cities
-      let waypoints : Campaign_map.waypoint list = Campaign_map.waypoints
-      let ruins : Campaign_map.ruin list = Campaign_map.ruins
-      let roads : Campaign_map.road list = Campaign_map.roads
-    end in
-    { visible_cities = List.map (fun (c : Campaign_map.city) -> c.id) M.cities;
-      visible_waypoints = List.map (fun (w : Campaign_map.waypoint) -> w.id) M.waypoints;
-      visible_ruins = List.map (fun (r : Campaign_map.ruin) -> r.id) M.ruins;
-      visible_roads = List.map (fun (r : Campaign_map.road) -> (r.start, r.end_)) M.roads });
+    (* snapshot the live map state, not the static data defaults *)
+    map_visibility =
+      { visible_cities = List.filter_map (fun (c : Campaign_map.city) -> if Campaign.node_visible c.id then Some c.id else None) Campaign_map.cities;
+        visible_waypoints = List.filter_map (fun (w : Campaign_map.waypoint) -> if Campaign.node_visible w.id then Some w.id else None) Campaign_map.waypoints;
+        visible_ruins = List.filter_map (fun (r : Campaign_map.ruin) -> if Campaign.node_visible r.id then Some r.id else None) Campaign_map.ruins;
+        visible_roads = List.filter_map (fun (r : Campaign_map.road) -> if Campaign.get_road_visible r.start r.end_ then Some (r.start, r.end_) else None) Campaign_map.roads };
     current_location; travel_state }
 
 let save_to_file filename save =
@@ -314,12 +311,20 @@ let load_from_file filename =
 
 let apply_save save =
   let player = SaveConvert.player_from_save save.player in
-  let active_quests = List.map (fun sq ->
-    let state = match sq.state with
-      | 0 -> Campaign.Inactive | 1 -> Campaign.Active 1 | 2 -> Campaign.Active 2
-      | 3 -> Campaign.Completed | 4 -> Campaign.Failed | _ -> Campaign.Inactive in
-    (sq.quest_id, state)) save.quests in
+  (* quest states are the saved ints, same representation as player.active_quests *)
+  let active_quests = List.map (fun sq -> (sq.quest_id, sq.state)) save.quests in
   let completed_quests = save.player.completed_quests in
+  let awards = save.player.awards in
   let current_location = save.current_location in
   let travel_state = save.travel_state in
-  (player, active_quests, completed_quests, current_location, travel_state)
+  (* restore map visibility into the live tables: hide everything first, then
+     show exactly what the save recorded *)
+  List.iter (fun (c : Campaign_map.city) -> Campaign.set_node_visible c.Campaign_map.id false) Campaign_map.cities;
+  List.iter (fun (w : Campaign_map.waypoint) -> Campaign.set_node_visible w.Campaign_map.id false) Campaign_map.waypoints;
+  List.iter (fun (r : Campaign_map.ruin) -> Campaign.set_node_visible r.Campaign_map.id false) Campaign_map.ruins;
+  List.iter (fun (r : Campaign_map.road) -> Campaign.set_road_visible r.Campaign_map.start r.Campaign_map.end_ false) Campaign_map.roads;
+  List.iter (fun id -> Campaign.set_node_visible id true) save.map_visibility.visible_cities;
+  List.iter (fun id -> Campaign.set_node_visible id true) save.map_visibility.visible_waypoints;
+  List.iter (fun id -> Campaign.set_node_visible id true) save.map_visibility.visible_ruins;
+  List.iter (fun (a, b) -> Campaign.set_road_visible a b true) save.map_visibility.visible_roads;
+  (player, active_quests, completed_quests, awards, current_location, travel_state)
