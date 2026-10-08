@@ -1,16 +1,17 @@
-(* The campaign engine: prerequisites, the quest lifecycle, map visibility, and
-   the save round-trip.
+(* The campaign engine: prerequisites, the quest lifecycle, map visibility, the
+   ruin registry, and the save round-trip.
 
    These are the parts of the campaign that were proved only by watching the demo
    print lines. A demo that prints "revealed at accept: WSIR visible=true" shows
    the happy path once; it does not show that a prerequisite *blocks* an offer,
-   that a lost battle leaves the quest at state 1, or that loading a save puts a
-   hidden road back behind a hidden endpoint.
+   that a lost battle leaves the quest at state 1, that a ruin shared by two
+   quests outlives the first release, or that loading a save puts a hidden road
+   back behind a hidden endpoint.
 
-   The map tables are global mutable state, so the whole file snapshots them
-   first and restores at the end; between the snapshot and the restore every
-   test either works on a fresh player record or sets the node flags it is about
-   to assert on, rather than assuming what the shipped data says. *)
+   The map tables and the ruin registry are global mutable state, so the whole
+   file snapshots them first and restores at the end; between the snapshot and
+   the restore every test either works on a fresh player record or sets the state
+   it is about to assert on, rather than assuming what the shipped data says. *)
 
 open Puzzle_quest_lib
 
@@ -389,6 +390,174 @@ let () =
   (* Back to where the file started. *)
   restore initial;
   check "the snapshot restores the shipped visibility"
+    (take_snapshot () = initial)
+
+(* ------------------------------------------------------------------ *)
+(* 5. Ruin registration: refcounts, releases, and the save round-trip  *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* The registry is global mutable state, like the map tables above. The
+     sections before this one only touch Q0T0, which holds no ruins, so the
+     table starts empty - and the assertions below prove that too. *)
+  let counts0 = Campaign.ruin_counts_snapshot () in
+  let done0 = Campaign.ruin_done_snapshot () in
+  Campaign.restore_ruin_state [] [];
+
+  (* -- the registry itself: Engine_QUEST_ADD_RUIN / Engine_QUEST_SET_RUIN_DONE *)
+
+  Campaign.set_location_visible "REGB" false;
+  Campaign.register_ruin "REGB";
+  check "registering a ruin reveals its node"
+    (Campaign.node_visible "REGB");
+  check_int "the first hold counts 1" (Campaign.ruin_count "REGB") 1;
+  check "a registered ruin is not done"
+    (not (Campaign.ruin_is_done "REGB"));
+
+  Campaign.register_ruin "REGB";
+  check_int "a second quest on the same ruin counts 2"
+    (Campaign.ruin_count "REGB") 2;
+  Campaign.set_ruin_done "REGB";
+  check_int "one release leaves the other hold" (Campaign.ruin_count "REGB") 1;
+  check "still not done while a hold remains"
+    (not (Campaign.ruin_is_done "REGB"));
+  Campaign.set_ruin_done "REGB";
+  check_int "the last release empties the count" (Campaign.ruin_count "REGB") 0;
+  check "the last release marks the ruin done"
+    (Campaign.ruin_is_done "REGB");
+
+  Campaign.set_ruin_done "REGB";
+  check "releasing an empty ruin is a no-op"
+    (Campaign.ruin_count "REGB" = 0 && Campaign.ruin_is_done "REGB");
+  Campaign.set_ruin_done "ZZZZ";
+  check "releasing a ruin nobody registered is inert"
+    (not (Campaign.ruin_is_done "ZZZZ"));
+  Campaign.register_ruin "REGB";
+  check "re-registering clears the done flag (ADD_RUIN purges the notification)"
+    (Campaign.ruin_count "REGB" = 1 && not (Campaign.ruin_is_done "REGB"));
+  Campaign.restore_ruin_state [] [];
+
+  (* -- through the quest lifecycle *)
+
+  (* Q0I0 (Troll Trouble, REGB): registers on accept, releases OnCompleteAction
+     (battle won) and OnAbandon. Needs level 7 and Q0Q4 done. *)
+  let q0i0 () =
+    { (fresh ()) with Campaign.level = 7; Campaign.completed_quests = [ "Q0Q4" ] } in
+  Campaign.set_location_visible "REGB" false;
+  let p1 = Campaign.quest_accept (q0i0 ()) "Q0I0" in
+  check "accepting a ruin quest registers its ruin"
+    (state_of p1 "Q0I0" = Some 1 && Campaign.ruin_count "REGB" = 1);
+  check "and reveals the ruin node"
+    (Campaign.node_visible "REGB");
+
+  let lost = Campaign.quest_battle_complete p1 "Q0I0" false in
+  check "a lost quest battle keeps the hold"
+    (state_of lost "Q0I0" = Some 1 && Campaign.ruin_count "REGB" = 1
+     && not (Campaign.ruin_is_done "REGB"));
+
+  let won = Campaign.quest_battle_complete p1 "Q0I0" true in
+  check "the won quest battle releases the ruin (OnCompleteAction)"
+    (Campaign.ruin_count "REGB" = 0 && Campaign.ruin_is_done "REGB");
+  check "the state still advanced" (state_of won "Q0I0" = Some 2);
+
+  (* Abandon is the other release path - Q0I0 is flagged abandonable. *)
+  Campaign.restore_ruin_state [] [];
+  let p2 = Campaign.quest_accept (q0i0 ()) "Q0I0" in
+  let p3 = Campaign.quest_abandon p2 "Q0I0" in
+  check "abandoning releases the ruin (OnAbandon)"
+    (Campaign.ruin_count "REGB" = 0 && Campaign.ruin_is_done "REGB");
+  check "and drops the quest from the active list"
+    (state_of p3 "Q0I0" = None);
+  let again = Campaign.quest_accept p3 "Q0I0" in
+  check "an abandoned quest can be taken again, hold restored"
+    (state_of again "Q0I0" = Some 1 && Campaign.ruin_count "REGB" = 1);
+
+  (* The abandonable flag withholds OnAbandon: Q0T0 is not abandonable. *)
+  let p4 = Campaign.quest_accept (fresh ()) "Q0T0" in
+  let p5 = Campaign.quest_abandon p4 "Q0T0" in
+  check "a quest flagged not-abandonable stays active"
+    (state_of p5 "Q0T0" = Some 1);
+  check "abandoning a quest that is not active does nothing"
+    (Campaign.quest_abandon (fresh ()) "Q0I0" = fresh ());
+
+  (* Q1S0 registers ROTO and releases only OnEnd, so turn-in is what empties
+     it. Needs level 12, Q0Q8 done and companion NKHA. *)
+  Campaign.restore_ruin_state [] [];
+  let q1s0 () =
+    { (fresh ()) with Campaign.level = 12; Campaign.completed_quests = [ "Q0Q8" ];
+      Campaign.companions = [ "NKHA" ] } in
+  let s1 = Campaign.quest_accept (q1s0 ()) "Q1S0" in
+  check "Q1S0 registers ROTO on accept"
+    (state_of s1 "Q1S0" = Some 1 && Campaign.ruin_count "ROTO" = 1);
+  let s2 = Campaign.quest_turn_in s1 "Q1S0" in
+  check "turn-in releases the ruin (OnEnd)"
+    (Campaign.ruin_count "ROTO" = 0 && Campaign.ruin_is_done "ROTO"
+     && state_of s2 "Q1S0" = None);
+
+  (* A shared ruin: Q0S1 and Q0S3 both hold ROTO and each releases it
+     OnCompleteAction - the site has to outlive the first release. *)
+  Campaign.restore_ruin_state [] [];
+  let spoil () =
+    { (fresh ()) with Campaign.level = 11; Campaign.completed_quests = [ "Q0Q0" ] } in
+  let a1 = Campaign.quest_accept (spoil ()) "Q0S1" in
+  let a2 = Campaign.quest_accept a1 "Q0S3" in
+  check "two quests hold the same ruin"
+    (Campaign.ruin_count "ROTO" = 2);
+  let a3 = Campaign.quest_battle_complete a2 "Q0S1" true in
+  check "the first quest's release leaves the second hold"
+    (Campaign.ruin_count "ROTO" = 1 && not (Campaign.ruin_is_done "ROTO")
+     && state_of a3 "Q0S1" = Some 2);
+  let a4 = Campaign.quest_battle_complete a3 "Q0S3" true in
+  check "the second quest's release empties the ruin"
+    (Campaign.ruin_count "ROTO" = 0 && Campaign.ruin_is_done "ROTO"
+     && state_of a4 "Q0S3" = Some 2);
+
+  (* Q0I5 (Imperial Reply, RDPS) releases OnCompleteAction *and* in a
+     didShrine-guarded OnEnd; the guard is not evaluated, so turn-in releases a
+     second time and the engine's absent-id no-op absorbs it. *)
+  Campaign.restore_ruin_state [] [];
+  let q0i5 () =
+    { (fresh ()) with Campaign.level = 8; Campaign.completed_quests = [ "Q0I4" ] } in
+  let i1 = Campaign.quest_accept (q0i5 ()) "Q0I5" in
+  let i2 = Campaign.quest_battle_complete i1 "Q0I5" true in
+  check "Q0I5 releases on the battle"
+    (Campaign.ruin_count "RDPS" = 0 && Campaign.ruin_is_done "RDPS");
+  let i3 = Campaign.quest_turn_in i2 "Q0I5" in
+  check "the guarded OnEnd release is an inert repeat"
+    (Campaign.ruin_count "RDPS" = 0 && Campaign.ruin_is_done "RDPS"
+     && state_of i3 "Q0I5" = None);
+
+  (* -- the registry travels with the save *)
+  let path = Filename.temp_file "pq_ruin_test" ".json" in
+  Campaign.restore_ruin_state [] [];
+  let sp = Campaign.quest_accept (q0i0 ()) "Q0I0" in
+  let sp = Campaign.quest_battle_complete sp "Q0I0" true in
+  Campaign.register_ruin "RSTR";
+  let save = Campaign_save.create_save_data sp sp.Campaign.active_quests "CGAL" 0 in
+  Campaign_save.save_to_file path save;
+
+  (* Diverge from what was saved, so a load that ignores the file cannot pass. *)
+  ignore (Campaign.register_ruin "RSTR");
+  ignore (Campaign.register_ruin "RDPS");
+  let loaded = Campaign_save.load_from_file path in
+  ignore (Campaign_save.apply_save loaded);
+  Sys.remove path;
+
+  check_int "load restores a released ruin's count"
+    (Campaign.ruin_count "REGB") 0;
+  check "load restores the done flag"
+    (Campaign.ruin_is_done "REGB");
+  check_int "load restores a live hold" (Campaign.ruin_count "RSTR") 1;
+  check "load drops the diverged hold"
+    (Campaign.ruin_count "RDPS" = 0 && not (Campaign.ruin_is_done "RDPS"));
+
+  (* Back to where the file started. *)
+  Campaign.restore_ruin_state counts0 done0;
+  restore initial;
+  check "the registry snapshot restores what the sections before found"
+    (Campaign.ruin_counts_snapshot () = counts0
+     && Campaign.ruin_done_snapshot () = done0);
+  check "the map is left as it was found"
     (take_snapshot () = initial)
 
 let () =

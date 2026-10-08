@@ -2153,6 +2153,55 @@ claims:
       gold, 138 xp, 22 item, 12 award, 11 companion), so nothing is silently
       dropped; what is not recovered is which branch the player would have taken.
 
+  - id: campaign.ruin_registry
+    title: A ruin stays registered until every quest holding it has released it
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      QUEST_ADD_RUIN maintains a refcount per ruin id: it inserts the id with
+      count 1 or increments the existing entry's count, reveals the node (byte
+      +10 = 1), and purges the id's pending done-notification, so re-registering
+      cancels a done that has not been shown yet. QUEST_SET_RUIN_DONE finds the
+      entry - an absent id is a no-op - decrements, and when the count reaches
+      zero removes the entry and pushes a done notification onto the owner's
+      queue. Ruins are shared (ROTO carries Q0S1, Q0S3 and Q1S0), so the count is
+      what keeps a site registered while another quest still needs it, and the
+      scripts lean on the absent-id no-op: releases sit in mutually exclusive
+      branches (Q1G1 releases a ruin per battle and again when both fall) and in
+      quests that never registered (Q0Q5 releases WHPS, which nobody registers).
+      The port keeps the counts in a table beside the visibility flags: register
+      on accept, release on battle success, turn-in and abandon, with save/load
+      round-tripping the table alongside the map.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_QUEST_ADD_RUIN_452010.c
+        fn: Engine_QUEST_ADD_RUIN_452010
+      - kind: decompiled
+        ref: docs/decompiled/Engine_QUEST_SET_RUIN_DONE_452150.c
+        fn: Engine_QUEST_SET_RUIN_DONE_452150
+      - kind: code
+        ref: lib/campaign.ml
+        fn: register_ruin
+      - kind: code
+        ref: tools/extract_quests.py
+    affects: [tools/extract_quests.py, lib/campaign_quests.ml, lib/campaign.ml, lib/campaign_save.ml]
+    notes: >
+      Call sites are grouped per hook - OnAbandon -> abandon, OnCompleteAction ->
+      battle success, everything else (OnEnd plus Q1R3's CallbackMsgB/C/D
+      kill-message callbacks) -> turn-in - and deduplicated within each bucket, so
+      mutually exclusive Lua branches collapse to one release and guards run
+      unconditionally (Q0I5 guards its OnEnd release on didShrine, which a won
+      battle already set); the engine's absent-id no-op bounds the extra release.
+      Two anomalies are carried as extracted: Q1Q1 registers its ruin from
+      CallbackConvB, the end-of-quest conversation, so the port's accept-time hold
+      lands earlier than the engine's, and Q0Q2 calls QUEST_ADD_RUIN with an
+      undefined variable (myLocation against myLocation0/1), which resolves to
+      nothing - a nil argument registers nothing in the engine either. What is
+      not recovered is the done-notification queue's consumer: nothing reads the
+      done state yet, so the flag is bookkeeping waiting for its UI.
+
   - id: campaign.global_text_tables
     title: Every campaign name and description resolves through the game's TextLibrary
     area: campaign

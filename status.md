@@ -2,10 +2,12 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync landed two things: the campaign
-quest-lifecycle work (prerequisites, accept/battle/turn-in, map reveals, save of
-live visibility + awards) and the global text tables that make every campaign
-name render as a string. Build, all 24 suites and the demo verified green.
+**Sync:** working tree clean. This sync landed the ruin registry — the refcount
+port of `QUEST_ADD_RUIN` / `QUEST_SET_RUIN_DONE` (shared ruins hold until every
+quest releases, releases bucketed by hook and fired at battle success, turn-in
+and the new `quest_abandon`), save/load of the registry, and the
+`campaign.ruin_registry` evidence claim. Build, all 25 suites and the
+extractor/validator checks verified green.
 
 ---
 
@@ -44,16 +46,23 @@ name render as a string. Build, all 24 suites and the demo verified green.
   `Engine_QUEST_SET_VISIBILITY_450e40.c`); reveals come from extracted
   `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN` calls grouped by hook
   (`reveal_on_begin` / `reveal_on_end` / `ruin_reveals`).
+- **Ruin registry (NEW):** `register_ruin` / `set_ruin_done` port the refcount from
+  `Engine_QUEST_ADD_RUIN_452010.c` / `Engine_QUEST_SET_RUIN_DONE_452150.c` — a ruin
+  shared by several quests (ROTO holds three) stays registered until the last release;
+  releases come from extracted `QUEST_SET_RUIN_DONE` calls bucketed by hook
+  (`ruin_dones_on_battle` / `_on_end` / `_on_abandon`) and fire at battle success,
+  turn-in and the new `quest_abandon`. Absent id = no-op, as in the engine.
 - **Rewards (NEW):** gold/XP/items/awards/companions read from the quest script by
   `tools/extract_quests.py`, which now statically scans quest Lua (file-scope string
   constants + `QUEST_*` calls per top-level function).
 - **Save/Load:** JSON; now snapshots **live** map visibility (not static defaults),
-  restores it into the tables on load, and persists `awards`; quest states stored as
-  the same ints the player record uses.
-- **Tests:** `test/test_campaign.ml` — 78 assertions over prerequisites (every
+  restores it into the tables on load, persists `awards` and the ruin registry
+  (counts + done set); quest states stored as the same ints the player record uses.
+- **Tests:** `test/test_campaign.ml` — 112 assertions over prerequisites (every
   extracted condition), the accept → battle → turn-in lifecycle with real rewards,
-  the both-endpoints road rule, and a save/load round-trip that diverges between
-  save and load so a load that ignores the file cannot pass.
+  the both-endpoints road rule, the ruin registry (refcounts, shared ruins, the
+  three release paths, the abandonable gate), and a save/load round-trip that
+  diverges between save and load so a load that ignores the file cannot pass.
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → battle win → turn-in (prints rewards) → shop → income →
   level-up → save → load. Verified green 2026-10-08.
@@ -64,7 +73,7 @@ name render as a string. Build, all 24 suites and the demo verified green.
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 70 | 10 (5 open) | 17 |
+| `docs/reverse/evidence.yml` | 71 | 10 (5 open) | 17 |
 
 Key decisions recorded:
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
@@ -72,6 +81,7 @@ Key decisions recorded:
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
 - `campaign.quest_rewards_conditional` — branching reward callbacks take the first source-order branch
 - `campaign.global_text_tables` — every campaign name resolves through the TextLibrary
+- `campaign.ruin_registry` — ruin refcounts: register on accept, release on battle/turn-in/abandon
 
 Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
@@ -104,7 +114,8 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, save; travel, encounters, income and level-up still untested |
+| **High** | **Ruin capture + companions** | Phase 3 in progress: capture board/party hooks still to land (ruin registry done) |
+| **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, ruin registry, save; travel, encounters, income and level-up still untested |
 | **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → quest_battle_complete → turn-in → rewards → map` into one loop (partly landed; still demo-scripted) |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
@@ -134,9 +145,10 @@ source assets.
 ## Known Gaps
 
 1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
-   lifecycle, the visibility rule and the save round-trip (78 assertions);
-   travel, encounter triggering, income and level-up are untested
+   lifecycle, the visibility rule, the ruin registry and the save round-trip
+   (112 assertions); travel, encounter triggering, income and level-up are untested
 2. **Ruins / companion capture** — mini-game board logic not implemented
+   (the ruin registry itself is done: refcounts, releases, save)
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic
 4. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics

@@ -41,12 +41,13 @@
 |-----|---------|
 | ~~Prerequisite checks~~ | ✅ `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`, `item`, `notitem`, `award`, `notaward` all wired in `is_quest_available` |
 | ~~Quest rewards~~ | ✅ gold/XP/items/awards/companions from the quest script (`run_quest_on_end`), not the 200/200 default |
-| Quest failure paths | `run_quest_on_fail` exists; nothing calls it yet — no OnFail hook, no abandon flow |
+| ~~Quest failure paths~~ | `quest_abandon` runs OnAbandon (releases + state reset) and respects the `abandonable` flag; `run_quest_on_fail` still has no caller — no OnFail hook |
 | Conversation callbacks | `CallbackConv*` grants (item/award/companion/xp) are applied at turn-in rather than at the dialogue |
 
 ### 2. Ruins & Companion Capture
 | Gap | Details |
 |-----|---------|
+| ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
 | Ruin mini-game | 8×8 capture grids extracted per monster; no board logic, no capture attempt flow |
 | Companion system | Monster `capture` grids extracted; no party slots, no companion equipping, no companion bonuses |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
@@ -165,7 +166,7 @@
 1. ~~**Quest prerequisite checks**~~ ✅ wired to `is_quest_available`
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
-4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, save round-trip (78 assertions)
+4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip (112 assertions)
 5. **Ruin capture board** — reuse `Board` + `Battle` with capture grid as initial state; success → add monster to companions
 6. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
 7. **Mount speed** — `mount` slot → modify travel time between nodes
@@ -177,7 +178,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`; still to add: ruin capture, grid spell targeting, monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`; still to add: ruin capture, grid spell targeting, monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |

@@ -58,6 +58,8 @@ type save_campaign = {
   player: save_player;
   quests: save_quest_state list;
   map_visibility: save_map_visibility;
+  ruin_counts: (string * int) list;
+  ruin_done: string list;
   current_location: string;
   travel_state: int;
 }
@@ -124,6 +126,8 @@ let save_campaign_to_json s =
     "player", save_player_to_json s.player;
     "quests", `List (List.map save_quest_state_to_json s.quests);
     "map_visibility", save_map_visibility_to_json s.map_visibility;
+    "ruin_counts", `List (List.map (fun (id, n) -> `Assoc [("id", `String id); ("count", `Int n)]) s.ruin_counts);
+    "ruin_done", `List (List.map (fun id -> `String id) s.ruin_done);
     "current_location", `String s.current_location;
     "travel_state", `Int s.travel_state;
   ]
@@ -179,6 +183,13 @@ let save_campaign_of_json json =
   { player = save_player_of_json (json |> member "player");
     quests = (json |> member "quests" |> to_list) |> List.map (fun v -> { quest_id = v |> member "quest_id" |> to_string; state = v |> member "state" |> to_int; vars = (v |> member "vars" |> to_list) |> List.map (fun v -> (v |> member "key" |> to_string, v |> member "value" |> to_string)) });
     map_visibility = (let m = json |> member "map_visibility" in { visible_cities = (m |> member "visible_cities" |> to_list) |> List.map to_string; visible_waypoints = (m |> member "visible_waypoints" |> to_list) |> List.map to_string; visible_ruins = (m |> member "visible_ruins" |> to_list) |> List.map to_string; visible_roads = (m |> member "visible_roads" |> to_list) |> List.map (fun v -> (v |> member "from" |> to_string, v |> member "to" |> to_string)) });
+    (* saves written before the ruin registry existed load as empty *)
+    ruin_counts = (match json |> member "ruin_counts" with
+      | `Null -> []
+      | j -> j |> to_list |> List.map (fun v -> (v |> member "id" |> to_string, v |> member "count" |> to_int)));
+    ruin_done = (match json |> member "ruin_done" with
+      | `Null -> []
+      | j -> j |> to_list |> List.map to_string);
     current_location = json |> member "current_location" |> to_string;
     travel_state = json |> member "travel_state" |> to_int; }
 
@@ -201,13 +212,7 @@ let load_from_file filename =
   really_input ic buf 0 len;
   close_in ic;
   let json = Yojson.Basic.from_string (Bytes.to_string buf) in
-  let save = { player = save_player_of_json (json |> member "player");
-    quests = (json |> member "quests" |> to_list) |> List.map (fun v -> { quest_id = v |> member "quest_id" |> to_string; state = v |> member "state" |> to_int; vars = (v |> member "vars" |> to_list) |> List.map (fun v -> (v |> member "key" |> to_string, v |> member "value" |> to_string)) });
-    map_visibility = (let m = json |> member "map_visibility" in { visible_cities = (m |> member "visible_cities" |> to_list) |> List.map to_string; visible_waypoints = (m |> member "visible_waypoints" |> to_list) |> List.map to_string; visible_ruins = (m |> member "visible_ruins" |> to_list) |> List.map to_string; visible_roads = (m |> member "visible_roads" |> to_list) |> List.map (fun v -> (v |> member "from" |> to_string, v |> member "to" |> to_string)) });
-    current_location = json |> member "current_location" |> to_string;
-    travel_state = json |> member "travel_state" |> to_int; }
-  in
-  save
+  save_campaign_of_json json
 
 (* ------------------------------------------------------------------ *)
 (* Conversion functions - use fully qualified module paths *)
@@ -285,6 +290,8 @@ let create_save_data player active_quests current_location travel_state =
         visible_waypoints = List.filter_map (fun (w : Campaign_map.waypoint) -> if Campaign.node_visible w.id then Some w.id else None) Campaign_map.waypoints;
         visible_ruins = List.filter_map (fun (r : Campaign_map.ruin) -> if Campaign.node_visible r.id then Some r.id else None) Campaign_map.ruins;
         visible_roads = List.filter_map (fun (r : Campaign_map.road) -> if Campaign.get_road_visible r.start r.end_ then Some (r.start, r.end_) else None) Campaign_map.roads };
+    ruin_counts = Campaign.ruin_counts_snapshot ();
+    ruin_done = Campaign.ruin_done_snapshot ();
     current_location; travel_state }
 
 let save_to_file filename save =
@@ -301,13 +308,7 @@ let load_from_file filename =
   really_input ic buf 0 len;
   close_in ic;
   let json = Yojson.Basic.from_string (Bytes.to_string buf) in
-  let save = { player = save_player_of_json (json |> member "player");
-    quests = (json |> member "quests" |> to_list) |> List.map (fun v -> { quest_id = v |> member "quest_id" |> to_string; state = v |> member "state" |> to_int; vars = (v |> member "vars" |> to_list) |> List.map (fun v -> (v |> member "key" |> to_string, v |> member "value" |> to_string)) });
-    map_visibility = (let m = json |> member "map_visibility" in { visible_cities = (m |> member "visible_cities" |> to_list) |> List.map to_string; visible_waypoints = (m |> member "visible_waypoints" |> to_list) |> List.map to_string; visible_ruins = (m |> member "visible_ruins" |> to_list) |> List.map to_string; visible_roads = (m |> member "visible_roads" |> to_list) |> List.map (fun v -> (v |> member "from" |> to_string, v |> member "to" |> to_string)) });
-    current_location = json |> member "current_location" |> to_string;
-    travel_state = json |> member "travel_state" |> to_int; }
-  in
-  save
+  save_campaign_of_json json
 
 let apply_save save =
   let player = SaveConvert.player_from_save save.player in
@@ -327,4 +328,7 @@ let apply_save save =
   List.iter (fun id -> Campaign.set_node_visible id true) save.map_visibility.visible_waypoints;
   List.iter (fun id -> Campaign.set_node_visible id true) save.map_visibility.visible_ruins;
   List.iter (fun (a, b) -> Campaign.set_road_visible a b true) save.map_visibility.visible_roads;
+  (* same treatment for the ruin registry: replace the live tables with the
+     counts and done set the save recorded *)
+  Campaign.restore_ruin_state save.ruin_counts save.ruin_done;
   (player, active_quests, completed_quests, awards, current_location, travel_state)

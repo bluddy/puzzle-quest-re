@@ -14,7 +14,15 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     (quest accepted / intro conversation callback)
   * reveal_on_end   = calls in every other hook, applied at turn-in until
     conversation callbacks are wired to the quest state machine
-  * ruin_reveals    = QUEST_ADD_RUIN targets (OnBegin in the shipped set)
+  * ruin_reveals    = QUEST_ADD_RUIN targets (OnBegin / CallbackConvA in the
+    shipped set; registration happens once, at accept)
+  * ruin_dones_*    = QUEST_SET_RUIN_DONE call sites grouped by the hook they
+    sit in: OnAbandon fires when the player abandons, OnCompleteAction fires
+    after a won quest battle, every other hook fires at turn-in. Deduplicated
+    per bucket, so mutually exclusive Lua branches collapse to one release and
+    guards (Q0I5's didShrine check) run unconditionally - the same branch
+    heuristic as the reward fields, bounded by the engine's no-op on an
+    unregistered id.
   * reward_gold/xp  = first call site in file order; if/else reward branches
     are not evaluated (source order puts the if-branch first) - see
     campaign.quest_rewards_conditional
@@ -147,6 +155,8 @@ CALL_PATTERNS = {
         r'QUEST_SET_VISIBILITY\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*(?:,\s*(\d+)\s*)?\)'),
     'add_ruin': re.compile(
         r'QUEST_ADD_RUIN\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
+    'set_ruin_done': re.compile(
+        r'QUEST_SET_RUIN_DONE\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
     'gold': re.compile(r'QUEST_REWARD_GOLD\s*\(\s*(\d+)\s*\)'),
     'xp': re.compile(r'QUEST_REWARD_XP\s*\(\s*(\d+)\s*\)'),
     'item': re.compile(
@@ -183,6 +193,17 @@ def reveal_bucket(hook):
     return 'end'
 
 
+def ruin_done_bucket(hook):
+    """Which engine event runs this hook's QUEST_SET_RUIN_DONE calls:
+    OnAbandon on abandon, OnCompleteAction after a won battle, everything
+    else at turn-in (OnEnd plus any stray conversation callback)."""
+    if hook == 'OnAbandon':
+        return 'abandon'
+    if hook == 'OnCompleteAction':
+        return 'battle'
+    return 'end'
+
+
 def analyze_lua(src, qid, stats):
     """Returns reveal/reward fields extracted from one quest script."""
     nc = scan(src, blank_strings=False)
@@ -196,6 +217,7 @@ def analyze_lua(src, qid, stats):
 
     reveals = {'begin': [], 'end': []}
     ruins = []
+    ruin_dones = {'end': [], 'battle': [], 'abandon': []}
     gold = xp = 0
     items, awards, companions = [], [], []
 
@@ -219,6 +241,14 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             ruins.append(target)
+        for hit in CALL_PATTERNS['set_ruin_done'].finditer(body):
+            stats['extracted']['set_ruin_done'] += 1
+            stats['hooks'][('set_ruin_done', hook)] += 1
+            target = resolve(hit.group(1), consts)
+            if target is None:
+                stats['unresolved'].append((qid, hook, hit.group(1)))
+                continue
+            ruin_dones[ruin_done_bucket(hook)].append(target)
         for hit in CALL_PATTERNS['gold'].finditer(body):
             stats['extracted']['gold'] += 1
             stats['hooks'][('gold', hook)] += 1
@@ -258,6 +288,9 @@ def analyze_lua(src, qid, stats):
         'reveal_on_begin': dedup(reveals['begin']),
         'reveal_on_end': dedup(reveals['end']),
         'ruin_reveals': dedup(ruins),
+        'ruin_dones_on_end': dedup(ruin_dones['end']),
+        'ruin_dones_on_battle': dedup(ruin_dones['battle']),
+        'ruin_dones_on_abandon': dedup(ruin_dones['abandon']),
         'reward_gold': gold,
         'reward_xp': xp,
         'reward_items': dedup(items),
@@ -308,6 +341,8 @@ def parse_quest(xml_path, stats):
 
     lua_fields = analyze_lua(lua_source, qid, stats) if lua_source else {
         'reveal_on_begin': [], 'reveal_on_end': [], 'ruin_reveals': [],
+        'ruin_dones_on_end': [], 'ruin_dones_on_battle': [],
+        'ruin_dones_on_abandon': [],
         'reward_gold': 0, 'reward_xp': 0, 'reward_items': [],
         'reward_awards': [], 'reward_companions': [],
     }
@@ -417,6 +452,9 @@ def main():
                   f"monster={q['battle_monster']} spells={q['battle_spells']}")
             print(f"    reveal_begin={q['reveal_on_begin']} reveal_end={q['reveal_on_end']} "
                   f"ruins={q['ruin_reveals']}")
+            print(f"    ruin_dones: end={q['ruin_dones_on_end']} "
+                  f"battle={q['ruin_dones_on_battle']} "
+                  f"abandon={q['ruin_dones_on_abandon']}")
             print(f"    reward: gold={q['reward_gold']} xp={q['reward_xp']} "
                   f"items={q['reward_items']} awards={q['reward_awards']} "
                   f"companions={q['reward_companions']}")
@@ -462,6 +500,9 @@ def main():
     lines.append("  reveal_on_begin: string list;")
     lines.append("  reveal_on_end: string list;")
     lines.append("  ruin_reveals: string list;")
+    lines.append("  ruin_dones_on_end: string list;")
+    lines.append("  ruin_dones_on_battle: string list;")
+    lines.append("  ruin_dones_on_abandon: string list;")
     lines.append("  reward_gold: int;")
     lines.append("  reward_xp: int;")
     lines.append("  reward_items: string list;")
@@ -509,6 +550,9 @@ def main():
         lines.append(f'    reveal_on_begin = {ocaml_list(q["reveal_on_begin"])};')
         lines.append(f'    reveal_on_end = {ocaml_list(q["reveal_on_end"])};')
         lines.append(f'    ruin_reveals = {ocaml_list(q["ruin_reveals"])};')
+        lines.append(f'    ruin_dones_on_end = {ocaml_list(q["ruin_dones_on_end"])};')
+        lines.append(f'    ruin_dones_on_battle = {ocaml_list(q["ruin_dones_on_battle"])};')
+        lines.append(f'    ruin_dones_on_abandon = {ocaml_list(q["ruin_dones_on_abandon"])};')
         lines.append(f'    reward_gold = {q["reward_gold"]};')
         lines.append(f'    reward_xp = {q["reward_xp"]};')
         lines.append(f'    reward_items = {ocaml_list(q["reward_items"])};')

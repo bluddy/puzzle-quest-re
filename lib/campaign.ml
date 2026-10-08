@@ -208,6 +208,48 @@ let encounters_on_road_visible (player: player) (start: string) (end_: string) :
 (* Quest logic - ported from Lua quest state machines *)
 (* ------------------------------------------------------------------ *)
 
+(* Ruin registration: Engine_QUEST_ADD_RUIN_452010.c inserts the id with count 1
+   or increments the existing count, reveals the node, and purges any pending
+   done-notification for that id (so re-registering clears "done"); the count is
+   what keeps a shared ruin registered while another quest still holds it.
+   Engine_QUEST_SET_RUIN_DONE_452150.c finds the entry (absent -> no-op),
+   decrements, and at zero removes it and pushes a done notification. Holders
+   come from the extracted scripts: register on accept, release on battle
+   success, turn-in and abandon - see Campaign_quests.quest.ruin_reveals and
+   ruin_dones_* (tools/extract_quests.py groups the call sites by hook). *)
+let ruin_counts : (string, int) Hashtbl.t = Hashtbl.create 16
+let ruin_done_ids : string list ref = ref []
+
+let ruin_count (id: string) : int =
+  match Hashtbl.find_opt ruin_counts id with Some n -> n | None -> 0
+
+let ruin_is_done (id: string) : bool = List.mem id !ruin_done_ids
+
+let register_ruin (id: string) : unit =
+  set_location_visible id true;
+  Hashtbl.replace ruin_counts id (ruin_count id + 1);
+  (* ADD_RUIN purges the id's pending done notification on every register *)
+  ruin_done_ids := List.filter (fun r -> r <> id) !ruin_done_ids
+
+let set_ruin_done (id: string) : unit =
+  match ruin_count id with
+  | 0 -> ()  (* no entry: the engine's find fails and nothing happens *)
+  | 1 ->
+    Hashtbl.remove ruin_counts id;
+    if not (List.mem id !ruin_done_ids) then ruin_done_ids := id :: !ruin_done_ids
+  | n -> Hashtbl.replace ruin_counts id (n - 1)
+
+(* save/load: snapshot the live registry, like the visibility tables *)
+let ruin_counts_snapshot () =
+  Hashtbl.fold (fun k v acc -> (k, v) :: acc) ruin_counts []
+
+let ruin_done_snapshot () = !ruin_done_ids
+
+let restore_ruin_state (counts: (string * int) list) (done_ids: string list) : unit =
+  Hashtbl.reset ruin_counts;
+  List.iter (fun (id, n) -> if n > 0 then Hashtbl.replace ruin_counts id n) counts;
+  ruin_done_ids := List.sort_uniq compare done_ids
+
 type quest_state = 
   | Inactive
   | Active of int  (* state variable from quest script *)
@@ -245,16 +287,19 @@ type quest_effect =
   | SetState of int
   | EncounterBattle of string * string * int  (* code, monster, ? *)
   | ShowRewardMenu of string * string
-  | RevealNode of string  (* node id from QUEST_SET_VISIBILITY / QUEST_ADD_RUIN *)
+  | RevealNode of string  (* node id from QUEST_SET_VISIBILITY *)
+  | RegisterRuin of string  (* QUEST_ADD_RUIN: refcount + reveal *)
+  | RuinDone of string  (* QUEST_SET_RUIN_DONE: refcount down, mark done at 0 *)
   | None
 
 let run_quest_on_begin (qi: quest_instance) : quest_instance * quest_effect list =
   let q = qi.quest in
   (* OnBegin reveals plus the intro conversation callback (CallbackConvA), and
-     ruin registration (QUEST_ADD_RUIN, OnBegin in the shipped set) *)
-  let reveals = List.map (fun n -> RevealNode n) (q.reveal_on_begin @ q.ruin_reveals) in
+     ruin registration (QUEST_ADD_RUIN from OnBegin / the conversation) *)
+  let reveals = List.map (fun n -> RevealNode n) q.reveal_on_begin in
+  let registers = List.map (fun n -> RegisterRuin n) q.ruin_reveals in
   let new_vars = quest_var_set qi.vars "questState" "1" in
-  { qi with state = Active 1; vars = new_vars }, reveals @ [SetState 1]
+  { qi with state = Active 1; vars = new_vars }, reveals @ registers @ [SetState 1]
 
 let run_quest_on_end (qi: quest_instance) : quest_instance * quest_effect list =
   (* Rewards as extracted from the quest script (OnEnd plus reward callbacks);
@@ -269,14 +314,20 @@ let run_quest_on_end (qi: quest_instance) : quest_instance * quest_effect list =
     @ List.map (fun c -> RewardCompanion c) q.reward_companions
   in
   let reveals = List.map (fun n -> RevealNode n) q.reveal_on_end in
+  (* QUEST_SET_RUIN_DONE calls outside OnAbandon / OnCompleteAction (OnEnd plus
+     stray callbacks) release the ruin at turn-in; guards on those calls are not
+     evaluated, so the release may find the ruin already released - the engine's
+     absent-id no-op bounds that, see evidence campaign.ruin_registry *)
+  let ruins = List.map (fun n -> RuinDone n) q.ruin_dones_on_end in
   { qi with state = Completed },
-  rewards @ reveals @ [ShowRewardMenu (quest_name q, quest_desc q); CompleteQuest q.id]
+  rewards @ reveals @ ruins @ [ShowRewardMenu (quest_name q, quest_desc q); CompleteQuest q.id]
 
 let run_quest_on_fail (qi: quest_instance) : quest_instance * quest_effect list =
   { qi with state = Failed }, [FailQuest qi.quest.id]
 
 let run_quest_on_abandon (qi: quest_instance) : quest_instance * quest_effect list =
-  { qi with state = Inactive; vars = quest_var_set qi.vars "questState" "0" }, [SetState 0]
+  { qi with state = Inactive; vars = quest_var_set qi.vars "questState" "0" },
+  List.map (fun n -> RuinDone n) qi.quest.ruin_dones_on_abandon @ [SetState 0]
 
 let run_quest_on_enter_location (qi: quest_instance) (_location: string) : quest_instance * quest_effect list =
   qi, []
@@ -439,6 +490,8 @@ let apply_quest_effect p qeffect =
   | RewardAward award_id -> { p with awards = award_id :: p.awards }
   | RewardCompanion companion_id -> { p with companions = companion_id :: p.companions }
   | RevealNode node_id -> set_location_visible node_id true; p
+  | RegisterRuin id -> register_ruin id; p
+  | RuinDone id -> set_ruin_done id; p
   | CompleteQuest qid ->
     { p with
         active_quests = List.filter (fun (id, _) -> id <> qid) p.active_quests;
@@ -464,12 +517,18 @@ let quest_accept (player: player) (qid: string) : player =
     else { p with active_quests = (qid, 1) :: p.active_quests }
 
 (* Resolve the quest's battle: on success state 1 -> 2 (kill done, turn-in
-   pending); on failure the quest stays active at 1 (Q0E0 OnCompleteAction
-   keeps questState = 1 and only shows a message). *)
+   pending) and OnCompleteAction's success branch runs - which is where most
+   scripts release the ruin they registered (QUEST_SET_RUIN_DONE), so the
+   refcount drops with the state bump; on failure the quest stays active at 1
+   (Q0E0 OnCompleteAction keeps questState = 1 and only shows a message). *)
 let quest_battle_complete (player: player) (qid: string) (success: bool) : player =
   if not success then player
-  else { player with active_quests =
-    List.map (fun (id, s) -> if id = qid then (id, 2) else (id, s)) player.active_quests }
+  else if not (List.exists (fun (id, _) -> id = qid) player.active_quests) then player
+  else
+    let p = { player with active_quests =
+      List.map (fun (id, s) -> if id = qid then (id, 2) else (id, s)) player.active_quests } in
+    List.fold_left apply_quest_effect p
+      (List.map (fun n -> RuinDone n) (quest_by_id qid).ruin_dones_on_battle)
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into
@@ -481,6 +540,21 @@ let quest_turn_in (player: player) (qid: string) : player =
     let qi = { quest = q; state = Active 2; vars = quest_var_set [] "questState" "2" } in
     let _qi, effects = run_quest_on_end qi in
     List.fold_left apply_quest_effect player effects
+
+(* Abandon a quest: runs OnAbandon (ruin releases, state back to 0) and drops it
+   from active_quests, which makes it available again. No-op if it is not active
+   or the quest is not flagged abandonable (Data abandon="yes") - the flag is
+   what withholds the Abandon option, so OnAbandon never fires without it. *)
+let quest_abandon (player: player) (qid: string) : player =
+  if not (List.exists (fun (id, _) -> id = qid) player.active_quests) then player
+  else
+    let q = quest_by_id qid in
+    if not q.abandonable then player
+    else
+      let qi = { quest = q; state = Active 1; vars = quest_var_set [] "questState" "1" } in
+      let _qi, effects = run_quest_on_abandon qi in
+      let p = List.fold_left apply_quest_effect player effects in
+      { p with active_quests = List.filter (fun (id, _) -> id <> qid) p.active_quests }
 
 (* Complete a road encounter: run the battle and apply loot. Road encounters
    are random travel fights; quest progress is driven by quest_battle_complete
