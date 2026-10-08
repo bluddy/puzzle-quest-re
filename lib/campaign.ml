@@ -47,6 +47,9 @@ type player = {
   companions: string list;   (* companion monster ids *)
   awards: string list;       (* quest awards earned *)
   current_city: string option; (* for income collection *)
+  dungeon_built: bool;       (* capture gate; chosen: true, see capture section *)
+  monster_defeats: (string * int) list; (* monster id * wins toward capture *)
+  captives: string list;     (* monster ids captured *)
 }
 
 let default_equipment = {
@@ -71,6 +74,9 @@ let create_player name prof_id sex age =
     companions = [];
     awards = [];
     current_city = None;
+    dungeon_built = true;
+    monster_defeats = [];
+    captives = [];
   }
 
 (* ------------------------------------------------------------------ *)
@@ -411,6 +417,44 @@ let check_level_up (player: player) : player =
   else player
 
 (* ------------------------------------------------------------------ *)
+(* Capture                                                             *)
+(* ------------------------------------------------------------------ *)
+
+(* [CAPTURE_LISTHELP] gates an attempt on two things: a dungeon built and the
+   enemy defeated 3+ times. dungeon_built is chosen true - the requirement
+   comes from the string, but no shipped data carries a dungeon to build, so
+   the flag exists to gate rather than to withhold. Defeats count won battles
+   per monster id: road wins via process_battle_result (the encounter's sprite
+   maps back to its monster record) and quest wins via quest_battle_complete
+   (the quest's battle_monster). *)
+
+let monster_defeats (p: player) (monster_id: string) : int =
+  try List.assoc monster_id p.monster_defeats with Not_found -> 0
+
+let record_defeat (p: player) (monster_id: string) : player =
+  let n = monster_defeats p monster_id + 1 in
+  { p with monster_defeats =
+      (monster_id, n) :: List.filter (fun (id, _) -> id <> monster_id) p.monster_defeats }
+
+let capture_eligible (p: player) (monster_id: string) : bool =
+  p.dungeon_built && monster_defeats p monster_id >= 3
+
+(* The attempt runs on the monster's shipped capture grid. *)
+let capture_begin (monster_id: string) : Capture.t =
+  Capture.create (Campaign_monsters.monster_by_id monster_id).capture_grid
+
+(* A won attempt adds the monster to the captives (once); a lost one changes
+   nothing - [CAPTURE_FAIL] "you may try again later". An in-progress attempt
+   is not persisted: the grid is deterministic data, so a loaded player rebuilds
+   it with capture_begin. *)
+let capture_finish (p: player) (monster_id: string) (attempt: Capture.t) : player =
+  match attempt.status with
+  | Capture.Won ->
+    if List.mem monster_id p.captives then p
+    else { p with captives = monster_id :: p.captives }
+  | Capture.Playing | Capture.Lost -> p
+
+(* ------------------------------------------------------------------ *)
 (* Battle Integration *)
 (* ------------------------------------------------------------------ *)
 
@@ -460,7 +504,7 @@ type battle_result = {
   final_life: int;
 }
 
-let process_battle_result (player: player) (_enc: encounter) (battle: battle) : player * battle_result =
+let process_battle_result (player: player) (enc: encounter) (battle: battle) : player * battle_result =
   let hero = battle.hero in
   let enemy = battle.enemy in
   let player_won = enemy.is_dead && not hero.is_dead in
@@ -472,6 +516,16 @@ let process_battle_result (player: player) (_enc: encounter) (battle: battle) : 
       xp = player.xp + xp_gained;
       life = hero.life;
     } in
+  (* a road win counts toward capture eligibility *)
+  let new_player =
+    if player_won && enc.sprite <> "" then begin
+      try
+        let m = Campaign_monsters.monster_by_sprite enc.sprite in
+        record_defeat new_player m.id
+      with Not_found -> new_player
+    end
+    else new_player
+  in
   let result = {
     player_won;
     gold_gained;
@@ -525,10 +579,16 @@ let quest_battle_complete (player: player) (qid: string) (success: bool) : playe
   if not success then player
   else if not (List.exists (fun (id, _) -> id = qid) player.active_quests) then player
   else
+    let q = quest_by_id qid in
     let p = { player with active_quests =
       List.map (fun (id, s) -> if id = qid then (id, 2) else (id, s)) player.active_quests } in
+    (* the quest's kill counts toward capture eligibility too *)
+    let p =
+      if q.battle_monster <> "" then record_defeat p q.battle_monster
+      else p
+    in
     List.fold_left apply_quest_effect p
-      (List.map (fun n -> RuinDone n) (quest_by_id qid).ruin_dones_on_battle)
+      (List.map (fun n -> RuinDone n) q.ruin_dones_on_battle)
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into

@@ -3,6 +3,7 @@
  (libraries yojson)
  (modules
   board
+  capture
   item
   item_data
   item_hooks

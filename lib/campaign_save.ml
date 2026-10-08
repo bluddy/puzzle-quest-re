@@ -39,6 +39,9 @@ type save_player = {
   companions: string list;
   awards: string list;
   current_city: string option;
+  dungeon_built: bool;
+  monster_defeats: (string * int) list;
+  captives: string list;
 }
 
 type save_quest_state = {
@@ -104,6 +107,9 @@ let save_player_to_json (p: save_player) =
     "companions", `List (List.map (fun s -> `String s) p.companions);
     "awards", `List (List.map (fun s -> `String s) p.awards);
     "current_city", (match p.current_city with Some s -> `String s | None -> `Null);
+    "dungeon_built", `Bool p.dungeon_built;
+    "monster_defeats", `List (List.map (fun (id, n) -> `Assoc [("id", `String id); ("count", `Int n)]) p.monster_defeats);
+    "captives", `List (List.map (fun s -> `String s) p.captives);
   ]
 
 let save_quest_state_to_json q =
@@ -166,7 +172,15 @@ let save_player_of_json json =
     completed_quests = (json |> member "completed_quests" |> to_list) |> List.map to_string;
     companions = (json |> member "companions" |> to_list) |> List.map to_string;
     awards = (json |> member "awards" |> to_list) |> List.map to_string;
-    current_city = match json |> member "current_city" with `Null -> None | `String s -> Some s | _ -> None; }
+    current_city = (match json |> member "current_city" with `Null -> None | `String s -> Some s | _ -> None);
+    (* saves written before the capture state existed load as the defaults *)
+    dungeon_built = (match json |> member "dungeon_built" with `Bool b -> b | _ -> true);
+    monster_defeats = (match json |> member "monster_defeats" with
+      | `Null -> []
+      | j -> j |> to_list |> List.map (fun v -> (v |> member "id" |> to_string, v |> member "count" |> to_int)));
+    captives = (match json |> member "captives" with
+      | `Null -> []
+      | j -> j |> to_list |> List.map to_string); }
 
 let save_quest_state_of_json json =
   { quest_id = json |> member "quest_id" |> to_string;
@@ -245,7 +259,10 @@ module SaveConvert = struct
       known_spells = p.known_spells; active_quests = p.active_quests;
       completed_quests = p.completed_quests; companions = p.companions;
       awards = p.awards;
-      current_city = p.current_city }
+      current_city = p.current_city;
+      dungeon_built = p.dungeon_built;
+      monster_defeats = p.monster_defeats;
+      captives = p.captives }
 
   let skill_affinities_from_save (s: skill_affinities) : Campaign_types.skill_affinities =
     { earth = s.earth; fire = s.fire; air = s.air; water = s.water;
@@ -273,7 +290,10 @@ module SaveConvert = struct
       known_spells = s.known_spells; active_quests = s.active_quests;
       completed_quests = s.completed_quests; companions = s.companions;
       awards = s.awards;
-      current_city = s.current_city }
+      current_city = s.current_city;
+      dungeon_built = s.dungeon_built;
+      monster_defeats = s.monster_defeats;
+      captives = s.captives }
 end
 
 (* ------------------------------------------------------------------ *)

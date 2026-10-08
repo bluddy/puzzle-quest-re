@@ -2235,6 +2235,87 @@ claims:
       it. Four other languages carry the same 2,638 entries; the extractor takes
       --language and ships English.
 
+  - id: campaign.capture_eligible
+    title: Capture needs a built dungeon and three wins over that same enemy
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      The capture list in the game's own UI states the two gates: "You may
+      capture an enemy if you have: * Built a Dungeon / * Defeated that enemy
+      3+ times" (mounts get the same list with "that beast"). The port counts
+      wins per monster id - road wins mapped through the encounter's sprite back
+      to its monster record, quest wins through the quest's battle_monster - and
+      capture_eligible is dungeon_built and a count of three. Per monster,
+      because the list is per enemy: beating a goblin says nothing about a troll.
+      A won attempt adds the monster to the player's captives once; a lost one
+      changes nothing, which is what [CAPTURE_FAIL] describes.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[CAPTURE_LISTHELP0/1/2] and the 0m/1m/2m mount variants, plus [CAPTURE_FAIL]"
+      - kind: code
+        ref: lib/campaign.ml
+        fn: capture_eligible
+      - kind: code
+        ref: test/test_capture.ml
+    affects: [lib/campaign.ml, lib/campaign_save.ml]
+    notes: >
+      dungeon_built is chosen true: the requirement is read straight from the
+      string, but no shipped data carries a dungeon to build, so the flag gates
+      rather than withholds until city building exists. The count only ever
+      grows - nothing decrements it, and the gate is its only consumer. Not
+      modelled: the per-quest-battle capture flag, where QUEST_BATTLE passes
+      capture=1 and QUEST_BATTLE_NOCAPTURE capture=0 to QUEST_ENCOUNTER_ADD -
+      battle identity within a quest is not tracked in the port, so a quest kill
+      of a non-capturable variant counts here. Recorded in GAPS.md.
+
+  - id: campaign.capture_board
+    title: A capture attempt clears an 8x8 grid of gems with battle rules
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      [CAPTURE_HELP] states the goal verbatim: "To capture this creature you
+      must clear the grid of gems, matching them as if you were in a normal
+      battle." The grid ships with each monster - <Capture><Row data="..."/> in
+      Assets/Monsters/*.xml, eight rows of eight characters from the charset
+      G/R/B/Y mana, S skull, O gold, X experience, * wildcard, - empty, top row
+      first - and the screen draws it in an eight-cell pad_grid. That is the
+      mechanic the port implements: parse the grid, swap and resolve exactly as
+      the battle board does, drop with gravity, and stop when the grid is empty
+      (won) or no swap makes a match (lost). No refill: clearing the grid is
+      impossible if gems spawn back, so the settle loop is the battle's
+      resolve+gravity minus the refill the battle adds.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[CAPTURE_HELP] and [CAPTURE_FAIL]"
+      - kind: xml
+        ref: game/Assets.zip!Assets/Monsters/MTRO.xml
+        note: the Capture element's eight Row data attributes
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/CaptureMenu.xml
+        note: pad_grid, the 584x584 board the grid is drawn into
+      - kind: code
+        ref: tools/extract_items_professions_monsters.py
+        note: the Capture/Row parse into capture_grid
+      - kind: code
+        ref: lib/capture.ml
+    affects: [lib/capture.ml, lib/campaign.ml, lib/campaign_save.ml]
+    notes: >
+      The swap, match and gravity rules are the battle board's own - the port
+      calls Board.is_valid_swap, resolve_matches and apply_gravity directly, so
+      "as if you were in a normal battle" cannot drift from the battle. 17 of
+      the 60 shipped grids contain a match at rest and 8 are entirely empty;
+      how each of those reads is a port choice, recorded in
+      port.capture_grid_rules. An in-progress attempt is not written to the
+      save: the grid is deterministic data, so a loaded player rebuilds it with
+      capture_begin while the surrounding state (defeats, captives, dungeon)
+      round-trips.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -2793,3 +2874,30 @@ port_decisions:
       `test_gfx_anim`.
     supersedes: null
     date: 2026-10-06
+
+  - id: port.capture_grid_rules
+    decision: >
+      The capture grid is laid out as shipped, an all-empty grid reads as won at
+      once, * parses as a Wildcard 2, and an in-progress attempt is not saved
+    rationale: >
+      Four small choices where the game's own data leaves a gap, each recorded
+      rather than passed off as recovered.
+
+      No refill is not among them - [CAPTURE_HELP] asks the player to clear the
+      grid, which refill makes impossible - so the settle loop is the battle's
+      resolve+gravity and stops when no match remains.
+
+      The grid is laid as shipped, pre-existing runs and all: 17 of the 60
+      grids carry a match at rest, and whether the engine laid them pre-cleared
+      is not recovered, so the first swap's resolution clears them rather than
+      a start-of-attempt sweep inventing one. An entirely empty grid (8 of the
+      60, on non-combat monsters) reads as already cleared - the goal met -
+      so capture_begin returns a won attempt rather than an unplayable one.
+      The charset's * carries no multiplier in the data, so it parses as
+      Wildcard 2, the low canonical value; the battle's own 5-match wildcard
+      spawn (min 8 count) is a different rule and is untouched. And an attempt
+      in progress is not written to the save: the grid is static data, so a
+      load rebuilds it with capture_begin while the state that matters -
+      defeat counts, captives, the dungeon flag - round-trips.
+    supersedes: null
+    date: 2026-10-08

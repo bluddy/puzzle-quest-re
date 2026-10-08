@@ -48,7 +48,8 @@
 | Gap | Details |
 |-----|---------|
 | ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
-| Ruin mini-game | 8×8 capture grids extracted per monster; no board logic, no capture attempt flow |
+| ~~Ruin mini-game~~ | ✅ `lib/capture.ml`: grid parse, no-refill settle, win/lose, auto-play; gates, captives and save in `campaign.ml` |
+| Quest battle capture flag | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; battle identity within a quest is not modelled, so quest kills count toward eligibility |
 | Companion system | Monster `capture` grids extracted; no party slots, no companion equipping, no companion bonuses |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
@@ -107,7 +108,7 @@
 |-----|---------|
 | Party slots | `companions: string list` exists; no max size, no swap UI |
 | Mount | `mount` equipment slot exists; no speed/fly logic, no banner effects |
-| Capture flow | No ruin encounter → capture board → success/fail → add to party |
+| Capture flow | Engine side done (eligibility, begin/finish, captives, save); no encounter UI wiring a battle win to the capture menu |
 
 ### 11. Character Creation
 | Gap | Details |
@@ -148,7 +149,7 @@
 | **1 ✅** | Quest prerequisites + rewards | Unlocks map progression, makes quests meaningful |
 | **2 ✅** | Map visibility + road/ruin unlock | Gives purpose to quests, opens world |
 | **2 ✅** | Global text tables | Names render as strings; blocks every UI otherwise |
-| **3** | Ruin capture + companion system | Core progression loop (capture → party → bonuses) |
+| **3** | Capture engine ✅ + companion system | Core progression loop (capture → party → bonuses) |
 | **4 ✅** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
 | **5** | Grid spell targeting UI | Required for 11/130 spells; enables AI spell casting |
 | **6** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
@@ -167,7 +168,7 @@
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
 4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip (112 assertions)
-5. **Ruin capture board** — reuse `Board` + `Battle` with capture grid as initial state; success → add monster to companions
+5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (57 assertions); success adds the captive
 6. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
 7. **Mount speed** — `mount` slot → modify travel time between nodes
 8. **Grid spell cell selection** — mouse hover → highlight valid cells; click → pass cell to `Std_GridSpellEffect`
@@ -178,7 +179,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`; still to add: ruin capture, grid spell targeting, monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`; still to add: grid spell targeting, monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -232,6 +233,6 @@ bin/
 Phases 1, 2 and 4 are landed (prerequisites, rewards, visibility, text, campaign
 tests). Pick one:
 
-- **Ruin capture + companion system** — the progression loop after quests
+- **Companion system** — capture engine landed; the party hooks are the next half of the loop
 - **Campaign → Battle integration** — one engine loop instead of demo-scripted steps
 - **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build
