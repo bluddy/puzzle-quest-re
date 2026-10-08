@@ -41113,6 +41113,6 @@ let quests = [
 let quest_by_id id = List.find (fun q -> q.id = id) quests
 let quests_at_location loc = List.filter (fun q -> q.avail_location = loc) quests
 
-let quest_text q tag = try List.assoc tag q.texts with Not_found -> tag
+let quest_text q tag = try List.assoc tag q.texts with Not_found -> Text_data.text tag
 let quest_name q = quest_text q q.name_text
 let quest_desc q = quest_text q q.desc_text

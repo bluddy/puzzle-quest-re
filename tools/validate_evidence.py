@@ -46,7 +46,7 @@ SUPPORTED_SCHEMA = 1
 
 AREAS = {
     "board", "mana", "combat", "spells", "status_effects",
-    "items", "ai", "score", "ui", "render", "save",
+    "items", "ai", "score", "ui", "render", "save", "campaign",
 }
 VERDICTS = {"mechanic", "presentation"}
 STATUSES = {"recovered", "inferred", "assumed", "refuted", "open"}

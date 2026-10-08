@@ -12,7 +12,7 @@ let () =
 
   (* Create a warrior player *)
   let player = Campaign.create_player "TestHero" "PWAR" 0 0 in
-  print_endline ("Player: " ^ player.name ^ " (Level " ^ string_of_int player.level ^ " " ^ player.profession.Campaign_professions.name_text ^ ")");
+  print_endline ("Player: " ^ player.name ^ " (Level " ^ string_of_int player.level ^ " " ^ Text_data.text player.profession.Campaign_professions.name_text ^ ")");
   print_endline ("Gold: " ^ string_of_int player.gold ^ ", Life: " ^ string_of_int player.life ^ "/" ^ string_of_int player.max_life);
   print_endline ("Start city: " ^ player.profession.Campaign_professions.start_city);
   print_endline "";
@@ -64,7 +64,7 @@ let () =
 
   (* Show quests at start city *)
   let quests = Campaign.available_quests_at player start_city in
-  print_endline ("Available quests at " ^ start_city ^ ":");
+  print_endline ("Available quests at " ^ Text_data.text (Campaign_map.city_by_id start_city).Campaign_map.name_text ^ " (" ^ start_city ^ "):");
   List.iter (fun (q: Campaign_quests.quest) ->
     print_endline ("  " ^ q.id ^ ": " ^ Campaign_quests.quest_name q ^ " (lvl " ^ string_of_int q.avail_minlevel ^ "-" ^ string_of_int q.avail_maxlevel ^ ") monster=" ^ q.battle_monster)
   ) quests;
@@ -72,7 +72,7 @@ let () =
 
   (* Show city shop *)
   let city = Campaign_map.city_by_id start_city in
-  print_endline ("Shop at " ^ city.Campaign_map.name_text ^ ":");
+  print_endline ("Shop at " ^ Text_data.text city.Campaign_map.name_text ^ ":");
   print_endline ("  Items: " ^ String.concat ", " (List.map (fun i -> i.Campaign_items.id) (Campaign.city_shop_items city)));
   print_endline ("  Spells: " ^ String.concat ", " (Campaign.city_shop_spells city));
   print_endline ("  Income: " ^ string_of_int city.Campaign_map.income);

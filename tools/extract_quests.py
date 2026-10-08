@@ -521,7 +521,11 @@ def main():
     lines.append("let quest_by_id id = List.find (fun q -> q.id = id) quests")
     lines.append("let quests_at_location loc = List.filter (fun q -> q.avail_location = loc) quests")
     lines.append("")
-    lines.append("let quest_text q tag = try List.assoc tag q.texts with Not_found -> tag")
+    # The quest's own *_Text.xml has the step lines but not [QUEST_X_NAME] -
+    # titles and descriptions live in English/StandardQuestsText.xml, so an
+    # unknown tag falls through to the global table rather than returning the
+    # tag (see tools/extract_text_tables.py).
+    lines.append("let quest_text q tag = try List.assoc tag q.texts with Not_found -> Text_data.text tag")
     lines.append("let quest_name q = quest_text q q.name_text")
     lines.append("let quest_desc q = quest_text q q.desc_text")
     lines.append("")

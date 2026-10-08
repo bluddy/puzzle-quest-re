@@ -2094,6 +2094,98 @@ claims:
         ref: docs/decompiled/Engine_IS_SPELL_CASTABLE_474b40.c
     affects: [lib/spell.ml, lib/combat.ml]
 
+  - id: campaign.map_visibility
+    title: A road is visible only when both endpoints are
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Map visibility is not a property of the road record but of its two nodes:
+      revealing a location walks the roads touching it and re-decides each one from
+      the other endpoint's flag, and hiding is unconditional. That is what makes a
+      quest reveal open a route rather than repaint every road on the map. The port
+      keeps node and road flags in mutable tables so the rule can be applied to the
+      node that changed instead of to all 93 roads, and save/load snapshots the
+      tables rather than the static data defaults.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Engine_QUEST_SET_VISIBILITY_450e40.c
+        fn: Engine_QUEST_SET_VISIBILITY_450e40
+      - kind: code
+        ref: lib/campaign.ml
+        fn: set_location_visible
+      - kind: code
+        ref: lib/campaign_save.ml
+    affects: [lib/campaign.ml, lib/campaign_save.ml]
+    notes: >
+      Which nodes a quest reveals is a separate fact, extracted from the
+      QUEST_SET_VISIBILITY and QUEST_ADD_RUIN calls in each quest's Lua and grouped
+      by hook (reveal_on_begin / reveal_on_end / ruin_reveals) by
+      tools/extract_quests.py.
+
+  - id: campaign.quest_rewards_conditional
+    title: A quest's branching reward callbacks contribute the first branch in source order
+    area: campaign
+    verdict: mechanic
+    status: inferred
+    confidence: medium
+    summary: >
+      Reward calls are not always unconditional: quests branch on what the player
+      chose (Q1S4 keep-the-relic, Q0I4 free-or-deliver Serephine) or hand out
+      different items per branch, and the condition lives in Lua the port does not
+      run. The extractor records every call site for items, awards and companions
+      (a superset on the handful of quests whose branches differ) and the first
+      call site in file order for gold and xp, where source order puts the if-branch
+      first. Grants made from conversation callbacks (CallbackConvB/C/DE, where the
+      player is standing in the dialogue) are collected but applied at turn-in
+      rather than at the callback, because no dialogue has been wired to the quest
+      state machine yet.
+    evidence:
+      - kind: code
+        ref: tools/extract_quests.py
+      - kind: code
+        ref: lib/campaign.ml
+        fn: run_quest_on_end
+    affects: [tools/extract_quests.py, lib/campaign_quests.ml, lib/campaign.ml]
+    notes: >
+      Reconciliation in --check keeps the raw and extracted call counts equal (89
+      gold, 138 xp, 22 item, 12 award, 11 companion), so nothing is silently
+      dropped; what is not recovered is which branch the player would have taken.
+
+  - id: campaign.global_text_tables
+    title: Every campaign name and description resolves through the game's TextLibrary
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      The campaign data stores tags, not strings - [QUEST_Q0T0_NAME], [CITY_CBAR_NAME],
+      [ITEM_ILSW_NAME] - because the strings are not in the per-asset files the other
+      extractors read. They live in fifteen TextLibrary files per language
+      (StandardQuestsText, StandardSitesText, StandardItemsText, GameText, ...), and
+      without them every name in the game prints as a tag. tools/extract_text_tables.py
+      turns game/Assets/English/*Text.xml into lib/text_data.ml: 2,630 tags behind
+      Text_data.text, which returns the tag unchanged when a string is missing so a
+      gap is visible rather than fatal. All 454 name_text and 294 desc_text tags the
+      campaign modules carry resolve; test_text_data asserts exactly that.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/StandardQuestsText.xml
+      - kind: xml
+        ref: game/Assets.zip!English/StandardSitesText.xml
+      - kind: code
+        ref: tools/extract_text_tables.py
+      - kind: code
+        ref: test/test_text_data.ml
+    affects: [lib/text_data.ml, lib/campaign_quests.ml, bin/campaign_demo.ml]
+    notes: >
+      7 of the 2,630 tags appear twice, six with identical values; later entries win,
+      which is what a map built by parsing in order does. The one that differs is
+      [DEMO_HERO_LIMIT], two spellings of the trial-limit message, and nothing reads
+      it. Four other languages carry the same 2,638 entries; the extractor takes
+      --language and ships English.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:

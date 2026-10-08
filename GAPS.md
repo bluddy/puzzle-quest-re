@@ -26,8 +26,11 @@
 | Player creation, skills, level-up, spells | ✅ |
 | Map graph, travel, encounter triggering | ✅ |
 | Quest state machine (Inactive→Active→Completed/Failed) | ✅ |
+| Quest lifecycle (accept → battle → turn-in, prerequisites, rewards) | ✅ |
+| Map visibility (quest reveals, road rule, save/restore) | ✅ |
+| Global text (2,630 tags — names render, not `[TAG]`) | ✅ |
 | City shops, spells, income | ✅ |
-| Save/Load (JSON round-trip) | ✅ |
+| Save/Load (JSON round-trip, live map state + awards) | ✅ |
 
 ---
 
@@ -36,24 +39,24 @@
 ### 1. Quest System — Prerequisites & Branching
 | Gap | Details |
 |-----|---------|
-| Prerequisite checks | `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`, `item`, `notitem`, `award`, `notaward` all stubbed |
-| Quest availability | Level range works; all other conditions return `true` |
-| Quest rewards | Only gold/XP; no item/award/companion grants |
-| Quest failure paths | `OnComplete(success=0)` only does `FailQuest`; no `OnFail` hook |
+| ~~Prerequisite checks~~ | ✅ `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`, `item`, `notitem`, `award`, `notaward` all wired in `is_quest_available` |
+| ~~Quest rewards~~ | ✅ gold/XP/items/awards/companions from the quest script (`run_quest_on_end`), not the 200/200 default |
+| Quest failure paths | `run_quest_on_fail` exists; nothing calls it yet — no OnFail hook, no abandon flow |
+| Conversation callbacks | `CallbackConv*` grants (item/award/companion/xp) are applied at turn-in rather than at the dialogue |
 
 ### 2. Ruins & Companion Capture
 | Gap | Details |
 |-----|---------|
 | Ruin mini-game | 8×8 capture grids extracted per monster; no board logic, no capture attempt flow |
 | Companion system | Monster `capture` grids extracted; no party slots, no companion equipping, no companion bonuses |
-| Ruin visibility | Ruins have `visible="no"` + `attach` city; no unlock logic |
+| Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
 ### 3. Map Progression & Visibility
 | Gap | Details |
 |-----|---------|
-| Road unlock | Roads have `visible="no"`; no quest-triggered reveal |
-| Ruin unlock | Ruins attach to cities; no unlock via quest completion |
-| Fog of war | No hero position tracking on map; no visible-range logic |
+| ~~Road unlock~~ | ✅ `set_location_visible` applies the recovered both-endpoints rule; reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN` calls, saved and restored |
+| Ruin visibility | Ruins reveal via `ruin_reveals`; no unlock-by-city-entry logic |
+| Fog of war | Visibility flags exist and save; no hero position on the map, no visible-range logic |
 
 ### 4. Spell Targeting (Grid Spells)
 | Gap | Details |
@@ -141,28 +144,32 @@
 
 | Phase | Focus | Rationale |
 |-------|-------|-----------|
-| **1** | Quest prerequisites + rewards | Unlocks map progression, makes quests meaningful |
-| **2** | Map visibility + road/ruin unlock | Gives purpose to quests, opens world |
+| **1 ✅** | Quest prerequisites + rewards | Unlocks map progression, makes quests meaningful |
+| **2 ✅** | Map visibility + road/ruin unlock | Gives purpose to quests, opens world |
+| **2 ✅** | Global text tables | Names render as strings; blocks every UI otherwise |
 | **3** | Ruin capture + companion system | Core progression loop (capture → party → bonuses) |
-| **4** | Grid spell targeting UI | Required for 11/130 spells; enables AI spell casting |
-| **5** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
-| **6** | World map SDL2 + travel UI | Makes campaign playable visually |
-| **6** | City UI (shop, spells, tavern) | Completes town loop |
-| **7** | Conversation branching + portraits | Narrative delivery |
-| **7** | Equipment/item effects + mount | Stat progression depth |
-| **8** | Character creation + main menu | Polish for "game" feel |
-| **9** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
+| **4** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
+| **5** | Grid spell targeting UI | Required for 11/130 spells; enables AI spell casting |
+| **6** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
+| **7** | World map SDL2 + travel UI | Makes campaign playable visually |
+| **7** | City UI (shop, spells, tavern) | Completes town loop |
+| **8** | Conversation branching + portraits | Narrative delivery |
+| **8** | Equipment/item effects + mount | Stat progression depth |
+| **9** | Character creation + main menu | Polish for "game" feel |
+| **10** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
 
 ---
 
 ## Quick Wins (Can land this week)
 
-1. **Quest prerequisite checks** — wire `donequest*`, `companion*`, `item`, `award` to quest availability
-2. **Road/ruin unlock on quest complete** — `OnComplete(success=1)` → set `visible=true` on attached roads/ruins
-3. **Ruin capture board** — reuse `Board` + `Battle` with capture grid as initial state; success → add monster to companions
-4. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
-4. **Mount speed** — `mount` slot → modify travel time between nodes
-5. **Grid spell cell selection** — mouse hover → highlight valid cells; click → pass cell to `Std_GridSpellEffect`
+1. ~~**Quest prerequisite checks**~~ ✅ wired to `is_quest_available`
+2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
+3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
+4. **Campaign tests** — prerequisites, quest lifecycle, visibility reveal, save round-trip
+5. **Ruin capture board** — reuse `Board` + `Battle` with capture grid as initial state; success → add monster to companions
+6. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
+7. **Mount speed** — `mount` slot → modify travel time between nodes
+8. **Grid spell cell selection** — mouse hover → highlight valid cells; click → pass cell to `Std_GridSpellEffect`
 
 ---
 
@@ -170,7 +177,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | Add claims for: quest prerequisites, ruin capture, map visibility, grid spell targeting, monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`; still to add: ruin capture, grid spell targeting, monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -197,18 +204,20 @@ lib/
   campaign_monsters.ml     # 60 monsters (capture grids)
   campaign_conversations.ml# 273 dialogues
   campaign_types.ml        # shared type aliases
-  campaign_save.ml         # JSON save/load
+  campaign_save.ml         # JSON save/load (live map state + awards)
+  text_data.ml             # global TextLibrary, 2,630 tags
   ai.ml / score.ml         # swap evaluation, board scoring
 tools/
   extract_campaign_map.py
   extract_encounters.py
-  extract_quests.py
+  extract_quests.py        # XML + static Lua scan
   extract_items_professions_monsters.py
   extract_conversations.py
   extract_spell_fx.py
   extract_fx_data.py
   extract_skin_data.py
   extract_fonts.py
+  extract_text_tables.py
 bin/
   campaign_demo.exe        # playable loop + save/load
   pq_play_gfx.exe          # SDL2/OpenGL battle (minimal)
@@ -219,8 +228,10 @@ bin/
 
 ## Next Action
 
-Pick **one** from Phase 1:
-- **Quest prerequisite checks** (unlocks map progression)
-- **Road/ruin unlock on quest complete** (gives quests purpose)
+Phases 1 and 2 are landed (prerequisites, rewards, visibility, text). Pick one:
 
-Which do you want to tackle first?
+- **Campaign tests** — `test_campaign.ml` over prerequisites, the quest lifecycle,
+  visibility reveals and the save round-trip (the logic is currently proved only
+  by demo output)
+- **Ruin capture + companion system** — the progression loop after quests
+- **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build

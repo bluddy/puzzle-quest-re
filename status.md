@@ -2,10 +2,10 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync note:** working tree carries the campaign quest-lifecycle work below —
-builds, all tests green, demo verified; **not yet committed** (6 files:
-`bin/campaign_demo.ml`, `lib/campaign.ml`, `lib/campaign_quests.ml`,
-`lib/campaign_save.ml`, `tools/extract_quests.py`, `pq_save_test.json`).
+**Sync:** working tree clean. This sync landed two things: the campaign
+quest-lifecycle work (prerequisites, accept/battle/turn-in, map reveals, save of
+live visibility + awards) and the global text tables that make every campaign
+name render as a string. Build, all 24 suites and the demo verified green.
 
 ---
 
@@ -27,6 +27,10 @@ builds, all tests green, demo verified; **not yet committed** (6 files:
 - **Quests:** 142 quests with state machines, prerequisites, per-quest text, battle rewards
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
 - **Conversations:** 273 dialogue trees with backdrops, portraits, branching
+- **Global text (NEW):** `lib/text_data.ml` — 2,630 tags from the fifteen
+  `English/*Text.xml` TextLibrary files; `Text_data.text` resolves a tag or returns
+  it unchanged. Quest titles, city/item/monster/profession names now render as
+  strings (`Family Reunion`, `Bartonia`, `Warrior`) instead of `[TAG]`.
 - **Engine:** Player creation, travel, encounter triggering, city shops/income, level-up
 - **Quest prerequisites (NEW):** `is_quest_available` checks every extracted condition —
   `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`,
@@ -56,12 +60,14 @@ builds, all tests green, demo verified; **not yet committed** (6 files:
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 67 | 10 (5 open) | 17 |
+| `docs/reverse/evidence.yml` | 70 | 10 (5 open) | 17 |
 
 Key decisions recorded:
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
+- `campaign.quest_rewards_conditional` — branching reward callbacks take the first source-order branch
+- `campaign.global_text_tables` — every campaign name resolves through the TextLibrary
 
 Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
@@ -75,7 +81,7 @@ Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (23 suites: 14 engine + 9 graphics)
+# Run all tests (24 suites: 15 engine + 9 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -85,7 +91,7 @@ opam exec -- dune exec bin/campaign_demo.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 ```
 
-All 23 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+All 24 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -94,10 +100,8 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Global text tables** | Quest/city/item/monster names print as raw tags (`[QUEST_Q0T0_NAME]`, `[CITY_CBAR_NAME]`) — the strings live in `English/Standard*Text.xml`, not extracted. Blocks every UI. |
-| **High** | **Campaign tests** | `test/` has zero campaign suites; prerequisites, lifecycle, visibility and save-restore are verified only by demo output. |
+| **High** | **Campaign tests** | `test_text_data` landed; prerequisites, lifecycle, visibility and save-restore still verified only by demo output |
 | **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → quest_battle_complete → turn-in → rewards → map` into one loop (partly landed; still demo-scripted) |
-| **High** | **Commit campaign work** | Working tree holds the quest/visibility/save changes uncommitted |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
@@ -118,29 +122,26 @@ source assets.
 - **Map state is mutable** — node/road visibility lives in tables (restored by save/load),
   everything else campaign-side is pure `player -> player`
 - **Asset pipeline** — `assets/gfx/` holds extracted PNGs (fonts, particles, sheets); `PQ_GFX_ASSETS` env var
-- **Module graph:** `lib/dune` exports `Campaign` + 7 data modules under `Puzzle_quest_lib`
+- **Module graph:** `lib/dune` exports `Campaign`, the generated campaign data
+  modules and `Text_data` under `Puzzle_quest_lib`
 
 ---
 
 ## Known Gaps
 
-1. **Global localization** — `English/Standard*Text.xml` (quests, sites, items, monsters,
-   spells, professions, awards, companions, rumors, groups) not extracted; quests carry
-   only their own `*_Text.xml` strings, so titles/descriptions and all entity names render
-   as `[TAG]`. Five languages available.
-2. **No campaign tests** — prerequisites/lifecycle/visibility/save round-trip untested
-   in `test/`.
-3. **Ruins / companion capture** — mini-game board logic not implemented
-4. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
+1. **Campaign tests** — prerequisites/lifecycle/visibility/save round-trip untested
+   in `test/` (`test_text_data` covers names only)
+2. **Ruins / companion capture** — mini-game board logic not implemented
+3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic
-5. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics
-6. **Monster spell rosters** — AI only uses `Spell` tags from monster XML; no dynamic selection
-7. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`)
+4. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics
+5. **Monster spell rosters** — AI only uses `Spell` tags from monster XML; no dynamic selection
+6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`)
    not wired to dialogue UI
-8. **Conditional quest rewards** — if/else reward branches take the first source-order
+7. **Conditional quest rewards** — if/else reward branches take the first source-order
    value (recorded as `campaign.quest_rewards_conditional`)
-9. **Stray scratch files** at repo root — `test2.ml`, `test_min.ml`, `test_syntax.ml`,
-   `test2.cmi` are untracked leftovers; delete before committing
+8. **Languages** — `text_data.ml` ships English only; French, German, Italian and
+   Spanish carry the same 2,638 entries and the extractor takes `--language`
 
 ---
 

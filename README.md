@@ -96,6 +96,9 @@ ranked, so there is nothing to keep out of the default.
   * `skin_data.ml`: The bitmap registry - 44 sheets, 422 named rectangles. Generated.
   * `status_effect_hooks.ml`: The 17 status effect scripts, hand-ported.
   * `font_data.ml`: The ten bitmap font glyph tables and the 32 named fonts. Generated.
+  * `text_data.ml`: The global TextLibrary — 2,630 tags behind every quest, city,
+    item and monster name in the game, so a campaign tag renders as a string
+    rather than as `[CITY_CBAR_NAME]`. Generated.
   * `score.ml`: End-of-battle score, both solo and co-op paths.
   * `battle.ml`: Headless battle loop wiring board, AI, combat, and spells together.
   * `crypto.ml`: WETSTD32 cipher algorithms (CRC-16, Transposition, Substitution, XOR).
@@ -120,7 +123,8 @@ ranked, so there is nothing to keep out of the default.
   * `pq_battle.ml`: Plays a seeded headless battle and prints the trace or a summary.
   * `pq_play_gfx.ml`: The same battle in a window, with a mouse and a HUD.
 * `pq_play.ml`: The same battle with you on the hero's turns.
-* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`, `test_gfx_float_text.ml`, `test_gfx_sound_map.ml`, `test_gfx_anim.ml`, `test_spell_fx.ml`, `test_gfx_fx.ml`).
+* `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`, `test_gfx_float_text.ml`, `test_gfx_sound_map.ml`, `test_gfx_anim.ml`, `test_spell_fx.ml`, `test_gfx_fx.ml`,
+`test_text_data.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
@@ -215,18 +219,21 @@ powershell -ExecutionPolicy Bypass -File tools/extract_gfx_assets.ps1
 All three produce identical bytes; the extractor asserts nothing about the others
 being present.
 
-The glyph tables, the 32 named fonts, the bitmap registry and the spell effect
-tables are turned into OCaml separately, and those files *are* committed:
+The glyph tables, the 32 named fonts, the bitmap registry, the spell effect
+tables and the global text libraries are turned into OCaml separately, and those
+files *are* committed:
 
 ```powershell
 python tools/extract_fonts.py            # -> lib/font_data.ml
 python tools/extract_skin_data.py        # -> lib/skin_data.ml
 python tools/extract_spell_fx.py         # -> lib/spell_fx.ml
 python tools/extract_fx_data.py          # -> lib/fx_data.ml
+python tools/extract_text_tables.py      # -> lib/text_data.ml
 python tools/extract_fonts.py --check    # fail if the committed file is stale
 python tools/extract_skin_data.py --check
 python tools/extract_spell_fx.py --check
 python tools/extract_fx_data.py --check
+python tools/extract_text_tables.py --check
 ```
 
 Without the atlases the board still runs and the battle is still playable, on flat
