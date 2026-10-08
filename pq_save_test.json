@@ -4,11 +4,11 @@
     "profession_id": "PWAR",
     "sex": 0,
     "age": 0,
-    "level": 2,
+    "level": 8,
     "xp": 1000,
     "gold": 200,
-    "life": 34,
-    "max_life": 34,
+    "life": 46,
+    "max_life": 46,
     "skills": {
       "earth": 3,
       "fire": 1,
@@ -30,7 +30,7 @@
       "companion": null
     },
     "inventory": [],
-    "known_spells": [ "SWLO" ],
+    "known_spells": [ "SENR", "STHX", "SCLV", "SSPA", "SWLO" ],
     "active_quests": [ { "quest_id": "Q0Q0", "state": 1 } ],
     "completed_quests": [],
     "companions": [],

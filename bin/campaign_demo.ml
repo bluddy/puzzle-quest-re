@@ -84,14 +84,23 @@ let () =
   print_endline ("After collecting income: " ^ string_of_int player3.gold ^ " gold");
   print_endline "";
 
-  (* Test level up *)
+  (* Test level up. check_level_up pays one level per call, so the tour
+     loops until the experience runs dry - which is also what unlocks the
+     first quest with a fight of its own (Q0E0 opens at level 7). *)
   let player4 = { player3 with xp = 1000 } in
-  let player5 = Campaign.check_level_up player4 in
+  let rec level_up p =
+    let p' = Campaign.check_level_up p in
+    if p'.level > p.level then level_up p' else p'
+  in
+  let player5 = level_up player4 in
   print_endline ("After gaining 1000 XP: level " ^ string_of_int player5.level ^ ", life " ^ string_of_int player5.life ^ "/" ^ string_of_int player5.max_life);
   print_endline ("Known spells: " ^ String.concat ", " player5.known_spells);
   print_endline "";
 
-  (* Quest lifecycle: accept -> battle -> turn in *)
+  (* Quest lifecycle: accept -> battle -> turn in, through the engine's own
+     run_quest_battle rather than a scripted win. The first quest at this
+     city has no fight of its own and turns straight in; a quest with a
+     stage-1 battle runs a real fight and reports what happened. *)
   if quests <> [] then begin
     let q = List.hd quests in
     print_endline ("Quest: " ^ Campaign_quests.quest_name q ^ " (" ^ q.id ^ ")");
@@ -100,16 +109,73 @@ let () =
     if q.Campaign_quests.reveal_on_begin <> [] then
       List.iter (fun n -> print_endline ("  revealed at accept: " ^ n ^ " visible=" ^ string_of_bool (Campaign.node_visible n)))
         q.Campaign_quests.reveal_on_begin;
-    let pq1 = Campaign.quest_battle_complete pq0 q.id true in
-    print_endline ("  battle won: state=" ^ (match List.assoc_opt q.id pq1.Campaign.active_quests with
-      | Some s -> string_of_int s | None -> "n/a"));
+    let pq1 =
+      match Campaign.run_quest_battle pq0 q.id with
+      | None ->
+        print_endline "  no battle of its own at this stage";
+        pq0
+      | Some (pqb, b) ->
+        print_endline ("  battle: turns=" ^ string_of_int b.Battle.turns_elapsed
+                       ^ " hero life=" ^ string_of_int b.Battle.hero.life
+                       ^ " enemy life=" ^ string_of_int b.Battle.enemy.life);
+        print_endline ("  winner: " ^ (match b.Battle.winner with
+          | Some Battle.HeroVictory -> "Hero"
+          | Some Battle.EnemyVictory -> "Enemy"
+          | Some Battle.Stalemate -> "Stalemate"
+          | Some Battle.Draw -> "Draw"
+          | None -> "Unfinished"));
+        print_endline ("  stage after: " ^ (match List.assoc_opt q.id pqb.Campaign.active_quests with
+          | Some s -> string_of_int s | None -> "n/a"));
+        pqb
+    in
     let pq2 = Campaign.quest_turn_in pq1 q.id in
     print_endline ("  turned in: gold=" ^ string_of_int pq2.Campaign.gold
-      ^ " xp=" ^ string_of_int pq2.Campaign.xp
-      ^ " completed=" ^ String.concat ", " pq2.Campaign.completed_quests
-      ^ " still-active=" ^ string_of_int (List.length pq2.Campaign.active_quests));
+                   ^ " xp=" ^ string_of_int pq2.Campaign.xp
+                   ^ " completed=" ^ String.concat ", " pq2.Campaign.completed_quests
+                   ^ " still-active=" ^ string_of_int (List.length pq2.Campaign.active_quests));
     print_endline "";
   end;
+
+  (* The same loop against a quest that does have a fight: the first
+     available quest with a stage-1 battle action, accepted wherever it
+     sits (quest_accept checks level and prerequisites, not location). *)
+  (match
+     List.find_opt
+       (fun (q : Campaign_quests.quest) ->
+         List.exists (fun (st, _, _) -> st = 1) q.Campaign_quests.battle_actions
+         && is_quest_available player5 q)
+       Campaign_quests.quests
+   with
+   | None -> print_endline "No available quest has a fight of its own yet"
+   | Some bq ->
+     print_endline ("Battle quest: " ^ Campaign_quests.quest_name bq
+                    ^ " (" ^ bq.Campaign_quests.id
+                    ^ ", offered at " ^ bq.Campaign_quests.avail_location ^ ")");
+     let b0 = Campaign.quest_accept player5 bq.Campaign_quests.id in
+     (match Campaign.run_quest_battle b0 bq.Campaign_quests.id with
+      | None -> print_endline "  no battle ran at stage 1"
+      | Some (b1, b) ->
+        print_endline ("  battle: turns=" ^ string_of_int b.Battle.turns_elapsed
+                       ^ " hero life=" ^ string_of_int b.Battle.hero.life
+                       ^ " enemy life=" ^ string_of_int b.Battle.enemy.life);
+        print_endline ("  winner: " ^ (match b.Battle.winner with
+          | Some Battle.HeroVictory -> "Hero"
+          | Some Battle.EnemyVictory -> "Enemy"
+          | Some Battle.Stalemate -> "Stalemate"
+          | Some Battle.Draw -> "Draw"
+          | None -> "Unfinished"));
+        print_endline ("  spoils: gold=" ^ string_of_int b.Battle.gold
+                       ^ " xp=" ^ string_of_int b.Battle.xp);
+        let stage = match List.assoc_opt bq.Campaign_quests.id b1.Campaign.active_quests with
+          | Some s -> s | None -> 0 in
+        print_endline ("  stage after: " ^ string_of_int stage);
+        if stage > 1 then begin
+          let b2 = Campaign.quest_turn_in b1 bq.Campaign_quests.id in
+          print_endline ("  turned in: gold=" ^ string_of_int b2.Campaign.gold
+                         ^ " completed=" ^ String.concat ", " b2.Campaign.completed_quests)
+        end
+        else print_endline "  fight lost; the quest waits at stage 1"));
+  print_endline "";
 
   (* Test save/load *)
   print_endline "=== Testing Save/Load ===";

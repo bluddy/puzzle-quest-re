@@ -471,49 +471,85 @@ let player_to_combatant (p: player) : combatant =
     ~life:p.life
     0 p.name  (* distinct positive ID *)
 
-(* Convert encounter to battle combatant *)
-let encounter_to_combatant (enc: encounter) (player_level: int) : combatant =
-  let monster = Campaign_monsters.monster_by_sprite enc.sprite in
-  let level = player_level in
-  let base_life = monster.life in
-  let life = base_life + (level - 1) * 5 in
+(* Convert a registry monster to a battle combatant, scaled to the player's
+   level the way road encounters are *)
+let monster_to_combatant (m: Campaign_monsters.monster) (player_level: int) : combatant =
+  let life = m.life + (player_level - 1) * 5 in
   let max_life = life in
   make_combatant
-    ~cunning:monster.skills.cunning
-    ~skills:(to_combat_skills monster.skills)
+    ~cunning:m.skills.cunning
+    ~skills:(to_combat_skills m.skills)
     ~max_life
     ~life
-    1 monster.name_text  (* distinct positive ID *)
+    1 m.name_text  (* distinct positive ID *)
+
+(* Convert encounter to battle combatant *)
+let encounter_to_combatant (enc: encounter) (player_level: int) : combatant =
+  monster_to_combatant (Campaign_monsters.monster_by_sprite enc.sprite) player_level
 
 (* The monster type tags the companion scripts CHECK_TYPE against; the
    monster record keeps up to four, unset ones read "". *)
 let monster_type_tags (m: Campaign_monsters.monster) : string list =
   List.filter (fun t -> t <> "") [m.type1; m.type2; m.type3; m.type4]
 
-(* Run a battle between player and encounter *)
-let run_encounter_battle (player: player) (enc: encounter) : battle =
-  let hero = player_to_combatant player in
-  let enemy = encounter_to_combatant enc player.level in
-  let board =
-    let e = Array.make 4 (Board.Mana Fire) in
-    e.(0) <- Board.Mana Fire;
-    e.(1) <- Board.Mana Water;
-    e.(2) <- Board.Mana Air;
-    e.(3) <- Board.Mana Earth;
-    Board.of_array_matrix
-      (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+(* A legal no-start-match board: the same diagonal the demo runner seeds.
+   Matches never sit at the opening cursor, so a battle can start at once. *)
+let fresh_board () : Board.board =
+  let e = Array.make 4 (Board.Mana Fire) in
+  e.(0) <- Board.Mana Fire;
+  e.(1) <- Board.Mana Water;
+  e.(2) <- Board.Mana Air;
+  e.(3) <- Board.Mana Earth;
+  Board.of_array_matrix
+    (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+
+(* Resolve spell ids against the runtime table, the way the engine builds a
+   spell list: descriptor data plus the AI hook and cast effect. Unknown ids
+   drop out, which keeps an unported spell out of the lineup rather than in
+   it as a blank; duplicates collapse, first occurrence first. *)
+let spell_table : Spell.spell list Lazy.t = lazy (Spell_data.load_spell_table ())
+
+let spells_of_ids (ids: string list) : Spell.spell list =
+  let table = Lazy.force spell_table in
+  let rec uniq = function
+    | [] -> []
+    | x :: xs -> x :: uniq (List.filter (fun y -> y <> x) xs)
   in
-  let battle = Battle.create board hero enemy in
+  List.filter_map
+    (fun id -> List.find_opt (fun (s: Spell.spell) -> s.Spell.id = id) table)
+    (uniq ids)
+
+(* Open a battle between two combatants: board, companion OnStartBattle
+   hooks (their hits land before the first turn), then the run. Shared by
+   road encounters and quest battles so both fire the same setup. *)
+let open_battle ?(hero_spells = []) ?(enemy_spells = []) ?(rng = Random.int)
+    ~(hero: combatant) ~(enemy: combatant) ~(enemy_tags: string list)
+    ~(companions: string list) () : battle =
+  let battle = Battle.create ~rng ~hero_spells ~enemy_spells
+      (fresh_board ()) hero enemy in
   let hooks =
     Campaign_companion_hooks.apply_start_battle
       ~rng:(fun () -> battle.rng 100)
       ~hero ~enemy
-      ~enemy_types:(monster_type_tags
-        (Campaign_monsters.monster_by_sprite enc.sprite))
-      ~companions:player.companions ()
+      ~enemy_types:enemy_tags
+      ~companions ()
   in
   List.iter (fun (name, amt) ->
     Battle.emit battle (Battle.Damage (name, amt))) hooks.damaged;
+  battle
+
+(* Run a battle between player and encounter. The hero walks in with the
+   spells the player knows - the loadout choice recorded in
+   port.quest_battle_loop, shared with the quest path below. *)
+let run_encounter_battle (player: player) (enc: encounter) : battle =
+  let hero = player_to_combatant player in
+  let enemy = encounter_to_combatant enc player.level in
+  let battle = open_battle ~hero ~enemy
+      ~hero_spells:(spells_of_ids player.known_spells)
+      ~enemy_tags:(monster_type_tags
+        (Campaign_monsters.monster_by_sprite enc.sprite))
+      ~companions:player.companions ()
+  in
   Battle.run battle
 
 (* Process battle result and update player/quest state *)
@@ -594,25 +630,105 @@ let quest_accept (player: player) (qid: string) : player =
     if List.exists (fun (id, _) -> id = qid) p.active_quests then p
     else { p with active_quests = (qid, 1) :: p.active_quests }
 
-(* Resolve the quest's battle: on success state 1 -> 2 (kill done, turn-in
-   pending) and OnCompleteAction's success branch runs - which is where most
-   scripts release the ruin they registered (QUEST_SET_RUIN_DONE), so the
-   refcount drops with the state bump; on failure the quest stays active at 1
-   (Q0E0 OnCompleteAction keeps questState = 1 and only shows a message). *)
+(* Resolve the quest's battle at its current stage. On success the stage
+   moves to the OnCompleteAction success-branch value when the script sets
+   one (battle_stage_advances) and to stage + 1 otherwise - which is state 2
+   for the usual single-battle quest, where most scripts release the ruin
+   they registered through QUEST_SET_RUIN_DONE in that branch, so the
+   refcount drops with the state bump. Whether the win counts for capture
+   is this stage's QUEST_BATTLE primitive (the third Lua argument disagrees
+   on some sites and the primitive wins - see evidence
+   campaign.capture_eligible), and the monster comes from this stage's
+   <Battle> element rather than the quest's first. On failure the script's
+   else-branch state (battle_stage_fails) applies when there is one -
+   Q0Q7 sends a lost Dugog fight to state 4, the no-capture retry; a quest
+   with no else entry keeps its stage (Q0E0 shows a message and stays). *)
 let quest_battle_complete (player: player) (qid: string) (success: bool) : player =
-  if not success then player
-  else if not (List.exists (fun (id, _) -> id = qid) player.active_quests) then player
-  else
+  match List.assoc_opt qid player.active_quests with
+  | None -> player
+  | Some stage ->
     let q = quest_by_id qid in
-    let p = { player with active_quests =
-      List.map (fun (id, s) -> if id = qid then (id, 2) else (id, s)) player.active_quests } in
-    (* the quest's kill counts toward capture eligibility too *)
-    let p =
-      if q.battle_monster <> "" then record_defeat p q.battle_monster
-      else p
-    in
-    List.fold_left apply_quest_effect p
-      (List.map (fun n -> RuinDone n) q.ruin_dones_on_battle)
+    if success then begin
+      let next = match List.assoc_opt stage q.battle_stage_advances with
+        | Some n -> n
+        | None -> stage + 1
+      in
+      let p = { player with active_quests =
+        List.map (fun (id, s) -> if id = qid then (id, next) else (id, s))
+          player.active_quests } in
+      let capture, monster_id =
+        match List.find_opt (fun (st, _, _) -> st = stage) q.battle_actions with
+        | Some (_, idx, cap) ->
+          let m = match List.nth_opt q.battles idx with
+            | Some (mid, _) -> mid
+            | None -> q.battle_monster
+          in
+          cap, m
+        | None -> true, q.battle_monster
+      in
+      let p = if capture && monster_id <> "" then record_defeat p monster_id else p in
+      List.fold_left apply_quest_effect p
+        (List.map (fun n -> RuinDone n) q.ruin_dones_on_battle)
+    end
+    else match List.assoc_opt stage q.battle_stage_fails with
+      | Some next ->
+        { player with active_quests =
+          List.map (fun (id, s) -> if id = qid then (id, next) else (id, s))
+            player.active_quests }
+      | None -> player
+
+(* Settle a finished quest battle against the player: life follows the fight
+   either way, a win also takes the battle spoils (gold and xp, as a road win
+   does), then quest_battle_complete runs the stage, capture and ruin
+   bookkeeping. Split from run_quest_battle so both outcomes can be driven
+   directly - the auto-AI loses most fights at the heroes the data hands it,
+   and the win bookkeeping has to be testable regardless. *)
+let quest_battle_settle (player: player) (qid: string) (success: bool)
+    (b: battle) : player =
+  let p = { player with life = b.hero.life } in
+  let p =
+    if success then { p with gold = p.gold + b.gold; xp = p.xp + b.xp }
+    else p
+  in
+  quest_battle_complete p qid success
+
+(* Run the quest battle for the player's current stage of [qid]: the stage
+   picks the action, the action's index picks the <Battle> element (monster
+   roster plus the hero's spell line-up for this fight), companion
+   OnStartBattle hooks fire as they do on the road, and the outcome feeds
+   quest_battle_settle. Returns None when the quest is not active, the stage
+   has no battle of its own (conversation-driven fights are not wired to the
+   state machine - see GAPS), or the monster id is not in the registry. *)
+let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
+    : (player * battle) option =
+  match List.assoc_opt qid player.active_quests with
+  | None -> None
+  | Some stage ->
+    let q = quest_by_id qid in
+    match List.find_opt (fun (st, _, _) -> st = stage) q.battle_actions with
+    | None -> None
+    | Some (_, idx, _) ->
+      match List.nth_opt q.battles idx with
+      | None -> None
+      | Some (monster_id, hero_spell_ids) ->
+        match (try Some (Campaign_monsters.monster_by_id monster_id)
+               with Not_found -> None) with
+        | None -> None
+        | Some monster ->
+          let hero = player_to_combatant player in
+          let enemy = monster_to_combatant monster player.level in
+          let battle =
+            Battle.run
+              (open_battle ~rng
+                 ~hero_spells:(spells_of_ids
+                   (hero_spell_ids @ player.known_spells))
+                 ~enemy_spells:(spells_of_ids monster.spells)
+                 ~hero ~enemy
+                 ~enemy_tags:(monster_type_tags monster)
+                 ~companions:player.companions ())
+          in
+          let won = battle.enemy.is_dead && not battle.hero.is_dead in
+          Some (quest_battle_settle player qid won battle, battle)
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into

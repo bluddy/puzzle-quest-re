@@ -28,6 +28,22 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     campaign.quest_rewards_conditional
   * reward_items/awards/companions = all call sites (superset on the few
     quests whose branches grant different items)
+  * battles/battle_actions/battle_stage_advances/battle_stage_fails = the
+    quest-battle loop. Every QUEST_BATTLE / _NOCAPTURE / _CUSTOM call, from
+    any hook (OnExecuteAction for location actions, conversation callbacks
+    for script-driven fights), is attributed to its questState guard by a
+    block scanner over if/elseif/else/end (see scan_battle_branches); the
+    second argument indexes the quest's ordered Battle list, and capture
+    comes from the primitive - the third argument disagrees on some sites
+    (Q0Q2 passes 1 to QUEST_BATTLE_NOCAPTURE) and the primitive wins, per
+    evidence campaign.capture_eligible. OnCompleteAction's success/else
+    sides give the post-battle transitions: win-side questState = N feeds
+    battle_stage_advances, else-side feeds battle_stage_fails. Where a
+    stage has two win-side values the first source-order one wins (Q1E0's
+    location split); calls without a questState guard (most conversation
+    callbacks, Q3D1's range guard, QS02's currBattle index) and range
+    guards are listed by --check, and the OCaml side falls back to
+    stage + 1 on win and no change on loss for anything missing.
 
 Paths: quest XML lives in game/Assets/Assets/Quests, but the Script/Text
 file= attributes are rooted at game/Assets (Assets\\Quests\\X.lua,
@@ -204,6 +220,96 @@ def ruin_done_bucket(hook):
     return 'end'
 
 
+# ---------------------------------------------------------------- quest battles
+#
+# One pass over a hook body attributes QUEST_BATTLE* calls and (for
+# OnCompleteAction) questState assignments to the branch Lua would evaluate:
+# a frame stack over if/elseif/else/end (plus do/function/repeat as opaque
+# frames) so compound headers like `idLocation==X and questState==2` and
+# multi-stage headers like `questState==3 or questState==4` resolve the way
+# the script means them, and an assignment inside `if (success == 1)` stays
+# on the win side even when a nested if/else splits it (Q1E0).
+
+BATTLE_CALL = re.compile(
+    r'QUEST_BATTLE(\w*)\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*|\d+)\s*,\s*(\d+)')
+STATE_ASSIGN = re.compile(r'questState\s*=\s*(\d+)')
+STATE_EQ = re.compile(r'questState\s*==\s*(\d+)')
+LUA_KW = re.compile(r'\b(if|then|else|elseif|end|do|function|repeat|until)\b')
+
+
+def scan_battle_branches(body_ns, body_nc, collect_assigns):
+    """Returns (calls, assigns) in source order. calls are
+    (full_name, index_arg, third_arg, stages | None); assigns are
+    (value, side, stage | None). stage is None when no questState== guard
+    covers the event; side is 'win' / 'fail' / 'none'."""
+    kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
+    events = [(m.start(), 'call', m) for m in BATTLE_CALL.finditer(body_ns)]
+    if collect_assigns:
+        events += [(m.start(), 'assign', m) for m in STATE_ASSIGN.finditer(body_ns)]
+    events.sort(key=lambda t: t[0])
+
+    stack = []  # {'stages': [int] | None, 'success': bool,
+                #  'else_seen': bool, 'generic': bool}
+    calls, assigns = [], []
+    ei = 0
+
+    def active_stages():
+        for fr in reversed(stack):
+            if not fr['generic'] and fr['stages']:
+                return list(fr['stages'])
+        return None
+
+    def side():
+        for fr in reversed(stack):
+            if not fr['generic'] and fr['success']:
+                return 'fail' if fr['else_seen'] else 'win'
+        return 'none'
+
+    def header_at(pos):
+        then = next((p for k, p in kws if k == 'then' and p > pos), len(body_ns))
+        return body_nc[pos:then]
+
+    def flush(p, kind, m):
+        if kind == 'call':
+            stages = active_stages()
+            calls.append(("QUEST_BATTLE" + m.group(1), m.group(3),
+                          int(m.group(4)), stages))
+        else:
+            assigns.append((int(m.group(1)), side(), active_stages()))
+
+    for k, pos in kws:
+        while ei < len(events) and events[ei][0] < pos:
+            flush(*events[ei])
+            ei += 1
+        if k == 'if':
+            header = header_at(pos)
+            stack.append({
+                'stages': [int(x) for x in STATE_EQ.findall(header)],
+                'success': re.search(r'success\s*==', header) is not None,
+                'else_seen': False,
+                'generic': False,
+            })
+        elif k == 'elseif' and stack and not stack[-1]['generic']:
+            header = header_at(pos)
+            stack[-1]['stages'] = [int(x) for x in STATE_EQ.findall(header)]
+            stack[-1]['success'] = re.search(r'success\s*==', header) is not None
+            stack[-1]['else_seen'] = False
+        elif k == 'else' and stack and not stack[-1]['generic']:
+            stack[-1]['else_seen'] = True
+            stack[-1]['stages'] = []
+        elif k in ('do', 'function', 'repeat'):
+            stack.append({'stages': None, 'success': False,
+                          'else_seen': False, 'generic': True})
+        elif k in ('end', 'until'):
+            if stack:
+                stack.pop()
+    while ei < len(events):
+        flush(*events[ei])
+        ei += 1
+    return calls, assigns
+
+
+
 def analyze_lua(src, qid, stats):
     """Returns reveal/reward fields extracted from one quest script."""
     nc = scan(src, blank_strings=False)
@@ -214,15 +320,20 @@ def analyze_lua(src, qid, stats):
     # raw call counts for --check reconciliation
     for kind, rx in RAW_RE.items():
         stats['raw'][kind] += len(rx.findall(nc))
+    stats['raw']['battle_call'] += len(BATTLE_CALL.findall(nc))
 
     reveals = {'begin': [], 'end': []}
     ruins = []
     ruin_dones = {'end': [], 'battle': [], 'abandon': []}
     gold = xp = 0
     items, awards, companions = [], [], []
+    battle_actions = []
+    stage_advances = {}
+    stage_fails = {}
 
     for hook, (start, end) in funcs.items():
         body = nc[start:end]
+        body_ns = ns[start:end]
         m = CALL_PATTERNS['visibility'].finditer(body)
         for hit in m:
             stats['extracted']['visibility'] += 1
@@ -283,6 +394,39 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             companions.append(target)
+        calls, assigns = scan_battle_branches(
+            body_ns, body, collect_assigns=(hook == 'OnCompleteAction'))
+        for full_name, idx_arg, third, stages in calls:
+            if stages is None:
+                stats['battle_unattributed'].append(
+                    (qid, hook, 'no questState guard', full_name))
+                continue
+            if not idx_arg.isdigit():
+                stats['battle_unattributed'].append(
+                    (qid, hook, 'non-literal index', full_name + '(' + idx_arg + ')'))
+                continue
+            stats['extracted']['battle_call'] += 1
+            capture = full_name != 'QUEST_BATTLE_NOCAPTURE' and third == 1
+            for st in stages:
+                battle_actions.append((st, int(idx_arg), capture))
+        for value, sd, stages in assigns:
+            if stages is None:
+                stats['battle_unattributed'].append(
+                    (qid, hook, 'assign without questState guard', value))
+                continue
+            if sd == 'none':
+                stats['battle_unattributed'].append(
+                    (qid, hook, 'assign outside success branch', value))
+                continue
+            for stage in stages:
+                table = stage_advances if sd == 'win' else stage_fails
+                if stage not in table:
+                    table[stage] = value
+                elif table[stage] != value:
+                    stats['battle_conflicts'].append(
+                        (qid, hook, sd, stage, table[stage], value))
+
+    battle_actions = dedup(battle_actions)
 
     return {
         'reveal_on_begin': dedup(reveals['begin']),
@@ -296,6 +440,9 @@ def analyze_lua(src, qid, stats):
         'reward_items': dedup(items),
         'reward_awards': dedup(awards),
         'reward_companions': dedup(companions),
+        'battle_actions': battle_actions,
+        'battle_stage_advances': list(stage_advances.items()),
+        'battle_stage_fails': list(stage_fails.items()),
     }
 
 
@@ -345,6 +492,8 @@ def parse_quest(xml_path, stats):
         'ruin_dones_on_abandon': [],
         'reward_gold': 0, 'reward_xp': 0, 'reward_items': [],
         'reward_awards': [], 'reward_companions': [],
+        'battle_actions': [], 'battle_stage_advances': [],
+        'battle_stage_fails': [],
     }
 
     return {
@@ -378,6 +527,10 @@ def parse_quest(xml_path, stats):
         "avail_notaward": avail_elem.get("notaward") if avail_elem is not None else "",
         "battle_monster": battle_elem.get("monster") if battle_elem is not None else "",
         "battle_spells": [sp.get("id") for sp in battle_elem.findall("Spell")] if battle_elem is not None else [],
+        # every <Battle> element in order: the Lua battle index selects one
+        "battles": [(b.get("monster") or "",
+                     [sp.get("id") for sp in b.findall("Spell")])
+                    for b in root.findall("Battle")],
         **lua_fields,
     }
 
@@ -395,6 +548,27 @@ def ocaml_list(items):
     return "[" + "; ".join('"%s"' % ocaml_str(i) for i in items) + "]"
 
 
+def ocaml_battles(battles):
+    if not battles:
+        return "[]"
+    parts = ['("%s", %s)' % (ocaml_str(m), ocaml_list(s)) for m, s in battles]
+    return "[" + "; ".join(parts) + "]"
+
+
+def ocaml_battle_actions(actions):
+    if not actions:
+        return "[]"
+    parts = ['(%d, %d, %s)' % (st, idx, "true" if cap else "false")
+             for st, idx, cap in actions]
+    return "[" + "; ".join(parts) + "]"
+
+
+def ocaml_int_pairs(pairs):
+    if not pairs:
+        return "[]"
+    return "[" + "; ".join("(%d, %d)" % p for p in pairs) + "]"
+
+
 def ocaml_lua(source):
     if not source:
         return '""'
@@ -408,7 +582,8 @@ def ocaml_lua(source):
 def new_stats():
     from collections import Counter
     return {'raw': Counter(), 'extracted': Counter(), 'hooks': Counter(),
-            'unresolved': [], 'missing_lua': []}
+            'unresolved': [], 'missing_lua': [],
+            'battle_unattributed': [], 'battle_conflicts': []}
 
 
 def main():
@@ -438,6 +613,22 @@ def main():
         print("call reconciliation (raw -> extracted in function bodies):")
         for kind in CALL_PATTERNS:
             print(f"  {kind}: {stats['raw'][kind]} -> {stats['extracted'][kind]}")
+        n_battles = sum(len(q["battles"]) for q in quests)
+        n_actions = sum(len(q["battle_actions"]) for q in quests)
+        n_adv = sum(len(q["battle_stage_advances"]) for q in quests)
+        n_fail = sum(len(q["battle_stage_fails"]) for q in quests)
+        print(f"battle calls: {stats['raw']['battle_call']} raw -> "
+              f"{stats['extracted']['battle_call']} attributed "
+              f"({n_actions} stage actions), battles={n_battles} "
+              f"advances={n_adv} fails={n_fail}")
+        if stats['battle_unattributed']:
+            print(f"unattributed battle events ({len(stats['battle_unattributed'])}):")
+            for row in stats['battle_unattributed']:
+                print(f"  {row}")
+        if stats['battle_conflicts']:
+            print(f"conflicting transitions (first source-order wins):")
+            for row in stats['battle_conflicts']:
+                print(f"  {row}")
         print("by hook:")
         for (kind, hook), n in sorted(stats['hooks'].items()):
             print(f"  {kind:11s} {hook}: {n}")
@@ -458,6 +649,9 @@ def main():
             print(f"    reward: gold={q['reward_gold']} xp={q['reward_xp']} "
                   f"items={q['reward_items']} awards={q['reward_awards']} "
                   f"companions={q['reward_companions']}")
+            if q['battles'] or q['battle_actions']:
+                print(f"    battles={q['battles']} actions={q['battle_actions']} "
+                      f"adv={q['battle_stage_advances']} fail={q['battle_stage_fails']}")
             if q['texts']:
                 for tag, txt in list(q['texts'].items())[:2]:
                     print(f"    {tag}: {txt[:60]}")
@@ -497,6 +691,10 @@ def main():
     lines.append("  avail_notaward: string;")
     lines.append("  battle_monster: string;")
     lines.append("  battle_spells: string list;")
+    lines.append("  battles: (string * string list) list;")
+    lines.append("  battle_actions: (int * int * bool) list;")
+    lines.append("  battle_stage_advances: (int * int) list;")
+    lines.append("  battle_stage_fails: (int * int) list;")
     lines.append("  reveal_on_begin: string list;")
     lines.append("  reveal_on_end: string list;")
     lines.append("  ruin_reveals: string list;")
@@ -547,6 +745,10 @@ def main():
         lines.append(f'    avail_notaward = "{q["avail_notaward"]}";')
         lines.append(f'    battle_monster = "{q["battle_monster"]}";')
         lines.append(f'    battle_spells = {ocaml_list(q["battle_spells"])};')
+        lines.append(f'    battles = {ocaml_battles(q["battles"])};')
+        lines.append(f'    battle_actions = {ocaml_battle_actions(q["battle_actions"])};')
+        lines.append(f'    battle_stage_advances = {ocaml_int_pairs(q["battle_stage_advances"])};')
+        lines.append(f'    battle_stage_fails = {ocaml_int_pairs(q["battle_stage_fails"])};')
         lines.append(f'    reveal_on_begin = {ocaml_list(q["reveal_on_begin"])};')
         lines.append(f'    reveal_on_end = {ocaml_list(q["reveal_on_end"])};')
         lines.append(f'    ruin_reveals = {ocaml_list(q["ruin_reveals"])};')

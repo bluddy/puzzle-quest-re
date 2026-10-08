@@ -2,15 +2,17 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync landed the companion system: the
-ten `OnStartBattle` bodies are hand-ported as a rule table (type guards,
-NPAT's roll + life guard, NWIN's fire-skill threshold and halved enemy
-bank), every party member fires once between `Battle.create` and the first
-turn with hits riding the log's `Damage` event, combatants now carry the
-real profession and monster skills for the first time, `RewardCompanion`
-dedups and stops at eight, plus the `campaign.companion_start_battle`
-claim and the `port.companion_hooks_fire_for_the_party` decision. Build,
-all 27 suites and the extractor/validator checks verified green.
+**Sync:** working tree clean. This sync wired the campaign to the battle
+engine: quest Lua's `QUEST_BATTLE` calls and OnCompleteAction branches are
+scanned into per-stage tables (128 stage actions over 155 `<Battle>`
+elements), and `run_quest_battle` runs the stage's fight through the shared
+constructor - monster roster, the fight's spells plus the player's known
+spells, companion hooks - then `quest_battle_settle` applies life, spoils,
+the stage transition, capture and ruin release. The demo's scripted
+"battle won" is gone: it runs the real loop and reports what happened.
+Plus the `campaign.quest_battle_flow` claim and the
+`port.quest_battle_loop` decision. Build, all 28 suites and the
+extractor/validator checks verified green.
 
 ---
 
@@ -83,8 +85,14 @@ all 27 suites and the extractor/validator checks verified green.
   restores it into the tables on load, persists `awards`, the ruin registry
   (counts + done set) and capture state (dungeon flag, defeat counts,
   captives) with old-save defaults; quest states stored as the same ints the player record uses.
-- **Tests:** `test/test_campaign.ml` (112), `test/test_capture.ml` (57) and
-  `test/test_companion.ml` (110) - 279 assertions over prerequisites (every
+- **Quest battles (NEW):** `tools/extract_quests.py` scans quest Lua's
+  `QUEST_BATTLE` calls into per-stage tables (128 actions, 155 `<Battle>`
+  elements), and `Campaign.run_quest_battle` runs the stage's fight through
+  the shared battle constructor - roster, spell line-ups, companion hooks -
+  feeding `quest_battle_settle` (life, spoils, stage, capture, ruin release).
+- **Tests:** `test/test_campaign.ml` (112), `test/test_capture.ml` (57),
+  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 353
+  assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
   ruins, the three release paths, the abandonable gate), capture grid parsing
@@ -92,11 +100,13 @@ all 27 suites and the extractor/validator checks verified green.
   counting on the road and quest paths, the two capture gates, captives, save
   round-trips that diverge between save and load so a load that ignores the
   file cannot pass, every companion rule against the extracted data, the
-  eight-slot party cap, and a road battle whose log opens on the pre-battle
-  hit.
+  eight-slot party cap, a road battle whose log opens on the pre-battle
+  hit, and the quest-battle loop (stage picks the fight, per-stage capture
+  flag, loss branches, settle driving the win bookkeeping).
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
-  quest accept (prints reveals) → battle win → turn-in (prints rewards) → shop → income →
-  level-up → save → load. Verified green 2026-10-08.
+  quest accept (prints reveals) → a real quest battle through `run_quest_battle`
+  (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
+  income → level-up → save → load. Verified green 2026-10-08.
 
 ---
 
@@ -104,7 +114,7 @@ all 27 suites and the extractor/validator checks verified green.
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 74 | 10 (5 open) | 19 |
+| `docs/reverse/evidence.yml` | 75 | 10 (5 open) | 20 |
 
 Key decisions recorded:
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
@@ -130,7 +140,7 @@ Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (27 suites: 18 engine + 9 graphics)
+# Run all tests (28 suites: 19 engine + 9 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -140,7 +150,7 @@ opam exec -- dune exec bin/campaign_demo.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 ```
 
-All 27 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+All 28 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -149,9 +159,9 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap); quest-battle hooks and companion removal still open |
+| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included); companion removal still open |
 | **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, ruin registry, save; travel, encounters, income and level-up still untested |
-| **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → quest_battle_complete → turn-in → rewards → map` into one loop (partly landed; still demo-scripted) |
+| **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
@@ -181,9 +191,8 @@ source assets.
 
 1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
    lifecycle, the visibility rule, the ruin registry and the save round-trip
-   (279 assertions across three campaign suites); travel, encounter triggering, income and level-up are untested
-2. **Companion edges** — hooks fire on road battles only (quest battles are
-   demo-scripted); `QUEST_REMOVE_COMPANION` (5 sites in Q3S0.lua) and the
+   (353 assertions across four campaign suites); travel, encounter triggering, income and level-up are untested
+2. **Companion edges** — `QUEST_REMOVE_COMPANION` (5 sites in Q3S0.lua) and the
    leave-a-companion-at-a-location flow are not extracted; the six items and
    one rune that declare OnStartBattle are unwired; equip slot and UI open
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is

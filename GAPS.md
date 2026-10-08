@@ -52,7 +52,7 @@
 |-----|---------|
 | ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
 | ~~Ruin mini-game~~ | ✅ `lib/capture.ml`: grid parse, no-refill settle, win/lose, auto-play; gates, captives and save in `campaign.ml` |
-| Quest battle capture flag | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; battle identity within a quest is not modelled, so quest kills count toward eligibility |
+| ~~Quest battle capture flag~~ | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; the stage's own primitive now decides capture (primitive over the Lua string check), so a quest kill of a non-capturable variant no longer counts |
 | Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); companion equipping, `QUEST_REMOVE_COMPANION` (5 sites, Q3S0.lua) and leaving a companion at a location still open |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
@@ -182,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`; still to add: grid spell targeting, monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`; still to add: grid spell targeting, monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -237,9 +237,8 @@ bin/
 ## Next Action
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
-campaign tests, capture, companion hooks). Pick one:
+campaign tests, capture, companion hooks, quest battle loop). Pick one:
 
 - **Companion edges** — wire `OnStartBattle` for the six items and one rune,
-  extract `QUEST_REMOVE_COMPANION`, run hooks on quest battles
-- **Campaign → Battle integration** — one engine loop instead of demo-scripted steps
+  extract `QUEST_REMOVE_COMPANION`
 - **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build

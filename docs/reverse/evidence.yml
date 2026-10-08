@@ -2265,11 +2265,11 @@ claims:
       dungeon_built is chosen true: the requirement is read straight from the
       string, but no shipped data carries a dungeon to build, so the flag gates
       rather than withholds until city building exists. The count only ever
-      grows - nothing decrements it, and the gate is its only consumer. Not
-      modelled: the per-quest-battle capture flag, where QUEST_BATTLE passes
-      capture=1 and QUEST_BATTLE_NOCAPTURE capture=0 to QUEST_ENCOUNTER_ADD -
-      battle identity within a quest is not tracked in the port, so a quest kill
-      of a non-capturable variant counts here. Recorded in GAPS.md.
+      grows - nothing decrements it, and the gate is its only consumer. The
+      per-quest-battle capture flag, where QUEST_BATTLE passes capture=1 and
+      QUEST_BATTLE_NOCAPTURE capture=0 to QUEST_ENCOUNTER_ADD, is now modelled
+      per stage: the stage's own primitive decides, and where the Lua string
+      comparison disagrees the primitive wins - campaign.quest_battle_flow.
 
   - id: campaign.capture_board
     title: A capture attempt clears an 8x8 grid of gems with battle rules
@@ -2363,10 +2363,63 @@ claims:
       and its snd_redskull sound have no log event of their own, so hits ride
       the existing Damage event. Dispatch, ACTIVATE_COMPANION's meaning, and
       the party cap are port choices - see
-      port.companion_hooks_fire_for_the_party. Quest battles are demo-scripted
-      and never reach a battle constructor, so hooks fire on road battles only
-      (recorded in GAPS.md); the same gap holds for the six items and one rune
-      that declare OnStartBattle.
+      port.companion_hooks_fire_for_the_party. Quest battles now run through
+      the same constructor as road fights, so the hooks fire on both paths
+      (campaign.quest_battle_flow); the same gap holds for the six items and
+      one rune that declare OnStartBattle.
+
+  - id: campaign.quest_battle_flow
+    title: A quest stage picks the fight, and the fight runs through the battle engine
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Each quest ships its fights as <Battle> elements - monster id plus the
+      hero's spell line-up - and its OnCompleteAction script says which state
+      runs which fight and where win and loss go. The port's scanner
+      attributes every QUEST_BATTLE call to its questState guard and to the
+      win or fail side of the surrounding if: 128 stage actions over 155
+      Battle elements across the 142 shipped quests. At run time the stage
+      looks up its action, the action's index picks the element, and
+      run_quest_battle opens a real battle - the monster's registry roster
+      on the enemy side, the fight's spells plus the player's known spells
+      on the hero's, companion OnStartBattle hooks firing as on the road -
+      then settles the outcome: life either way, gold and xp spoils on a
+      win, the stage transition (battle_stage_advances or
+      battle_stage_fails, defaulting to stage + 1), this stage's capture
+      primitive, and the ruin releases the win branch owes.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/Q0I0.lua
+        note: QUEST_BATTLE("MTRO", "", 1) under the questState == 1 guard
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/Q0Q7.lua
+        note: three fights, the retry state 4 else-branch, capture only on the caravan one
+      - kind: xml
+        ref: game/Assets.zip!Assets/Quests/Q0E0.xml
+        note: a <Battle> element carrying its monster and the hero's <Spell> list
+      - kind: code
+        ref: tools/extract_quests.py
+        note: the block scanner attributing battle calls and branches to stages
+      - kind: code
+        ref: lib/campaign.ml
+        fn: run_quest_battle
+      - kind: code
+        ref: test/test_quest_battle.ml
+    affects:
+      [tools/extract_quests.py, lib/campaign_quests.ml, lib/campaign.ml, bin/campaign_demo.ml]
+    notes: >
+      36 of the 160 raw QUEST_BATTLE calls carry no questState guard - most
+      are conversation callbacks, which the loop reports as no battle at that
+      stage rather than guessing. Q1E0's win branch sets the same state twice
+      with different values; the first in source order wins, which is what a
+      straight-line script does. The hero loadout, the player-level monster
+      scaling and the settle split are choices rather than recoveries - see
+      port.quest_battle_loop. The auto-AI loses most of these fights at the
+      heroes the data hands it (the AI overhaul is workstream 10), so the
+      suite drives the win bookkeeping through quest_battle_settle against
+      the battle the loop actually ran.
 
 # ------------------------------------------------------------ open questions ----
 
@@ -2951,6 +3004,28 @@ port_decisions:
       in progress is not written to the save: the grid is static data, so a
       load rebuilds it with capture_begin while the state that matters -
       defeat counts, captives, the dungeon flag - round-trips.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.quest_battle_loop
+    decision: >
+      Quest battles run through the shared battle constructor with the hero's
+      line-up as the fight's <Spell> list plus the player's known spells,
+      the monster scaled to the player's level as on the road, and the
+      outcome applied by a settle step that can be driven directly
+    rationale: >
+      One engine loop instead of demo-scripted steps was the goal: a quest
+      fight gets the same board, rosters, companion hooks and AI as a road
+      fight. The loadout choice - the fight's spells on top of what the
+      player knows - is what a character who has learned spells brings;
+      hero-only would have the player forget everything between fights and
+      XML-only would ignore the profession table. Riding the road scaling
+      formula is consistency, not recovery: no shipped data pins a separate
+      curve for quest monsters, and a second invented one would be worse
+      than one shared one. Settle is split out of run because the auto-AI
+      loses most fights before the AI overhaul lands, and the win
+      bookkeeping - advance, capture, ruin release, spoils - has to be
+      exercised whether the dice deliver a win or not.
     supersedes: null
     date: 2026-10-08
 
