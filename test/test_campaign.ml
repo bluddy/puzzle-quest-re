@@ -561,6 +561,61 @@ let () =
     (take_snapshot () = initial)
 
 let () =
+  (* QUEST_REMOVE_COMPANION: a companion leaves the party when the hero
+     arrives at a quest stage's location - Q3S0's five sword points and
+     QS00's at CENM are the six rules the scanner attributes to
+     OnEnterLocation; the two conversation-callback sites (Q3Q5, QU02) have
+     no arrival event to run under and stay out of the table. *)
+  let with_rules =
+    List.filter (fun (q : Campaign_quests.quest) -> q.enter_removes <> [])
+      Campaign_quests.quests
+  in
+  check "only Q3S0 and QS00 carry enter rules"
+    (List.map (fun (q : Campaign_quests.quest) -> q.id) with_rules
+     = [ "Q3S0"; "QS00" ]);
+  let q3s0 = Campaign_quests.quest_by_id "Q3S0" in
+  check "Q3S0 pairs each state with its location and companion"
+    (q3s0.enter_removes =
+     [ (2, "WLOB", "NSER"); (3, "CKUN", "NWIN"); (4, "WWAS", "NKHA");
+       (5, "WHVA", "NFLI"); (6, "WBSP", "NELI") ]);
+  check_int "QS00 has one rule"
+    (List.length (Campaign_quests.quest_by_id "QS00").enter_removes) 1;
+  check "Q3Q5's callback site stays out of the arrival table"
+    ((Campaign_quests.quest_by_id "Q3Q5").enter_removes = []);
+
+  let base = Campaign.create_player "Leaver" "PWAR" 0 1 in
+  let active =
+    { base with
+      Campaign.companions = [ "NSER"; "NWIN" ];
+      Campaign.active_quests = [ ("Q3S0", 2) ] }
+  in
+  let arrived where =
+    (Campaign.enter_location active where).Campaign.companions
+  in
+  check "state 2 arriving at WLOB drops Serephine"
+    (arrived "WLOB" = [ "NWIN" ]);
+  check "the same arrival at CKUN drops nobody"
+    (arrived "CKUN" = [ "NSER"; "NWIN" ]);
+  check "an arrival with nobody selected changes nothing"
+    ((Campaign.enter_location
+        { active with Campaign.companions = [ "NWIN" ] } "WLOB")
+     .Campaign.companions = [ "NWIN" ]);
+  check "no active quest means no rule to run"
+    ((Campaign.enter_location
+        { active with Campaign.active_quests = [] } "WLOB")
+     .Campaign.companions = [ "NSER"; "NWIN" ]);
+  let s0 =
+    { base with
+      Campaign.companions = [ "NSER"; "NFLI" ];
+      Campaign.active_quests = [ ("QS00", 1) ] }
+  in
+  check "QS00 drops Serephine at CENM"
+    ((Campaign.enter_location s0 "CENM").Campaign.companions = [ "NFLI" ]);
+  check "removing someone not in the party is a no-op"
+    ((Campaign.apply_quest_effect active (Campaign.RemoveCompanion "NKHA"))
+     .Campaign.companions = [ "NSER"; "NWIN" ])
+
+let () =
   if !failures > 0 then begin
     Printf.printf "\n%d failure(s)\n" !failures;
     exit 1

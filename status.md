@@ -2,15 +2,15 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync wired the item start-of-battle
-hooks: the item extractor now reads each script's declare table for
-`OnStartBattle` (six of 160 - two helms, four walls), the bodies are
-hand-ported in `lib/item_hooks.ml`, and `open_battle` fires them on both
-sides after the companion pass, with `loadout_of_equipment` folding the
-nine-field character panel into the four battle slots by each item's own
-location. The rune JXXX declares the hook too and waits on the forge's
-rune state. Plus the `campaign.item_start_battle` claim and the
-`port.item_start_battle_dispatch` decision. Build, all 28 suites and the
+**Sync:** working tree clean. This sync landed the companion removal edge: the
+quest scanner now pulls every guarded `QUEST_REMOVE_COMPANION` site (eight
+across four scripts - six arrival rules in Q3S0 and QS00, two inside
+conversation callbacks) into each quest's `enter_removes`, and
+`Campaign.enter_location` evaluates those rules against a hero's arrival,
+dropping the named companion through a new `RemoveCompanion` effect. The
+select-companion guard is a no-op check (absent = skip) and the leave
+messages ride no campaign event, both recorded in the claim. Plus the
+`campaign.quest_remove_companion` claim. Build, all 28 suites and the
 extractor/validator checks verified green.
 
 ---
@@ -77,6 +77,12 @@ extractor/validator checks verified green.
   skills, so `skill_of` reads profession and monster affinities in campaign
   battles at all; `RewardCompanion` dedups and caps the party at eight
   (`[COMPANIONS_HELP]`).
+- **Companion removal (NEW):** eight `QUEST_REMOVE_COMPANION` sites - six
+  arrival rules (Q3S0 states 2-6 over five cities, QS00 at CENM) extracted
+  into each quest's `enter_removes`; `Campaign.enter_location` runs them
+  when the hero arrives and drops the companion through `RemoveCompanion`.
+  The two sites inside conversation callbacks (Q3Q5, QU02) count but have
+  no arrival to run under.
 - **Rewards (NEW):** gold/XP/items/awards/companions read from the quest script by
   `tools/extract_quests.py`, which now statically scans quest Lua (file-scope string
   constants + `QUEST_*` calls per top-level function).
@@ -96,8 +102,8 @@ extractor/validator checks verified green.
   companion pass; `loadout_of_equipment` folds the nine-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (112), `test/test_capture.ml` (57),
-  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 353
+- **Tests:** `test/test_campaign.ml` (122), `test/test_capture.ml` (57),
+  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 363
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -166,7 +172,7 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included); companion removal still open |
+| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
 | **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, ruin registry, save; travel, encounters, income and level-up still untested |
 | **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
@@ -198,11 +204,11 @@ source assets.
 
 1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
    lifecycle, the visibility rule, the ruin registry and the save round-trip
-   (353 assertions across four campaign suites); travel, encounter triggering, income and level-up are untested
-2. **Companion edges** — `QUEST_REMOVE_COMPANION` (six sites: five in
-   Q3S0.lua, one in Q3Q5.lua) and the location-arrival step behind it are not
-   extracted; the rune's `OnStartBattle` waits on the forge's rune state;
-   equip slot and UI open
+   (363 assertions across four campaign suites); travel, encounter triggering, income and level-up are untested
+2. **Companion edges** — arrival removal is extracted and run
+   (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival
+   event to run under, and no travel step calls enter_location yet); the rune's
+   `OnStartBattle` waits on the forge's rune state; equip slot and UI open
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic
 4. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics

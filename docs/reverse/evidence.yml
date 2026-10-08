@@ -2426,6 +2426,52 @@ claims:
       can_equip at open are port choices - see
       port.item_start_battle_dispatch.
 
+  - id: campaign.quest_remove_companion
+    title: A companion leaves the party when the hero reaches a quest stage's location
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Eight QUEST_REMOVE_COMPANION sites sit across four quest scripts.
+      Six are arrival rules: behind a questState == n and idLocation == k
+      pair they drop one companion - Q3S0's five sword points (states 2-6
+      over WLOB/CKUN/WWAS/WHVA/WBSP, dropping NSER/NWIN/NKHA/NFLI/NELI in
+      turn) and QS00's single CENM rule (state 1, NSER). The quest scanner
+      pulls each site's state, location and companion out of the guard into
+      the quest record, run_quest_on_enter_location matches them against
+      the arrival, and enter_location folds the results over the active
+      quests. The other two sites live inside conversation callbacks
+      (Q3Q5's CallbackConvE removes NDKH, QU02's CallbackConvB removes
+      NSUN) where no arrival event exists; they are counted, not
+      attributed.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/Q3S0.lua
+        note: five OnEnterLocation sites, each behind questState == n and idLocation == k
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/QS00.lua
+        note: state 1 at CENM drops NSER
+      - kind: code
+        ref: tools/extract_quests.py
+        note: the removal scan - state, location and companion out of each guarded call
+      - kind: code
+        ref: lib/campaign.ml
+        fn: enter_location
+      - kind: code
+        ref: test/test_campaign.ml
+    affects:
+      [tools/extract_quests.py, lib/campaign_quests.ml, lib/campaign.ml]
+    notes: >
+      The QUEST_HERO_HAS_COMPANION_SELECTED guard needs no check of its own:
+      dropping someone who is not in the party is the no-op the guard would
+      have made, which is what RemoveCompanion does. The leave messages
+      (QUEST_Q3S0_LEAVE0..4, QUEST_Q3Q5_DHLEAVE) ride no campaign event, so
+      they are recorded here rather than rendered. enter_location walks
+      active_quests in list order; the shipped rules never share a location,
+      so the order cannot matter, and nothing in the port calls it yet -
+      there is no travel step - only the tests drive it.
+
   - id: campaign.quest_battle_flow
     title: A quest stage picks the fight, and the fight runs through the battle engine
     area: campaign

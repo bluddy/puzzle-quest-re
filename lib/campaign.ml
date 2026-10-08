@@ -287,6 +287,7 @@ type quest_effect =
   | RewardItem of string
   | RewardAward of string
   | RewardCompanion of string
+  | RemoveCompanion of string  (* QUEST_REMOVE_COMPANION: leaves the party *)
   | AddQuest of string
   | CompleteQuest of string
   | FailQuest of string
@@ -335,8 +336,19 @@ let run_quest_on_abandon (qi: quest_instance) : quest_instance * quest_effect li
   { qi with state = Inactive; vars = quest_var_set qi.vars "questState" "0" },
   List.map (fun n -> RuinDone n) qi.quest.ruin_dones_on_abandon @ [SetState 0]
 
-let run_quest_on_enter_location (qi: quest_instance) (_location: string) : quest_instance * quest_effect list =
-  qi, []
+(* OnEnterLocation: a hero has arrived at a new location. The extracted rules
+   say which quest state plus location pair makes which companion leave
+   (Q3S0's five sword points, Q3W0's at CENM). The Lua's
+   QUEST_HERO_HAS_COMPANION_SELECTED guard needs no check here: dropping
+   someone who is not in the party is the no-op the guard would have
+   prevented, and the leave message rides no campaign event. *)
+let run_quest_on_enter_location (qi: quest_instance) (location: string) : quest_instance * quest_effect list =
+  let state = match qi.state with Active n -> n | _ -> -1 in
+  qi,
+  List.filter_map
+    (fun (st, loc, cid) ->
+      if st = state && loc = location then Some (RemoveCompanion cid) else None)
+    qi.quest.enter_removes
 
 (* Check if quest is available for player at location *)
 let is_quest_available (player: player) (q: quest) : bool =
@@ -634,6 +646,8 @@ let apply_quest_effect p qeffect =
     if List.mem companion_id p.companions || List.length p.companions >= 8
     then p
     else { p with companions = companion_id :: p.companions }
+  | RemoveCompanion companion_id ->
+    { p with companions = List.filter (fun c -> c <> companion_id) p.companions }
   | RevealNode node_id -> set_location_visible node_id true; p
   | RegisterRuin id -> register_ruin id; p
   | RuinDone id -> set_ruin_done id; p
@@ -644,6 +658,20 @@ let apply_quest_effect p qeffect =
           if List.mem qid p.completed_quests then p.completed_quests
           else qid :: p.completed_quests }
   | _ -> p
+
+(* A hero arrived at [location]: every active quest gets its OnEnterLocation
+   rules evaluated against the arrival, effects applying in active-quest
+   order so a later rule sees an earlier removal - the order the engine's
+   single hero would. *)
+let enter_location (player: player) (location: string) : player =
+  List.fold_left
+    (fun p (qid, st) ->
+      let q = quest_by_id qid in
+      let qi = { quest = q; state = Active st;
+                 vars = quest_var_set [] "questState" (string_of_int st) } in
+      let _, effects = run_quest_on_enter_location qi location in
+      List.fold_left (fun p' e -> apply_quest_effect p' e) p effects)
+    player player.active_quests
 
 (* ------------------------------------------------------------------ *)
 (* Quest lifecycle (player level)                                     *)

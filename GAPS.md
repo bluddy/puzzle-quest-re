@@ -45,7 +45,7 @@
 | ~~Prerequisite checks~~ | ✅ `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`, `item`, `notitem`, `award`, `notaward` all wired in `is_quest_available` |
 | ~~Quest rewards~~ | ✅ gold/XP/items/awards/companions from the quest script (`run_quest_on_end`), not the 200/200 default |
 | ~~Quest failure paths~~ | `quest_abandon` runs OnAbandon (releases + state reset) and respects the `abandonable` flag; `run_quest_on_fail` still has no caller — no OnFail hook |
-| Conversation callbacks | `CallbackConv*` grants (item/award/companion/xp) are applied at turn-in rather than at the dialogue |
+| Conversation callbacks | `CallbackConv*` grants (item/award/companion/xp) are applied at turn-in rather than at the dialogue; `QUEST_REMOVE_COMPANION` sites inside callbacks (Q3Q5, QU02) have no arrival event to run under |
 
 ### 2. Ruins & Companion Capture
 | Gap | Details |
@@ -53,7 +53,7 @@
 | ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
 | ~~Ruin mini-game~~ | ✅ `lib/capture.ml`: grid parse, no-refill settle, win/lose, auto-play; gates, captives and save in `campaign.ml` |
 | ~~Quest battle capture flag~~ | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; the stage's own primitive now decides capture (primitive over the Lua string check), so a quest kill of a non-capturable variant no longer counts |
-| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); companion equipping, `QUEST_REMOVE_COMPANION` (5 sites, Q3S0.lua) and leaving a companion at a location still open |
+| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); `QUEST_REMOVE_COMPANION` arrival rules run through `enter_location` (six: Q3S0 x5, QS00 x1); companion equipping and the two callback-site removals (Q3Q5, QU02) still open; the rune's start hook waits on the forge |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
 ### 3. Map Progression & Visibility
@@ -109,7 +109,7 @@
 ### 10. Companion / Mount System
 | Gap | Details |
 |-----|---------|
-| Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` dedups, ninth refused); no swap/remove UI, no leave-at-location flow |
+| Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` dedups, ninth refused); `RemoveCompanion` drops by id and the arrival rules run through `Campaign.enter_location` (no travel step calls it yet); no swap/remove UI |
 | Mount | `mount` equipment slot exists; no speed/fly logic, no banner effects |
 | Capture flow | Engine side done (eligibility, begin/finish, captives, save); no encounter UI wiring a battle win to the capture menu |
 
@@ -182,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`; still to add: grid spell targeting, monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`; still to add: grid spell targeting, monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -238,8 +238,6 @@ bin/
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
-hooks). Pick one:
+hooks, companion removal). Pick one:
 
-- **Companion edges** — extract `QUEST_REMOVE_COMPANION` and the
-  location-arrival step behind it (the rune's start hook waits on the forge)
 - **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build

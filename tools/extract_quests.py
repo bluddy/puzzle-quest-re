@@ -181,6 +181,8 @@ CALL_PATTERNS = {
         r'QUEST_ADD_AWARD\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
     'companion': re.compile(
         r'QUEST_ADD_COMPANION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
+    'remove_companion': re.compile(
+        r'QUEST_REMOVE_COMPANION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
 }
 # raw counts: the call name and open paren, whatever the arguments look like
 RAW_RE = {k: re.compile(v.pattern.split(r'\s*\(')[0] + r'\s*\(')
@@ -234,6 +236,7 @@ BATTLE_CALL = re.compile(
     r'QUEST_BATTLE(\w*)\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*|\d+)\s*,\s*(\d+)')
 STATE_ASSIGN = re.compile(r'questState\s*=\s*(\d+)')
 STATE_EQ = re.compile(r'questState\s*==\s*(\d+)')
+IDLOC_EQ = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
 LUA_KW = re.compile(r'\b(if|then|else|elseif|end|do|function|repeat|until)\b')
 
 
@@ -330,6 +333,7 @@ def analyze_lua(src, qid, stats):
     battle_actions = []
     stage_advances = {}
     stage_fails = {}
+    enter_removes = []
 
     for hook, (start, end) in funcs.items():
         body = nc[start:end]
@@ -394,6 +398,32 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             companions.append(target)
+        # QUEST_REMOVE_COMPANION: the OnEnterLocation sites carry the whole
+        # rule - the questState and idLocation guards in the surrounding if,
+        # the companion id as the argument. The nearest preceding guard of
+        # each kind is the branch the call sits in (the elseif chain puts
+        # them in the header just above). A site in any other hook - a
+        # conversation callback - is recognised but has no arrival event to
+        # run under, so it is counted and listed rather than attributed.
+        for hit in CALL_PATTERNS['remove_companion'].finditer(body):
+            stats['extracted']['remove_companion'] += 1
+            stats['hooks'][('remove_companion', hook)] += 1
+            comp = resolve(hit.group(1), consts)
+            if hook != 'OnEnterLocation':
+                stats['remove_elsewhere'].append(
+                    (qid, hook, comp if comp else hit.group(1)))
+                continue
+            st = None
+            for g in STATE_EQ.finditer(body[:hit.start()]):
+                st = int(g.group(1))
+            loc_tok = None
+            for g in IDLOC_EQ.finditer(body[:hit.start()]):
+                loc_tok = g.group(1)
+            loc = resolve(loc_tok, consts) if loc_tok else None
+            if st is None or loc is None or comp is None:
+                stats['unresolved'].append((qid, hook, hit.group(1)))
+                continue
+            enter_removes.append((st, loc, comp))
         calls, assigns = scan_battle_branches(
             body_ns, body, collect_assigns=(hook == 'OnCompleteAction'))
         for full_name, idx_arg, third, stages in calls:
@@ -443,6 +473,7 @@ def analyze_lua(src, qid, stats):
         'battle_actions': battle_actions,
         'battle_stage_advances': list(stage_advances.items()),
         'battle_stage_fails': list(stage_fails.items()),
+        'enter_removes': enter_removes,
     }
 
 
@@ -493,7 +524,7 @@ def parse_quest(xml_path, stats):
         'reward_gold': 0, 'reward_xp': 0, 'reward_items': [],
         'reward_awards': [], 'reward_companions': [],
         'battle_actions': [], 'battle_stage_advances': [],
-        'battle_stage_fails': [],
+        'battle_stage_fails': [], 'enter_removes': [],
     }
 
     return {
@@ -569,6 +600,13 @@ def ocaml_int_pairs(pairs):
     return "[" + "; ".join("(%d, %d)" % p for p in pairs) + "]"
 
 
+def ocaml_state_triples(rows):
+    if not rows:
+        return "[]"
+    return "[" + "; ".join('(%d, "%s", "%s")' % (st, ocaml_str(loc), ocaml_str(cid))
+                           for st, loc, cid in rows) + "]"
+
+
 def ocaml_lua(source):
     if not source:
         return '""'
@@ -583,7 +621,8 @@ def new_stats():
     from collections import Counter
     return {'raw': Counter(), 'extracted': Counter(), 'hooks': Counter(),
             'unresolved': [], 'missing_lua': [],
-            'battle_unattributed': [], 'battle_conflicts': []}
+            'battle_unattributed': [], 'battle_conflicts': [],
+            'remove_elsewhere': []}
 
 
 def main():
@@ -613,6 +652,12 @@ def main():
         print("call reconciliation (raw -> extracted in function bodies):")
         for kind in CALL_PATTERNS:
             print(f"  {kind}: {stats['raw'][kind]} -> {stats['extracted'][kind]}")
+        n_enter = sum(len(q["enter_removes"]) for q in quests)
+        print(f"remove_companion: {stats['raw']['remove_companion']} raw -> "
+              f"{n_enter} enter-location rules, "
+              f"{len(stats['remove_elsewhere'])} in other hooks")
+        for row in stats['remove_elsewhere']:
+            print(f"  elsewhere: {row}")
         n_battles = sum(len(q["battles"]) for q in quests)
         n_actions = sum(len(q["battle_actions"]) for q in quests)
         n_adv = sum(len(q["battle_stage_advances"]) for q in quests)
@@ -652,6 +697,8 @@ def main():
             if q['battles'] or q['battle_actions']:
                 print(f"    battles={q['battles']} actions={q['battle_actions']} "
                       f"adv={q['battle_stage_advances']} fail={q['battle_stage_fails']}")
+            if q['enter_removes']:
+                print(f"    enter_removes={q['enter_removes']}")
             if q['texts']:
                 for tag, txt in list(q['texts'].items())[:2]:
                     print(f"    {tag}: {txt[:60]}")
@@ -695,6 +742,7 @@ def main():
     lines.append("  battle_actions: (int * int * bool) list;")
     lines.append("  battle_stage_advances: (int * int) list;")
     lines.append("  battle_stage_fails: (int * int) list;")
+    lines.append("  enter_removes: (int * string * string) list;")
     lines.append("  reveal_on_begin: string list;")
     lines.append("  reveal_on_end: string list;")
     lines.append("  ruin_reveals: string list;")
@@ -749,6 +797,7 @@ def main():
         lines.append(f'    battle_actions = {ocaml_battle_actions(q["battle_actions"])};')
         lines.append(f'    battle_stage_advances = {ocaml_int_pairs(q["battle_stage_advances"])};')
         lines.append(f'    battle_stage_fails = {ocaml_int_pairs(q["battle_stage_fails"])};')
+        lines.append(f'    enter_removes = {ocaml_state_triples(q["enter_removes"])};')
         lines.append(f'    reveal_on_begin = {ocaml_list(q["reveal_on_begin"])};')
         lines.append(f'    reveal_on_end = {ocaml_list(q["reveal_on_end"])};')
         lines.append(f'    ruin_reveals = {ocaml_list(q["ruin_reveals"])};')
