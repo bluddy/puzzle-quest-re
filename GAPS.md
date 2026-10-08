@@ -68,7 +68,7 @@
 |-----|---------|
 | Nine input spells | ✓ six grid (SCON, SFBA, SFOD, SPRO, SSPA, STHR), two column (SCLI, SLIS), one row (SCHG); the aim reaches the body through `choose_aim` -> `fx_input`, and each reader no-ops on `None` |
 | UI | ✓ cell selection landed (`Input.in_target_prompt`: aim, bar-cancel, miss; the console asks for `b3`-style cells); hover cursor and valid-target highlighting still open (cosmetic) |
-| AI | No aim: the six Lua hooks' `SET_INPUT_DATA` picks are not ported, so an AI-cast aimed spell no-ops (open question `spell.sfba_target_writeback`) |
+| AI | ✓ the six hooks' `SET_INPUT_DATA` picks are ported (`ctx_aim`, cleared per candidate, read into `fx_input`); SFOD/SSPA/SPRO store nothing and so aim at nothing (`port.ai_aim_fallback`) |
 
 ### 5. Monster AI & Spell Rosters
 | Gap | Details |
@@ -154,7 +154,7 @@
 | **2 ✅** | Global text tables | Names render as strings; blocks every UI otherwise |
 | **3 ✅** | Capture engine ✅ + companion hooks ✅ | Core progression loop (capture → party → bonuses); equip bonuses remain in 8 |
 | **4 ✅** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
-| **5** | Grid spell targeting (AI half) | The player's aim landed; the AI's six `SET_INPUT_DATA` hook picks remain and settle `spell.sfba_target_writeback` |
+| **5 ✅** | Grid spell targeting | Player aim (click-to-aim) and machine aim (six hook picks) both land; `spell.sfba_target_writeback` settled |
 | **6** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
 | **7** | World map SDL2 + travel UI | Makes campaign playable visually |
 | **7** | City UI (shop, spells, tavern) | Completes town loop |
@@ -182,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`; still to add: monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`; still to add: monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -238,7 +238,7 @@ bin/
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
-hooks, companion removal, cell selection). Pick one:
+hooks, companion removal, cell selection, AI aiming). Pick one:
 
-- **The AI's aim** — port the six `SET_INPUT_DATA` hook picks; settles
-  `spell.sfba_target_writeback`
+- **Monster spell AI** — per-monster spell rosters beyond the XML `Spell`
+  tags, and difficulty scaling (priority 6)

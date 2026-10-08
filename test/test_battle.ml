@@ -1145,6 +1145,35 @@ let () =
        (fun (e : event) -> match e with SpellCast (_, "SFOD") -> true | _ -> false)
        (log_of b))
 
+let () =
+  (* The machine's aim, end to end. The hook stores a cell the way the six
+     targeting hooks do ("Store a grid in case we cast!"), pick_ai_spell
+     clears-and-runs it, take_action reads it back into the effect context, and
+     the body runs against it. The spell is hand-built because real SCON wants a
+     board, a percentile and an evaluation all bent to say yes, and those are
+     luck rather than a seam. Difficulty 2 removes the skip roll, so the cast
+     cannot be declined before the hook runs. *)
+  let target = { Board.x = 2; y = 5 } in
+  let body (fx : Spell.effect_context) =
+    match fx.Spell.fx_input with
+    | Some p -> Spell_effects.set_gem fx p.Board.x p.Board.y Board.RedSkull
+    | None -> ()
+  in
+  let s =
+    Spell.make_spell ~input_type:3 ~cast_spell:body
+      ~should_ai_cast:(fun ctx ->
+        ctx.Spell.ctx_aim := Some (target.Board.x, target.Board.y);
+        true)
+      "TEST3" "Aimer"
+  in
+  let b =
+    create ~rng:(lcg 7) ~rules:{ default_rules with difficulty = 2 }
+      ~hero_spells:[ s ] (playable_board ()) (fighter 0 "hero") (fighter 1 "foe")
+  in
+  take_turn b;
+  check "the machine's hook pick reaches the body"
+    (Board.get_gem b.board target = Board.RedSkull)
+
 (* ------------------------------------------------- the write-back contract -- *)
 
 let () =

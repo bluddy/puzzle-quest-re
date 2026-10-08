@@ -49,6 +49,7 @@ let ctx ?(evaluation = 0) ?(percentile = 0) ?(caster = hero ()) ?(enemy = hero (
   ; Spell.ctx_evaluation = evaluation
   ; Spell.ctx_percentile = percentile
   ; Spell.ctx_roll = (fun _ -> 0)
+  ; Spell.ctx_aim = ref None
   ; Spell.ctx_items = items
   ; Spell.ctx_enemy_items = enemy_items
   }

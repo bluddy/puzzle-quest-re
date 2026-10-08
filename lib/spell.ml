@@ -77,6 +77,11 @@ type ai_context = {
   ctx_percentile : int;
   (** Injected randomness for hooks that need it. *)
   ctx_roll : int -> int;
+  ctx_aim : (int * int) option ref;
+  (** [SET_INPUT_DATA] from a [ShouldAICastSpell] that aims: the cell the
+      machine picked "in case we cast". [pick_ai_spell] clears it before each
+      candidate's hook runs, so on return it holds the winning hook's cell or
+      nothing - never a losing hook's. *)
   ctx_items : Item.loadout option;
   (** The enemy side's loadout, for SDUP, which compares the two sides' four
       slots. Separate from [ctx_items] because the loadout lives on the battle
@@ -496,7 +501,7 @@ let pick_ai_spell ?(difficulty = 1) ?(roll = Random.int) ?(spells_disallowed = f
            only caller that knows, and it passes the flag. *)
         can_cast ~spells_disallowed ctx.ctx_caster s
         && is_cast_legal s ctx
-        && should_ai_cast s ctx)
+        && (ctx.ctx_aim := None; should_ai_cast s ctx))
       spells
 
 (** The gem kinds the spell scripts refer to, as [CountGems]' arguments.
@@ -553,6 +558,26 @@ let gskull = count_gems GSkull
 let gredskull = count_gems GRedSkull
 let ggold = count_gems GGold
 let gstar = count_gems GStar
+
+(** [GetRandomGrid_Type]: a random cell of [kind], or - if the tries run out -
+    the last cell drawn anyway. The Lua repeats `x,y = GetRandomGrid()` until
+    the gem matches or `tries > 1000`, and returns [x,y] either way, so a board
+    with none of the kind still hands back a cell and the caller is the one
+    that decides what that means. Two draws of 1..8 from [ctx_roll], the same
+    shape [random_grid] reads on the effect side. *)
+let random_grid_type (kind : gem_kind) (ctx : ai_context) : int * int =
+  let want = gem_of_kind kind in
+  let cell = ref (0, 0) in
+  let found = ref false in
+  let tries = ref 0 in
+  while (not !found) && !tries <= 1000 do
+    let x = ctx.ctx_roll 8 - 1 and y = ctx.ctx_roll 8 - 1 in
+    cell := (x, y);
+    if Board.equal_gem (Board.get_gem ctx.ctx_board { Board.x = x; y = y }) want
+    then found := true;
+    incr tries
+  done;
+  !cell
 
 (** [GET_ITEM(n)]: the item id in slot [n] of the caster's loadout, or [""] when
     there is no loadout in scope or the slot is empty. The empty case is [Some

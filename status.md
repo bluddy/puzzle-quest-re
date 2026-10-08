@@ -2,18 +2,20 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync wired the player's aim: nine
-spells declare an `<Input>` element (six grid, two column, one row) and
-their bodies read the cell through `fx_input`, which was always None -
-so SCON, SFOD, STHR and the rest quietly did nothing. The cast question
-now asks for the target when `input_type` is not 0
-(`Input.in_target_prompt`: aim, bar-cancel, miss), both front ends store
-it, and `choose_aim` on the player record hands it to `take_action`.
-Machines still aim at nothing - the six Lua hooks' `SET_INPUT_DATA`
-picks are not ported (open question `spell.sfba_target_writeback`).
-Plus the `spells.input_aim` claim and the `port.human_aim_click`
-decision. Build, all 28 suites and the
-extractor/validator checks verified green.
+**Sync:** working tree clean. This sync gave the machine its aim. Six
+ShouldAICastSpell bodies end in SET_INPUT_DATA ("Store a grid in case we
+cast!"); each now stores its cell - red-skull searches for SCLI, STHR and
+SLIS, a strict-majority kind for SCON, red-or-plain for SFBA, the best row
+for SCHG - on the ai_context, pick_ai_spell clears it before every
+candidate, and take_action reads it into fx_input: the same path the
+human's click takes. GetRandomGrid_Type is ported from the utility script
+(draw until the kind matches or the tries pass 1000). The three aimed
+spells whose hooks store nothing aim at nothing, recorded rather than
+guessed. This settles the open question spell.sfba_target_writeback, and
+the first positive SCON test caught a strict majority comparing a count
+against itself. Plus the spells.ai_aim claim and the port.ai_aim_fallback
+decision. Build, all 28 suites and the extractor/validator checks
+verified green.
 
 ---
 
@@ -22,7 +24,7 @@ extractor/validator checks verified green.
 ### Battle Layer (Complete)
 - **Board & gems:** 8×8 grid, swap validation, match detection, cascades, gravity, refill
 - **Combat:** Hero/foe stats, life/mana, damage, status effects, spell casting
-- **Spells:** 130 spells ported from Lua; 11 spells with 13 grid-effect calls (`Std_GridSpellEffect`); the nine `Input` spells aim from the cast question (`choose_aim` -> `fx_input`)
+- **Spells:** 130 spells ported from Lua; 11 spells with 13 grid-effect calls (`Std_GridSpellEffect`); the nine `Input` spells aim from the cast question (`choose_aim` -> `fx_input`) and the six hook picks land as `ctx_aim`
 - **Animation:** Per-gem pop (matched fade/shrink), column-bottom-up fall, entrant slide; `Battle.on_step` observer
 - **Sound:** Full `Audio.play_all` fix; cascade step sounds (1 silent, 2=`snd_cascade1`, 7+=`snd_cascade6`); spell sounds via `Spell_fx.calls_of_spell`
 - **Spell effects:** 21 caster/grid effects, 22 sound tags, 24 constants; particle system (6 textures, gravity/velocity/color/size interpolation, additive/alpha blending)
@@ -128,11 +130,12 @@ extractor/validator checks verified green.
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 78 | 10 (5 open) | 22 |
+| `docs/reverse/evidence.yml` | 79 | 10 (4 open) | 23 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
-- `port.human_aim_click` — one click aims a spell (the bar cancels back to the spell question); machines aim at nothing
+- `port.human_aim_click` — one click aims a spell (the bar cancels back to the spell question)
+- `port.ai_aim_fallback` — hooks that store nothing aim at nothing; SCHG's row rides as y, the column slot0 as x
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
@@ -144,9 +147,8 @@ Key decisions recorded:
 - `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
-Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
-`quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
-`spell.sfba_target_writeback`.
+Open questions (4): `font.advance_field_mapping`, `quest.base_value_from_level`,
+`quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`.
 
 ---
 
@@ -214,10 +216,12 @@ source assets.
    `OnStartBattle` waits on the forge's rune state; equip slot and UI open
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic
-4. **Spell targeting** — the player's aim is wired end to end (click-to-aim,
-   bar cancel, console `b3` cells, `choose_aim` -> `fx_input`); hover cursor and
-   valid-target highlighting are cosmetic-open, and the AI aims at nothing until
-   its hooks' `SET_INPUT_DATA` picks are ported (`spell.sfba_target_writeback`)
+4. **Spell targeting** — both halves wired: the player aims from the cast
+   question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks'
+   `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per
+   candidate); hover cursor and valid-target highlighting are cosmetic-open,
+   and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since
+   their hooks store no cell (`port.ai_aim_fallback`)
 5. **Monster spell rosters** — AI only uses `Spell` tags from monster XML; no dynamic selection
 6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`)
    not wired to dialogue UI

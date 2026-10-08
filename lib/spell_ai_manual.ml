@@ -10,15 +10,17 @@
     the shared helper, that is noted, because it is the sort of thing that gets
     "simplified" into the helper and quietly changes behaviour.
 
-    Two known omissions, both consequences of [CastSpell] not being ported yet:
+    One known note, a consequence of [PERCENTILE_CHANCE_SYNC]'s port:
 
-    - Targeting hooks call `GetRandomGrid_Type` and `SET_INPUT_DATA` to pick a
-      target cell. That has no observable effect on the {e decision}, only on
-      which cell the spell later hits, so it is left out here. It does consume
-      randomness in the original, which shifts later rolls in the same turn.
     - `PERCENTILE_CHANCE_SYNC` is read once per turn into [ai_context] rather than
       per call. Every one of the 130 hooks calls it at most once, so this is
-      equivalent; a hook that called it twice would differ. *)
+      equivalent; a hook that called it twice would differ.
+
+    The other former omission - targeting hooks calling `GetRandomGrid_Type` and
+    `SET_INPUT_DATA` to pick a target cell - is ported: the cell lands in
+    [ai_context]'s [ctx_aim], and [Battle] reads it into the effect context after
+    the spell is chosen. It does consume randomness in the original, which shifts
+    later rolls in the same turn. *)
 
 open Spell
 
@@ -50,11 +52,16 @@ let hook_sbrl ctx =
   ai_spellcasting_chance_i ~modifier:((gskull ctx + ggold ctx) * 5) ctx
 
 (** SCLI and STHR are byte-identical apart from the multiplier: one requires at
-    least one red skull and pays ten per, the other same. Both target a red
-    skull cell, which is omitted per the header. *)
+    least one red skull and pays ten per, the other same. Both then store a red
+    skull cell before asking the chance - the Lua's "Store a grid in case we
+    cast!", arriving here as [ctx_aim]. *)
 let red_skulls_gate ~per (ctx : ai_context) : bool =
   let n = gredskull ctx in
-  if n <= 0 then false else ai_spellcasting_chance_i ~modifier:(n * per) ctx
+  if n <= 0 then false
+  else begin
+    ctx.ctx_aim := Some (random_grid_type GRedSkull ctx);
+    ai_spellcasting_chance_i ~modifier:(n * per) ctx
+  end
 
 let hook_scli = red_skulls_gate ~per:10
 let hook_sthr = red_skulls_gate ~per:10
@@ -77,7 +84,12 @@ let hook_sthr = red_skulls_gate ~per:10
     SET_INPUT_DATA(1,y);
     return Std_AISpellcastingChance(numRedSkulls*20);
     ``` *)
-let hook_slis ctx = ai_spellcasting_chance_i ~modifier:(gredskull ctx * 20) ctx
+let hook_slis ctx =
+  (* The `SET_INPUT_DATA` above the return stores too - the unconditional
+     search, even with zero red skulls on the board, which gives up and stores
+     whatever cell it last drew, exactly as the Lua reads. *)
+  ctx.ctx_aim := Some (random_grid_type GRedSkull ctx);
+  ai_spellcasting_chance_i ~modifier:(gredskull ctx * 20) ctx
 
 (** SCLV, SFBT, SROF and SNWR share a shape: a floor, then a multiple of the
     count. Only the floor and the multiplier differ. *)
@@ -213,13 +225,24 @@ let hook_ssgz ctx =
     two-way tie falls through to it. *)
 let hook_scon ctx =
   let counts =
-    [ (gyellow ctx, "yellow"); (ggreen ctx, "green"); (gblue ctx, "blue");
-      (gstar ctx, "star"); (ggold ctx, "gold") ]
+    [ (gyellow ctx, GYellow); (ggreen ctx, GGreen); (gblue ctx, GBlue);
+      (gstar ctx, GStar); (ggold ctx, GGold) ]
   in
-  let strict_max c = List.for_all (fun (other, _) -> c > other) counts in
-  match List.find_opt (fun (c, _) -> strict_max c) counts with
+  (* Strict against the other four, which is how the Lua writes it: one `and`
+     chain per kind over the remaining kinds. Comparing a count against its own
+     entry as well would make every count fail itself, and SCON could never
+     vote yes - which is what the first positive test for this hook caught. *)
+  let strict_max c kind =
+    List.for_all (fun (other, k) -> k = kind || c > other) counts
+  in
+  match List.find_opt (fun (c, kind) -> strict_max c kind) counts with
   | None -> false
-  | Some (num, _) ->
+  | Some (num, kind) ->
+      (* The chain's pick: a random cell of the winning kind, stored the way the
+         Lua stores it, before the modifier is even computed - and so it is
+         stored even when -100 then vetoes, which the clearing in [pick_ai_spell]
+         absorbs. *)
+      ctx.ctx_aim := Some (random_grid_type kind ctx);
       let modifier = if num > 11 then num * 3 else -100 in
       ai_spellcasting_chance_i ~modifier ctx
 
@@ -644,9 +667,11 @@ let hook_sdup ctx =
     [EvaluateRows] sits ten lines below [CastSpell] in [SCHG.lua].
 
     Both hooks also call [SET_INPUT_DATA] to record the cell the AI picked, and
-    {e that} half is still not observable here - [Battle] reads the target from
-    the spell's [input_type], which is the human's aim. What is ported is the
-    decision, which is what decides whether the spell is cast at all. *)
+    that half is ported now too: the cell lands in [ctx_aim], [pick_ai_spell]
+    clears it before every candidate so a losing hook's cell cannot ride the
+    winner, and [Battle] reads it into [fx_input] after the choice - the same
+    path the human's aim takes. What these hooks still decide on their own is
+    the decision, which is what decides whether the spell is cast at all. *)
 
 (** [SCHG]'s [EvaluateRows]: score every row by its skulls, plain counting one and
     red counting five, and keep the best.
@@ -678,17 +703,29 @@ let skull_weight_of_row (b : Board.board) (y : int) : int =
   done;
   !n
 
-(** The best row's score, in the Lua's own units. [>=] keeps the last of a tie. *)
-let evaluate_rows_value (b : Board.board) : int =
-  let best = ref 0 in
+(** The best row and the score, in the Lua's own units. [>=] keeps the last of a
+    tie, which matters for [hook_schg]'s aim: the row stored is that last one. *)
+let best_row_and_value (b : Board.board) : int * int =
+  let best = ref 0 and best_row = ref 0 in
   for y = 0 to b.Board.height - 1 do
     let v = skull_weight_of_row b y in
-    if v >= !best then best := v
+    if v >= !best then begin
+      best := v;
+      best_row := y
+    end
   done;
-  if !best < 4 then -20 else !best * 5
+  (!best_row, if !best < 4 then -20 else !best * 5)
+
+let evaluate_rows_value (b : Board.board) : int = snd (best_row_and_value b)
 
 let hook_schg ctx =
-  let row_value = evaluate_rows_value ctx.ctx_board in
+  let row, row_value = best_row_and_value ctx.ctx_board in
+  (* [SET_INPUT_DATA(0,bestRow)] - "Store it in case we cast" - before the
+     threshold, so the row is stored even when the gate then vetoes. Only one
+     slot is written: the input is a row, so the row rides as [y], the same
+     coordinate the sweep reads, and [x] is the zero the slot not written
+     would hold. *)
+  ctx.ctx_aim := Some (0, row);
   (* [chance < 50 - rowValue] rearranged into [p + rowValue < 50], which is the
      shape [evaluate_gate] and [colour_gate] already use. *)
   evaluate_gate ~adjust:(fun _ p -> p + row_value) ~specific:(fun _ _ -> true) ctx
@@ -707,7 +744,10 @@ let hook_schg ctx =
 
     [GetRandomGrid_Type] gives up and returns an arbitrary cell once its tries run
     out, and the script re-checks it - so "a red skull was found" really does mean
-    the board holds one. Which is why this is a count and not a pick.
+    the board holds one. Which is why this is a count and not a pick: the counts
+    decide the cast and the modifier, and the search - ported as
+    [random_grid_type] - only picks the cell, storing it as [ctx_aim] the way the
+    Lua's [SET_INPUT_DATA] does.
 
     The [else] is worth reading twice: the 20 is only added when the {e first}
     search succeeded. A board with plain skulls but no red one pays nothing rather
@@ -715,8 +755,14 @@ let hook_schg ctx =
 let hook_sfba ctx =
   let red = gredskull ctx in
   let plain = gskull ctx in
-  if red > 0 then ai_spellcasting_chance_i ~modifier:20 ctx
-  else if plain > 0 then ai_spellcasting_chance_i ~modifier:0 ctx
+  if red > 0 then begin
+    ctx.ctx_aim := Some (random_grid_type GRedSkull ctx);
+    ai_spellcasting_chance_i ~modifier:20 ctx
+  end
+  else if plain > 0 then begin
+    ctx.ctx_aim := Some (random_grid_type GSkull ctx);
+    ai_spellcasting_chance_i ~modifier:0 ctx
+  end
   else false
 
 (** Hooks by spell id. The generated table in [Spell_ai] covers the mechanical
@@ -811,8 +857,8 @@ let manual_hook_of = function
     Nothing is absent. SCHG and SFBA were both written off as unobtainable - one
     for a Lua helper whose body had not been transcribed, the other because its
     [SET_INPUT_DATA] write is not observable here - and both were in their own
-    scripts to be read. SFBA's [SET_INPUT_DATA] half is still not ported; see
-    [hook_sfba]. *)
+    scripts to be read; the write went in with the rest of the aiming, as
+    [ctx_aim]. *)
 let manual_hook_of_spell_ids =
   [ "SBNA"; "SBNE"; "SBNF"; "SBNW"; "SBRL"; "SCLI"; "STHR"; "SLIS"; "SCLV"
   ; "SFBT"; "SROF"; "SNWR"; "SDDI"; "SFRZ"; "SFSK"; "SSCV"; "SDIV"; "STHX"

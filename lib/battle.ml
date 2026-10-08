@@ -604,6 +604,7 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant)
       ctx_evaluation = evaluation;
       ctx_percentile = percentile;
       ctx_roll = b.rng;
+      ctx_aim = ref None;
       ctx_items = Some (loadout_of b actor);
       ctx_enemy_items = Some (loadout_of b defender);
     }
@@ -673,18 +674,29 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
      this, and a player is entitled to disagree with it. What the player is
      offered is filtered by [can_cast] - affordable, off cooldown, and not
      suppressed - which is the same legality the affordability filter applies on
-     the AI path. *)
-  let chosen =
+     the AI path.
+
+     The machine's aim comes back with its spell: [pick_ai_spell] runs each
+     candidate's hook against a [ctx_aim] it cleared first, so what the context
+     holds afterwards is the winning hook's cell or nothing - the six hooks that
+     say "Store a grid in case we cast!" storing, and the three aimed spells
+     whose hooks store nothing storing nothing at all. *)
+  let chosen, machine_aim =
     match (b.rules.player, actor.Combat.id = b.hero.Combat.id) with
     | Some p, true ->
         let disallowed = b.effect_state.Combat.spells_disallowed in
-        p.choose_spell
-          (List.filter (fun (s : spell) -> can_cast ~spells_disallowed:disallowed actor s)
-             spells)
+        ( p.choose_spell
+            (List.filter
+               (fun (s : spell) -> can_cast ~spells_disallowed:disallowed actor s)
+               spells),
+          None )
     | _ ->
-        pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
-          ~spells_disallowed:b.effect_state.Combat.spells_disallowed
-          (ai_context b actor defender ~percentile ~evaluation) spells
+        let ctx = ai_context b actor defender ~percentile ~evaluation in
+        let c =
+          pick_ai_spell ~difficulty:b.rules.difficulty ~roll:b.rng
+            ~spells_disallowed:b.effect_state.Combat.spells_disallowed ctx spells
+        in
+        (c, !(ctx.Spell.ctx_aim))
   in
   let still_turn =
     match chosen with
@@ -694,17 +706,16 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
         true
     | Some s ->
         (* Where the aim comes from. A human's is their own click, collected by
-           the front end's choose_aim the moment the spell was picked. A
-           machine's is nowhere yet: the six Lua hooks that aim say "Store a
-           grid in case we cast!" inside ShouldAICastSpell, and their pick half
-           is not ported - the aim stays the None the aimed effects already
-           no-op on. Open question spell.sfba_target_writeback. *)
+           the front end's choose_aim the moment the spell was picked; a
+           machine's is the cell its hook stored during pick_ai_spell, or None
+           when the hook stored nothing - which is what the aimed effects no-op
+           on, as they did before either path existed. *)
         let aim =
           if s.Spell.input_type = 0 then None
           else
             match (b.rules.player, actor.Combat.id = b.hero.Combat.id) with
             | Some p, true -> p.choose_aim s
-            | _ -> None
+            | _ -> Option.map (fun (x, y) -> { Board.x; y }) machine_aim
         in
         (* The AI hook has already run, so every mana-gated decision - including the
            conditional turn rules - saw the pool the caster has rather than the

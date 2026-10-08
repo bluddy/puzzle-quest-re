@@ -2575,6 +2575,64 @@ claims:
       so an AI-cast SCON or SFOD runs with no cell, which is the no-op it
       was before this wiring.
 
+  - id: spells.ai_aim
+    title: Six hooks store the machine's cell, and the battle reads it back
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Six ShouldAICastSpell bodies end in SET_INPUT_DATA - SCLI and STHR
+      store a random red-skull cell after their count guard, SLIS stores the
+      unconditional red-skull search, SCON a random cell of the
+      strict-majority kind, SFBA a red skull or else a plain one, and SCHG
+      the best row alone. GetRandomGrid_Type is the same loop as
+      GetRandomGrid_Not: draw until the kind matches or the tries run past
+      1000, returning the last draw either way. The port carries the cell on
+      the ai_context as ctx_aim, pick_ai_spell clears it before every
+      candidate so a losing hook's cell cannot ride the winner, and
+      take_action reads it into fx_input after the spell is chosen - the
+      same path the human's click takes.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Spells/SCLI.lua
+        note: count guard, then GetRandomGrid_Type(REDSKULL), then SET_INPUT_DATA
+      - kind: lua
+        ref: game/Assets.zip!Assets/Spells/SCHG.lua
+        note: SET_INPUT_DATA(0,bestRow) - one slot, the row, before the threshold
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GetRandomGrid.lua
+        note: GetRandomGrid_Type - draw until the kind matches or tries > 1000
+      - kind: code
+        ref: lib/spell.ml
+        note: random_grid_type, ctx_aim, and the clear in pick_ai_spell
+      - kind: code
+        ref: lib/spell_ai_manual.ml
+        note: the six hooks storing, and the strict-majority fix in hook_scon
+      - kind: code
+        ref: lib/battle.ml
+        note: machine_aim out of pick_ai_spell, into effect_context
+      - kind: code
+        ref: test/test_spell.ml
+      - kind: code
+        ref: test/test_battle.ml
+    affects:
+      [lib/spell.ml, lib/spell_ai_manual.ml, lib/battle.ml]
+    notes: >
+      Three aimed spells - SFOD, SSPA, SPRO - ask for no cell in their hooks
+      (Std_AISpellcastingChance(0), no SET_INPUT_DATA), so what the engine's
+      input slots held when the machine casts one is not observable; the port
+      aims at nothing there, recorded as port.ai_aim_fallback. SCHG's single
+      slot rides as y with x zero, the coordinate the row sweep reads, and the
+      column spells' slot0 is x. The count guards decide castability and the
+      search only chooses the cell, so the give-up tail can store a cell the
+      Lua would have re-checked - one draw in ten million, and only there.
+      Each search draws from the same rng the rest of the turn reads, which
+      shifts later rolls the way the original's own draws did. The strict
+      majority test in hook_scon used to compare a count against itself, so
+      SCON could never vote yes; the first positive test caught it, and it now
+      compares the other four kinds the way the Lua writes them.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -2776,8 +2834,15 @@ open_questions:
       player, wrong for an AI casting it.
     would_be_settled_by:
       - Deciding where an AI's chosen cell is meant to live.
-    related: [spells.ai.coverage]
-    status: open
+    answer: >
+      The cell lives on the ai_context as ctx_aim: each aiming hook writes it
+      during pick_ai_spell, which clears the ref before every candidate, and
+      take_action reads it into effect_context.fx_input after the spell is
+      chosen - the same path the human's choose_aim takes. SFBA's own pick
+      (GetRandomGrid_Type of a red skull, else a plain skull, else no cast)
+      is ported with the other five; see spells.ai_aim.
+    related: [spells.ai.coverage, spells.ai_aim]
+    status: recovered
 
 # --------------------------------------------------------- port decisions ----
 
@@ -3259,5 +3324,26 @@ port_decisions:
       the hooks say "Store a grid in case we cast!" but their picks are not
       ported, so None keeps the aimed effects on their recovered no-op path
       until the picks are.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.ai_aim_fallback
+    decision: >
+      The three aimed spells whose hooks store nothing (SFOD, SSPA, SPRO) aim
+      at nothing when the machine casts them - the None the effects already
+      no-op on - rather than at cell (0,0) or a fresh random cell. SCHG's one
+      stored slot is carried as y with x zero, the coordinate the row sweep
+      reads; the column spells' slot0 is x. The count guards stay in charge
+      of castability and the search only chooses the cell.
+    rationale: >
+      Nothing in the assets says what an unset input slot held: a
+      zero-initialized read is a guess, and a fresh random cell would be aim
+      the Lua does not show us taking. None keeps those casts on the no-op
+      path they were already on, which is the honest state rather than an
+      invented one. The slot mapping follows the readers that are ported and
+      tested - row sweeps read y, column sweeps read x - so a machine and a
+      player present the cell the same way. And the gates were already the
+      count guards before this commit; keeping them means the only behaviour
+      added is the cell, which is the half that was missing.
     supersedes: null
     date: 2026-10-08

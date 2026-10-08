@@ -254,6 +254,7 @@ let ctx ?(evaluation = 0) ?(percentile = 0) ?(caster = rich ()) ?(enemy = hero (
   ; ctx_evaluation = evaluation
   ; ctx_percentile = percentile
   ; ctx_roll = (fun n -> if n <= 0 then 0 else 0 mod n)
+  ; ctx_aim = ref None
   ; ctx_items = items
   ; ctx_enemy_items = enemy_items
   }
@@ -353,14 +354,15 @@ let board_with (kind : Spell.gem_kind) (n : int) : Board.board =
              end else filler)))
 
 let bctx ?(caster = rich ()) ?(enemy = hero ()) ?(evaluation = 0) ?(percentile = 0)
-    (b : Board.board) () : ai_context =
+    ?(roll = fun _ -> 0) (b : Board.board) () : ai_context =
   { ctx_caster = caster
   ; ctx_enemy = enemy
   ; ctx_enemies = [ enemy ]
   ; ctx_board = b
   ; ctx_evaluation = evaluation
   ; ctx_percentile = percentile
-  ; ctx_roll = (fun _ -> 0)
+  ; ctx_roll = roll
+  ; ctx_aim = ref None
   ; ctx_items = None
   ; ctx_enemy_items = None
   }
@@ -477,8 +479,8 @@ let () =
       (Array.init 8 (fun y ->
            Array.init 8 (fun x -> if (x + (y * 8)) < 20 then Board.Mana Earth else Board.Mana Air)))
   in
-  check "SCON refuses on a twenty-vs-forty-four board, which is not a majority"
-    (not (run Spell_ai_manual.hook_scon dominated 0 0))
+  check "SCON takes forty-four-vs-twenty as the strict majority it is"
+    (run Spell_ai_manual.hook_scon dominated 0 0)
 
 let () =
   (* Std_GetDifficulty: five bands from the gap between hero and task level. The
@@ -507,12 +509,124 @@ let () =
       go 0 (-60))
 
 let () =
+  (* The six hooks that aim: each stores the cell its Lua picked - the "Store a
+     grid in case we cast!" half of ShouldAICastSpell - into ctx_aim, where
+     pick_ai_spell can hand it to the battle. The roll walks the board cell by
+     cell, 1-based like GetRandomGrid, so a kind that exists at all is found on
+     the first pass, and the give-up cell is reached only deliberately: SLIS,
+     which searches even when there is nothing to find. *)
+  let sweep () =
+    let i = ref 0 in
+    fun _ ->
+      let k = (!i / 2) mod 64 in
+      let is_x = !i land 1 = 0 in
+      incr i;
+      if is_x then (k mod 8) + 1 else (k lsr 3) + 1
+  in
+  let aim_of (hook : ai_context -> bool) ?(percentile = 0) (b : Board.board) =
+    let ctx = bctx ~percentile ~roll:(sweep ()) b () in
+    ignore (hook ctx);
+    !(ctx.ctx_aim)
+  in
+  let pos (x, y) = { Board.x; y } in
+  let red_cols =
+    Board.of_array_matrix
+      (Array.init 8 (fun _ ->
+           Array.init 8 (fun x ->
+               if x < 2 then Board.RedSkull else Board.Mana Earth)))
+  in
+  (match aim_of Spell_ai_manual.hook_scli red_cols with
+  | Some cell ->
+      check "SCLI stores a red skull cell"
+        (Board.get_gem red_cols (pos cell) = Board.RedSkull)
+  | None -> check "SCLI stores a red skull cell" false);
+  check "SCLI with no red skulls stores nothing"
+    (aim_of Spell_ai_manual.hook_scli (skulls 4) = None);
+  (match aim_of Spell_ai_manual.hook_slis red_cols with
+  | Some cell ->
+      check "SLIS stores a red skull cell"
+        (Board.get_gem red_cols (pos cell) = Board.RedSkull)
+  | None -> check "SLIS stores a red skull cell" false);
+  (match aim_of Spell_ai_manual.hook_slis (skulls 4) with
+  | Some (x, y) ->
+      check "SLIS stores a cell even when no red skull exists to find"
+        (x >= 0 && x < 8 && y >= 0 && y < 8)
+  | None -> check "SLIS stores a cell even when no red skull exists to find" false);
+  let yellow40 = yellows 40 in
+  (match aim_of Spell_ai_manual.hook_scon yellow40 with
+  | Some cell ->
+      check "SCON stores a cell of the majority kind"
+        (Board.get_gem yellow40 (pos cell) = Board.Mana Air)
+  | None -> check "SCON stores a cell of the majority kind" false);
+  check "SCON with no strict majority stores nothing"
+    (aim_of Spell_ai_manual.hook_scon (yellows 32) = None);
+  let skull_row y0 n =
+    Board.of_array_matrix
+      (Array.init 8 (fun y ->
+           Array.init 8 (fun x ->
+               if y = y0 && x < n then Board.Skull else Board.Mana Earth)))
+  in
+  check "SCHG stores its best row"
+    (aim_of Spell_ai_manual.hook_schg (skull_row 3 5) = Some (0, 3));
+  let two_rows =
+    Board.of_array_matrix
+      (Array.init 8 (fun y ->
+           Array.init 8 (fun x ->
+               if (y = 1 || y = 5) && x < 4 then Board.Skull else Board.Mana Earth)))
+  in
+  check "and a tie keeps the later row, as the Lua's >= does"
+    (aim_of Spell_ai_manual.hook_schg two_rows = Some (0, 5));
+  (match aim_of Spell_ai_manual.hook_sfba red_cols with
+  | Some cell ->
+      check "SFBA stores a red skull cell"
+        (Board.get_gem red_cols (pos cell) = Board.RedSkull)
+  | None -> check "SFBA stores a red skull cell" false);
+  (match aim_of Spell_ai_manual.hook_sfba (skulls 4) with
+  | Some cell ->
+      check "SFBA falls back to a plain skull cell"
+        (Board.get_gem (skulls 4) (pos cell) = Board.Skull)
+  | None -> check "SFBA falls back to a plain skull cell" false);
+  check "SFBA with no skulls at all stores nothing"
+    (aim_of Spell_ai_manual.hook_sfba (yellows 8) = None)
+
+let () =
+  (* The clearing: a hook that stores a cell and then says no must not leave
+     its cell for the next candidate to inherit - which is what would happen if
+     pick_ai_spell ran the hooks and read the ref only at the end. *)
+  let target = (2, 5) in
+  let loser =
+    make_spell ~should_ai_cast:(fun c -> c.ctx_aim := Some target; false) "LOSE"
+      "Loser"
+  in
+  let taker = make_spell ~should_ai_cast:(fun _ -> true) "WIN" "Winner" in
+  let both = ctx () in
+  check_opt "the second hook's spell is chosen"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) both [ loser; taker ])
+    (Some taker);
+  check "and the loser's cell was cleared before the winner ran"
+    (!(both.ctx_aim) = None);
+  let aimer = make_spell ~should_ai_cast:(fun c -> c.ctx_aim := Some target; true) "KEEP" "Keeper" in
+  let only = ctx () in
+  check_opt "a hook that votes yes with a cell is chosen"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) only [ aimer ])
+    (Some aimer);
+  check "and its cell is what the battle will read"
+    (!(only.ctx_aim) = Some target);
+  let no_hook = make_spell "NOAIM" "no aim hook" in
+  let bare = ctx () in
+  check_opt "a spell with no aim hook is still a candidate"
+    (pick_ai_spell ~difficulty:2 ~roll:(fun _ -> 99) bare [ no_hook ])
+    (Some no_hook);
+  check "and it stores nothing at all"
+    (!(bare.ctx_aim) = None)
+
+let () =
   (* Coverage, so the port's size is stated rather than guessed. The generated
      count went from 49 to 53 when the extractor learned to accept a signed
      literal, which picked up SCHV, SCLE and SSTL, plus SSNK's bare [return 1].
      None of those needed judgement; they had been invisible to a pattern that
      only matched non-negative digits. *)
-check "53 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 53);
+  check "53 mechanical hooks are generated" (List.length Spell_ai.should_ai_cast_hook = 53);
   check "and 76 board-reading, mana and item ones are hand written"
     (List.length Spell_ai_manual.manual_hook_of_spell_ids = 76);
   check_eq "so all 129 of the 129 are ported" (List.length Spell_data.spells_with_ai_hook) 129;
