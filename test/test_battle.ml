@@ -983,7 +983,7 @@ let () =
   check "a battle starts with nobody watching its grid effects" (b.on_grid_fx = None);
   let spell = Spell.make_spell "SBAC" "Battlecry" in
   (* Unwatched: the body asks for an effect and nothing happens. *)
-  let ctx = effect_context b b.hero b.enemy spell 0 in
+  let ctx = effect_context b b.hero b.enemy spell None 0 in
   check "an unwatched battle's context carries no callback"
     (ctx.Spell.fx_grid_effect = None);
   Spell_effects.grid_spell_effect ctx 3 4 Spell_fx.War;
@@ -994,7 +994,7 @@ let () =
      them, because an effect is aimed at a side of the board. *)
   let seen = ref [] in
   b.on_grid_fx <- Some (fun g -> seen := g :: !seen);
-  let ctx = effect_context b b.hero b.enemy spell 0 in
+  let ctx = effect_context b b.hero b.enemy spell None 0 in
   (match ctx.Spell.fx_grid_effect with
   | None -> check "a watched battle's context carries a callback" false
   | Some f -> f { Board.x = 3; y = 4 } Spell_fx.War);
@@ -1008,7 +1008,7 @@ let () =
   | _ -> check "and hands over the cell the body asked for" false);
   (* And the enemy side is named differently, which is the whole reason the caster
      travels with the effect. *)
-  let ctx = effect_context b b.enemy b.hero spell 0 in
+  let ctx = effect_context b b.enemy b.hero spell None 0 in
   (match ctx.Spell.fx_grid_effect with
   | None -> ()
   | Some f -> f { Board.x = 0; y = 0 } Spell_fx.Spin);
@@ -1046,6 +1046,7 @@ let () =
     | None -> failwith "the spell table lost SBAC"
   in
   let rich = fighter ~mana:{ Combat.zero_mana with Combat.fire = 20; Combat.air = 20 } 0 "hero" in
+  let aim_asks = ref 0 in
   let b =
     create ~rng:(lcg 59)
       ~rules:
@@ -1055,6 +1056,7 @@ let () =
             Some
               {
                 choose_spell = (fun spells -> match spells with s :: _ -> Some s | [] -> None);
+                choose_aim = (fun _ -> incr aim_asks; None);
                 choose_swap = (fun _ -> None);
               };
         }
@@ -1063,6 +1065,7 @@ let () =
   let seen = ref [] in
   b.on_grid_fx <- Some (fun g -> seen := g :: !seen);
   take_turn b;
+  check "a spell with no input never asks for an aim" (!aim_asks = 0);
   check "casting a grid spell through a battle reports its cell" (List.length !seen = 1);
   (match !seen with
   | [ g ] ->
@@ -1081,6 +1084,66 @@ let () =
        (fun (e : event) -> match e with SpellCast (_, id) -> id = "SBAC" | _ -> false)
        (log_of b))
 
+let () =
+  (* The other half of a cast: a spell whose Input element asks for a target
+     gets the cell the player chose, through choose_aim into fx_input. SFOD
+     turns exactly that cell into a red skull - and with no aim it is a no-op,
+     which test_spell_effects pins on its own - so this assertion is the whole
+     difference between the aim being wired and not. The spell comes from the
+     real table, because a made-up one would carry no body to run. *)
+  let table = Spell_data.load_spell_table () in
+  let sfod =
+    match List.find_opt (fun (s : Spell.spell) -> s.Spell.id = "SFOD") table with
+    | Some s -> s
+    | None -> failwith "the spell table lost SFOD"
+  in
+  let aim_asks = ref 0 in
+  let asked_for = ref "" in
+  let target = { Board.x = 3; y = 4 } in
+  let b =
+    create ~rng:(lcg 59)
+      ~rules:
+        {
+          default_rules with
+          player =
+            Some
+              {
+                choose_spell =
+                  (fun offered ->
+                    match
+                      List.find_opt (fun (s : Spell.spell) -> s.Spell.id = "SFOD")
+                        offered
+                    with
+                    | Some s -> Some s
+                    | None -> None);
+                choose_aim =
+                  (fun s ->
+                    incr aim_asks;
+                    asked_for := s.Spell.id;
+                    Some target);
+                choose_swap = (fun _ -> None);
+              };
+        }
+      ~hero_spells:[ sfod ]
+      (playable_board ())
+      (fighter
+         ~mana:
+           { Combat.earth = 10;
+             Combat.fire = 10;
+             Combat.air = 10;
+             Combat.water = 10 }
+         0 "hero")
+      (fighter 1 "foe")
+  in
+  take_turn b;
+  check_eq "the aim is asked for exactly once" !aim_asks 1;
+  check "and it is the spell being cast" (!asked_for = "SFOD");
+  check "the aimed cell became a red skull"
+    (Board.get_gem b.board target = Board.RedSkull);
+  check "the cast is in the log"
+    (List.exists
+       (fun (e : event) -> match e with SpellCast (_, "SFOD") -> true | _ -> false)
+       (log_of b))
 
 (* ------------------------------------------------- the write-back contract -- *)
 
@@ -1110,6 +1173,7 @@ let () =
             Some
               {
                 choose_spell = (fun spells -> match spells with sp :: _ -> Some sp | [] -> None);
+                choose_aim = (fun _ -> None);
                 choose_swap = (fun _ -> None);
               };
         }
@@ -1135,6 +1199,7 @@ let () =
             Some
               {
                 choose_spell = (fun spells -> match spells with sp :: _ -> Some sp | [] -> None);
+                choose_aim = (fun _ -> None);
                 choose_swap = (fun _ -> None);
               };
         }

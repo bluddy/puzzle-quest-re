@@ -17,6 +17,8 @@ let show = function
   | Input.Swap (a, b, c, d) -> Printf.sprintf "Swap (%d,%d)-(%d,%d)" a b c d
   | Input.No_match -> "No_match"
   | Input.Pass -> "Pass"
+  | Input.Aim (x, y) -> Printf.sprintf "Aim (%d,%d)" x y
+  | Input.Cancel -> "Cancel"
   | Input.Miss -> "Miss"
 
 let check_opt name got want =
@@ -120,6 +122,17 @@ let () =
   (* A cast is a cast: the swap prompt is not consulted at all, because the engine
      only asks for one when the spell kept the turn. *)
   check_eq "casting never reaches the swap prompt" (spell 200 620) (Input.Cast 0)
+
+let () =
+  (* --- the target prompt: aim, cancel, miss --- *)
+  let target = Input.in_target_prompt bar lay in
+  check_eq "a board click is the aim" (target 450 300) (Input.Aim (4, 3));
+  check_eq "another cell aims too" (target 546 372) (Input.Aim (5, 4));
+  (* The bar is the way out of an aiming spell: a player who picked the wrong
+     spell must be able to go back rather than cast it at something. *)
+  check_eq "a bar click cancels the cast" (target 200 620) Input.Cancel;
+  check_eq "a click off the board and off the bar changes nothing"
+    (target 5 300) Input.Miss
 
 let () =
   if !failures = 0 then print_endline "all gfx input tests passed"

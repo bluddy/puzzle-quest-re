@@ -64,9 +64,16 @@ and outcome =
     show the board closes over a [battle ref] it fills in after [create] returns.
 
     [choose_spell] receives only the spells that are actually available, and
-    returning [None] holds the spell and falls through to the swap. *)
+    returning [None] holds the spell and falls through to the swap.
+
+    [choose_aim] is the second half of a cast whose spell asks for a target
+    (a non-zero [input_type]). It runs just after [choose_spell] picks the
+    spell and before the body does, and [None] means "run as if nothing was
+    aimed" - which for these spells is a no-op, so a front end that cannot
+    ask should say [None] rather than guess a cell. *)
 type player = {
   choose_spell : spell list -> spell option;
+  choose_aim : spell -> Board.position option;
   choose_swap : swap list -> swap option;
 }
 
@@ -615,14 +622,15 @@ let ai_context (b : battle) (actor : combatant) (defender : combatant)
     with no write-back - and that asymmetry is why the missing write-back was
     invisible for so long: the half of a cast that a player notices worked. *)
 let effect_context (b : battle) (actor : combatant) (defender : combatant)
-    (s : Spell.spell) (p : int) : Spell.effect_context =
+    (s : Spell.spell) (aim : Board.position option) (p : int) :
+    Spell.effect_context =
   { Spell.fx_caster = actor
   ; Spell.fx_enemies = [ defender ]
   ; Spell.fx_board = ref b.board
   ; Spell.fx_roll = b.rng
   ; Spell.fx_gold = ref b.gold
   ; Spell.fx_xp = ref b.xp
-  ; Spell.fx_input = None
+  ; Spell.fx_input = aim
   ; Spell.fx_items = Some (loadout_of b actor)
   ; Spell.fx_enemy_items = Some (loadout_of b defender)
   ; Spell.fx_flags = b.multipliers
@@ -685,6 +693,19 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
         emit b (SpellHeld actor.name);
         true
     | Some s ->
+        (* Where the aim comes from. A human's is their own click, collected by
+           the front end's choose_aim the moment the spell was picked. A
+           machine's is nowhere yet: the six Lua hooks that aim say "Store a
+           grid in case we cast!" inside ShouldAICastSpell, and their pick half
+           is not ported - the aim stays the None the aimed effects already
+           no-op on. Open question spell.sfba_target_writeback. *)
+        let aim =
+          if s.Spell.input_type = 0 then None
+          else
+            match (b.rules.player, actor.Combat.id = b.hero.Combat.id) with
+            | Some p, true -> p.choose_aim s
+            | _ -> None
+        in
         (* The AI hook has already run, so every mana-gated decision - including the
            conditional turn rules - saw the pool the caster has rather than the
            pool left afterwards. The {e charge} happens at the end; see
@@ -707,7 +728,7 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
            game could intend. *)
          (match s.Spell.cast_spell with
          | Some f ->
-             let fx = effect_context b actor defender s percentile in
+             let fx = effect_context b actor defender s aim percentile in
              f fx;
              (* The body's writes go through three boxed values, and nothing else
                 picks them up: the board it edited, and the battle's gold and xp

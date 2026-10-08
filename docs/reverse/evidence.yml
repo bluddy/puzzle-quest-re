@@ -2525,6 +2525,56 @@ claims:
       suite drives the win bookkeeping through quest_battle_settle against
       the battle the loop actually ran.
 
+  - id: spells.input_aim
+    title: Nine spells aim at a cell, and the aim reaches the body as fx_input
+    area: spells
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Nine of the 129 battle spells declare an Input element - six grid
+      (SCON, SFBA, SFOD, SPRO, SSPA, STHR), two column (SCLI, SLIS), one row
+      (SCHG) - and their bodies read the cell the game stored for them:
+      aimed_at for the grid spells, effect_scli's column, effect_slis's
+      clamped middle, the row sweeps for SCHG. Every one of those readers
+      no-ops on None, so an aim that never arrives is a spell that quietly
+      does nothing. The port's effect_context carries the aim as fx_input,
+      and the selection now supplies it: a click on the board during the
+      cast question stores the cell, choose_aim hands it to take_action, and
+      the body runs with it.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Spells/SFOD.xml
+        note: Input type="grid"; SCLI declares column, SCHG declares row
+      - kind: lua
+        ref: game/Assets.zip!Assets/Spells/STHR.lua
+        note: ShouldAICastSpell picks a red-skull cell - "Store a grid in case we cast!"
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: aimed_at, effect_scli, effect_slis and the other readers of fx_input
+      - kind: code
+        ref: gfx/input.ml
+        fn: in_target_prompt
+      - kind: code
+        ref: lib/battle.ml
+        note: choose_aim on the player record, aim into effect_context
+      - kind: code
+        ref: test/test_battle.ml
+      - kind: code
+        ref: test/test_gfx_input.ml
+    affects:
+      [gfx/input.ml, lib/battle.ml, bin/pq_play_gfx.ml, bin/pq_play.ml]
+    notes: >
+      Nothing recovered says which cells the original rejects as targets, so
+      every cell the board owns is accepted here and the column and row
+      spells read only the coordinate they need; cancelling is a click on the
+      spell bar, back to the spell question rather than down to the swap.
+      Those are choices - port.human_aim_click. The machine's aim is still
+      the open question spell.sfba_target_writeback: the six Lua hooks that
+      aim do it inside ShouldAICastSpell, and their pick half is not ported,
+      so an AI-cast SCON or SFOD runs with no cell, which is the no-op it
+      was before this wiring.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -3183,5 +3233,31 @@ port_decisions:
       follows ManaBonus. can_equip stays with the equip flow this port does
       not have: with no way to put on gear, re-checking at open would be
       checking nothing.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.human_aim_click
+    decision: >
+      A cast whose input_type is not 0 asks for its target inside the spell
+      question: one click on a cell is the aim and the cast, a click on the
+      spell bar cancels back to the spell question, and a click that is
+      neither board nor bar asks again. Every cell the board owns is a valid
+      target - the column and row spells read the coordinate they need and
+      the grid spells read both - and the console front end asks for the
+      same cell in b3 form. Machines aim at nothing until the six Lua hooks'
+      picks are ported.
+    rationale: >
+      The original's own selection input is not recoverable from the assets,
+      and the port's prompts are click-based already: the swap prompt
+      restarts its selection rather than refusing, and the spell prompt's bar
+      is the standing way out of any question it asks - the trap the first
+      input.ml regression was about. One click to aim follows both rules; a
+      separate confirm step would add a state the original's drag does not
+      have, and cancelling must return to the spell question rather than
+      decline the turn, because the spell was already picked. Guessing a
+      machine's cell would be inventing aim the Lua does not let us observe:
+      the hooks say "Store a grid in case we cast!" but their picks are not
+      ported, so None keeps the aimed effects on their recovered no-op path
+      until the picks are.
     supersedes: null
     date: 2026-10-08

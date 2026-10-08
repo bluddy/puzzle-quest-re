@@ -30,6 +30,10 @@ type action =
   | No_match
   | Pass
       (** The bar was clicked while choosing a swap: end the turn. *)
+  | Aim of int * int
+      (** The cell a spell was aimed at: see [in_target_prompt]. *)
+  | Cancel
+      (** The bar was clicked while aiming: back to the spell question. *)
   | Miss
       (** Neither board nor bar: ignored. *)
 
@@ -50,6 +54,23 @@ let in_spell_prompt (b : bar) ~usable (mx : int) (my : int) : action =
   match bar_button b mx my with
   | Some i when i < usable -> Cast i
   | _ -> Decline
+
+(** The target prompt, for a spell whose [input_type] is not 0.
+
+    The three kinds - column, row, grid - are all answered by a cell: the
+    column spells read its [x], the row spells its [y], the grid spells both.
+    So one prompt covers all three, and no cell the board owns is an invalid
+    target here; anything worth rejecting would have to be rejected by the
+    spell, and none of the nine do.
+
+    The bar is the way out, the same way it is everywhere else: clicking it
+    cancels the cast and returns to the spell question, so a player who
+    aimed at the wrong spell is never stuck holding it. *)
+let in_target_prompt (b : bar) (lay : Layout.t) (mx : int) (my : int) : action =
+  if bar_button b mx my <> None then Cancel
+  else match Layout.hit lay mx my with
+    | None -> Miss
+    | Some (x, y) -> Aim (x, y)
 
 (** The swap prompt. [valid] answers whether two cells would actually make a match,
     which needs the board and so is supplied by the caller. *)

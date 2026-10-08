@@ -88,6 +88,7 @@ let () =
   let spell_asks = ref 0 and swap_asks = ref 0 in
   let player =
     { Battle.choose_spell = (fun _ -> incr spell_asks; None)
+    ; choose_aim = (fun _ -> None)
     ; choose_swap = (fun _ -> incr swap_asks; None)
     }
   in
@@ -124,6 +125,7 @@ let () =
   let asked = ref 0 in
   let player =
     { Battle.choose_spell = (fun _ -> None)
+    ; choose_aim = (fun _ -> None)
     ; choose_swap =
         (fun moves ->
           incr asked;
@@ -177,6 +179,7 @@ let () =
   in
   (* Only affordable if the hero is holding at least its cost: 6 fire, 4 air. *)
   let hero = fighter ~mana:(mana_of 12) 0 "you" in
+  let aim_asks = ref 0 in
   let player =
     { Battle.choose_spell =
         (fun offered ->
@@ -185,6 +188,12 @@ let () =
           match List.find_opt (fun (s : Spell.spell) -> s.Spell.id = "SBAC") offered with
           | Some s -> Some s
           | None -> None)
+    ; choose_aim =
+        (fun _ ->
+          (* SBAC picks the cell for its own effect, so no input_type: the aim
+             question must never be reached for it, on either side's turn. *)
+          incr aim_asks;
+          None)
     ; choose_swap = (fun _ -> incr swap_asks; None)
     }
   in
@@ -210,6 +219,7 @@ let () =
      only if a turn was held. *)
   check "a turn-ending spell does not also ask for a swap" (casts > 0);
   check_eq "spell prompts still match hero turns" !spell_asks (hero_turns finished);
+  check "an input-less spell never asks for an aim" (!aim_asks = 0);
   ignore swap_asks
 
 let () =

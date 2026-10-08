@@ -121,6 +121,13 @@ let parse_coord (s : string) : (int * int) option =
       Some ((Char.code c - Char.code 'a'), Char.code r - Char.code '0')
     else None
 
+(** The cell captured by the last [choose_spell], asked for in the same question
+    whenever the spell's [input_type] says it needs one. See the graphics front
+    end for why the aim lives here rather than in a second callback the engine     drives: cancel has to mean "back to the spell question". *)
+let console_aim : Board.position option ref = ref None
+
+let choose_aim (_s : Spell.spell) : Board.position option = !console_aim
+
 let swap_list () = Board.find_all_legal_moves (current ()).board
 
 let describe_swap (m : Board.swap) =
@@ -189,7 +196,39 @@ let choose_spell (spells : Spell.spell list) : Spell.spell option =
           match List.nth_opt usable (n - 1) with
           | Some s ->
               flush_events ();
-              Some s
+              if s.Spell.input_type = 0 then begin
+                console_aim := None;
+                Some s
+              end
+              else begin
+                (* The spell wants a cell: any cell answers all three input
+                   kinds (column reads x, row reads y, grid reads both), so one
+                   prompt covers them. "c" backs out to the spell question. *)
+                let what =
+                  match s.Spell.input_type with
+                  | 1 -> "column"
+                  | 2 -> "row"
+                  | _ -> "cell"
+                in
+                let rec target () =
+                  let answer =
+                    clean (prompt "  aim %s [b3, or c to cancel] > " what)
+                  in
+                  if answer = "c" || answer = "C" then ask ()
+                  else
+                    match parse_coord answer with
+                    | Some (x, y) ->
+                        console_aim := Some { Board.x = x; y = y };
+                        Printf.printf "  cast %s at (%d,%d)\n" s.Spell.id x y;
+                        flush stdout;
+                        Some s
+                    | None ->
+                        print_endline
+                          "  a cell looks like b3 (a-h, 0-7); 'c' cancels";
+                        target ()
+                in
+                target ()
+              end
           | None ->
               Printf.printf "  no spell numbered %d\n" n;
               ask ())
@@ -362,7 +401,7 @@ let () =
     { Battle.default_rules with
       max_turns = !max_turns;
       difficulty = !difficulty;
-      player = Some { choose_spell; choose_swap } }
+      player = Some { choose_spell; choose_aim; choose_swap } }
   in
   let b =
     Battle.create ~rng ~rules ~enemy_spells:roster

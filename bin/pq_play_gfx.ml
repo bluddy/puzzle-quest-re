@@ -608,6 +608,14 @@ let rec wait_click () =
     wait_click ()
   end
 
+(** The cell captured by the last [choose_spell]. The engine asks for it right
+    after the spell is picked - [choose_aim] is the other half of the pair - so
+    the target question can live inside the spell question, where "cancel" can
+    mean "back to the spell question" instead of "cast nothing". *)
+let cast_aim : Board.position option ref = ref None
+
+let choose_aim (_s : Spell.spell) : Board.position option = !cast_aim
+
 let choose_spell spells : Spell.spell option =
   (* Only affordable, off-cooldown spells are live, so anything offered is a legal
      cast. Spell.can_cast is the engine's own affordability test, the same one the
@@ -627,15 +635,54 @@ let choose_spell spells : Spell.spell option =
   let rec ask () =
     let mx, my = wait_click () in
     match Input.in_spell_prompt bg ~usable:(List.length usable) mx my with
-| Input.Cast i when i < List.length usable ->
+    | Input.Cast i when i < List.length usable ->
         let s : Spell.spell = List.nth usable i in
         (* The button's own click, before the spell's sound. Both are real tags:
            `snd_buttup` is the button, and the spell sound follows from the observer
            when the battle emits the cast. *)
         ignore (Audio.play (ui ()).audio "snd_buttup");
-        Printf.printf "  cast %s\n" s.Spell.id;
-        flush stdout;
-        Some s
+        if s.Spell.input_type = 0 then begin
+          cast_aim := None;
+          Printf.printf "  cast %s\n" s.Spell.id;
+          flush stdout;
+          Some s
+        end
+        else begin
+          (* The spell wants a cell. The three input kinds are all answered by
+             one: column spells read x, row spells read y, grid spells both, so
+             the prompt names the kind and any board cell will do. *)
+          let what =
+            match s.Spell.input_type with
+            | 1 -> "column"
+            | 2 -> "row"
+            | _ -> "cell"
+          in
+          Printf.printf
+            "  cast %s - click a %s (or the spell bar to cancel)\n" s.Spell.id
+            what;
+          flush stdout;
+          let rec target () =
+            let mx, my = wait_click () in
+            match Input.in_target_prompt bg (layout ()) mx my with
+            | Input.Aim (x, y) ->
+                cast_aim := Some { Board.x = x; y = y };
+                Printf.printf "  cast %s at (%d,%d)\n" s.Spell.id x y;
+                flush stdout;
+                Some s
+            | Input.Cancel ->
+                Printf.printf "  cast cancelled\n";
+                flush stdout;
+                ask ()
+            (* A click that answered nothing - off the board and off the bar -
+               asks again rather than dropping the player out of aiming with the
+               spell already picked. The remaining variants cannot come out of
+               this prompt; they are listed so a new one fails loudly here. *)
+            | Input.Miss | Input.Cast _ | Input.Decline | Input.First_cell _
+            | Input.Swap _ | Input.No_match | Input.Pass ->
+                target ()
+          in
+          target ()
+        end
     | Input.Cast _ ->
         (* Unreachable while [usable] and the bar agree, but a mismatch must not
            become an infinite loop. *)
@@ -689,8 +736,9 @@ let choose_swap (_legal : Board.swap list) : Board.swap option =
     (* Neither of these can come out of the swap prompt: [Pass] covers every bar
        click and [Cast] is unreachable while the bar and the drawing agree. They
        are listed so a new variant fails loudly here rather than silently hanging
-       the player on an unhandled click. *)
-    | Input.Cast _ | Input.Decline -> ask ()
+       the player on an unhandled click - and so are the aiming variants, which
+       belong to a different question entirely. *)
+    | Input.Cast _ | Input.Decline | Input.Aim _ | Input.Cancel -> ask ()
   in
   ask ()
 
@@ -957,7 +1005,8 @@ let () =
   let rules =
     { Battle.default_rules with
       difficulty = !diff;
-      player = (if !demo_turns > 0 then None else Some { Battle.choose_spell; choose_swap }) }
+      player = (if !demo_turns > 0 then None
+                else Some { Battle.choose_spell; choose_aim; choose_swap }) }
   in
   let b =
     Battle.create ~rng ~rules ~hero_spells:demo_spells ~enemy_spells:demo_spells
