@@ -37,6 +37,12 @@ WANTED = [
     "Assets/Skin/Skin_Backdrop_Standard.jpg",
 ]
 
+# The world map: Assets/Map.xml is four rows and columns of these 512px
+# segments, a 2048 square that the map screen (bin/pq_map_gfx.ml) draws edge
+# to edge. Flattened like everything else here - Map00.jpg through Map33.jpg
+# land in the out-dir itself, which is where gfx/map_view.ml's caller looks.
+WANTED += [f"Assets/Graphics/Map{r}{c}.jpg" for r in range(4) for c in range(4)]
+
 # The ten bitmap font atlases, which land in assets/gfx/Fonts/ because that is
 # where gfx/font.ml looks for them. Matched by prefix and suffix rather than by
 # glob: fnmatch's "*" crosses directory separators, so "Assets/Fonts/*.png" would

@@ -87,8 +87,8 @@
 ### 7. World Map UI (SDL2)
 | Gap | Details |
 |-----|---------|
-| Map rendering | No node/road drawing, no hero marker, no fog-of-war overlay |
-| Travel UI | Journey engine ✓ (`begin_travel` / `advance_travel` / `road_encounter`, tested); no path selection, no travel animation, no encounter popup - the window is the rest |
+| Map rendering | ✓ `pq_map_gfx` draws the sixteen segments, roads, node dots and the hero marker; hidden nodes and their roads are not drawn (the flags double as fog). No visible-range painting, no pan or zoom |
+| Travel UI | ✓ click a revealed node to walk (animation interpolates the marker), arrival updates the city, the departure roll raises the encounter popup, its click runs the fight |
 | City entry | No city screen, no shop UI, no tavern/rumors |
 
 ### 8. City Services UI
@@ -156,7 +156,7 @@
 | **4 ✅** | Campaign tests | Every area Known Gap 1 named is covered now - 400 assertions across the four campaign suites |
 | **5 ✅** | Grid spell targeting | Player aim (click-to-aim) and machine aim (six hook picks) both land; `spell.sfba_target_writeback` settled |
 | **6 ✅** | Monster spell AI + difficulty | Road rosters load; campaign fights compute their band from the levels |
-| **7** | World map SDL2 + travel UI | Makes campaign playable visually |
+| **7 ✅** | World map SDL2 + travel UI | `pq_map_gfx`: segments, roads, nodes, hero, click-to-walk, encounter popup |
 | **7** | City UI (shop, spells, tavern) | Completes town loop |
 | **8** | Conversation branching + portraits | Narrative delivery |
 | **8** | Equipment/item effects + mount | Stat progression depth |
@@ -182,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`; still to add: monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`; still to add: monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -240,5 +240,5 @@ Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters). Pick one:
 
-- **Map window (SDL2)** — draw the Map00..33 segments, a path to click,
-  and the encounter popup; the journey engine is in (priority 7)
+- **City screen (SDL2)** — shop, spells and the tavern behind a city
+  click (priority 7)

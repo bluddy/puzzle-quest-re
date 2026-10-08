@@ -2721,6 +2721,52 @@ claims:
       without a second mechanism. The popup and the window drawing the
       journey are the UI half still open - GAPS, World Map UI.
 
+  - id: render.world_map_layout
+    title: The world map is sixteen 512px segments in a 2048 square the nodes sit on
+    area: render
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Assets/Map.xml is a four-by-four grid of Assets/Graphics/MapNN.jpg,
+      each segment 512 pixels - a 2048 square - and every city, waypoint
+      and ruin carries an x/y in that space, which extract_campaign_map
+      reads into lib/campaign_map.ml. The map screen draws the sixteen
+      segments edge to edge, roads as thin quads between node centres, and
+      nodes only while their visible flag is set - the same fog flags the
+      visibility rule and the save maintain - with the hero as a marker at
+      the current node or interpolated along the road being walked. The
+      encounter popup the journey's departure roll can raise is drawn over
+      it; the fight behind it runs through the campaign API and reports on
+      the console.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Map.xml
+        note: rows=4 columns=4 width=512 height=512 - sixteen MapNN.jpg segments
+      - kind: code
+        ref: tools/extract_gfx_assets.py
+        note: the segments pulled alongside the battle sheets
+      - kind: code
+        ref: gfx/map_view.ml
+        note: the fit and the click
+      - kind: code
+        ref: bin/pq_map_gfx.ml
+        note: the window - segments, roads, nodes, hero, popup, --shot
+      - kind: code
+        ref: test/test_gfx_map.ml
+    affects:
+      [gfx/map_view.ml, bin/pq_map_gfx.ml, tools/extract_gfx_assets.py]
+    notes: >
+      How the original framed the map is in no asset we have: the fit (3/8
+      scale of the square, centred in 1024x768), the 16-pixel click radius
+      and the front end's walking rate are choices -
+      port.map_screen_mapping. The segment JPEGs decode through the same
+      pinned jpeg-codec imagelib fork as the backdrop, and the window's
+      --shot mode photographs a frame the way the battle front's does -
+      which is how this claim was checked without watching it: the hero
+      marker lands exactly on CBAR's computed screen position and the
+      waypoint on its own.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -3476,5 +3522,27 @@ port_decisions:
       polling rate, and a caller that wants a mid-road popup can re-ask
       every tick of its own choosing. Two encounters active on one road at
       once has no recovered tie-break, so data order decides.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.map_screen_mapping
+    decision: >
+      The 2048 map fits the window at the smaller axis scale and centred -
+      (128, 0) and 3/8 in the game's own 1024x768. A click hits a node
+      within 16 screen pixels of its drawn centre, and the front end walks
+      at 120 world units a second. Drawing shows only nodes whose visible
+      flag is set, and a road only while both endpoints are.
+    rationale: >
+      No asset records the original's viewport or any pan over the map, so
+      the reading chosen is the one that shows the whole square with
+      nothing off-screen and no invented panning state. The radius is in
+      screen space because that is where the click is: at 3/8 scale it is
+      43 world pixels, generous next to the nodes' spacing, and comparing
+      at the node's drawn position keeps rounding from making a node
+      unhittable where the window draws it. The walk rate leaves the
+      recovered model intact - time in map units, one unit a tick, the tick
+      the front end's to give - and 120 a second makes the seed city's own
+      road about a second long. Visibility reuses the flags the quest and
+      save machinery already maintain rather than a second fog.
     supersedes: null
     date: 2026-10-08

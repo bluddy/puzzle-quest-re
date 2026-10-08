@@ -38,3 +38,9 @@
 (executable
  (name pq_play_gfx)
  (libraries puzzle_quest_lib pq_gfx tsdl))
+
+; The world map: nodes, roads, the hero, a click to walk. Pure geometry lives in
+; gfx/map_view.ml so it can be tested without a display; see tools/graphics_plan.md.
+(executable
+ (name pq_map_gfx)
+ (libraries puzzle_quest_lib pq_gfx tsdl))

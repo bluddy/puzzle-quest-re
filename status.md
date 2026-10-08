@@ -2,18 +2,21 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync built the journey step. Every
-OnQueryAppearance says it is called when a hero moves to a new
-location, so the engine now has a journey to move through:
-`begin_travel` takes only a road that exists and is revealed (the
-both-endpoints rule), `advance_travel` walks it against `node_distance`
-and lands on `AtNode`, and `road_encounter` asks the road's list with
-the appearance roll once at departure - speed, ask-rate and tie-break
-recorded as `port.travel_model`. The window that draws it and pops the
-encounter is the UI half still open (GAPS, World Map UI). Plus the
-`campaign.encounter_travel` claim. test_campaign is 168 assertions,
-the four campaign suites 409. Build, all 28 suites and the
-extractor/validator checks verified green.
+**Sync:** working tree clean. This sync drew the world map.
+Assets/Map.xml is sixteen 512px JPEG segments in a 2048 square, and
+`bin/pq_map_gfx.ml` puts that square in the game's own 1024x768 at
+3/8 scale: roads as thin rotated quads between node centres, cities /
+waypoints / ruins as dots while their visible flag is set, the hero as
+a marker at the current node or interpolated along the road being
+walked, and the journey engine underneath - click a revealed node,
+`begin_travel` opens it, each frame advances, arrival updates the
+city, and the departure roll raises the encounter popup whose click
+runs the fight through the campaign API. Pure geometry lives in
+`gfx/map_view.ml` (18 assertions) and the window photographs itself
+with `--shot`: the frame was checked pixel by pixel, the hero marker
+exactly on CBAR's computed position. Plus the render.world_map_layout
+claim and the port.map_screen_mapping decision. Build, all 29 suites
+and the extractor/validator checks verified green.
 
 ---
 
@@ -157,7 +160,7 @@ Open questions (4): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (28 suites: 19 engine + 9 graphics)
+# Run all tests (29 suites: 19 engine + 10 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -165,9 +168,12 @@ opam exec -- dune exec bin/campaign_demo.exe
 
 # Graphics battle (SDL2/OpenGL)
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
+
+# World map (SDL2/OpenGL)
+PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 ```
 
-All 28 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+All 29 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -217,8 +223,10 @@ source assets.
    (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival
    event to run under, and no travel step calls enter_location yet); the rune's
    `OnStartBattle` waits on the forge's rune state; equip slot and UI open
-3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
-   no hero position on the map and no visible-range logic
+3. **Fog of war / visible range** — visibility flags exist and save correctly, and the
+   map window now draws the hero's position (current node, or on the road); still
+   open is visible-*range* logic - recomputing what the hero can see from where
+   they stand - and fog painting
 4. **Spell targeting** — both halves wired: the player aims from the cast
    question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks'
    `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per
