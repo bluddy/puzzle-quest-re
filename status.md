@@ -2,18 +2,17 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync gave the machine its aim. Six
-ShouldAICastSpell bodies end in SET_INPUT_DATA ("Store a grid in case we
-cast!"); each now stores its cell - red-skull searches for SCLI, STHR and
-SLIS, a strict-majority kind for SCON, red-or-plain for SFBA, the best row
-for SCHG - on the ai_context, pick_ai_spell clears it before every
-candidate, and take_action reads it into fx_input: the same path the
-human's click takes. GetRandomGrid_Type is ported from the utility script
-(draw until the kind matches or the tries pass 1000). The three aimed
-spells whose hooks store nothing aim at nothing, recorded rather than
-guessed. This settles the open question spell.sfba_target_writeback, and
-the first positive SCON test caught a strict majority comparing a count
-against itself. Plus the spells.ai_aim claim and the port.ai_aim_fallback
+**Sync:** working tree clean. This sync wired the campaign fight setup.
+Both paths now compute rules through `rules_for_battle`: the recovered
+hero/task band (`difficulty_for_levels`, which had no caller) decides
+`rules.difficulty` - the gate on the AI's spell skip and the evaluator's
+jitter - and the hero's real level feeds the evaluator's hero-level band.
+The task level is the encounter's `my_level` on the road and the
+monster's registry `level_base` in a quest fight (a choice -
+`port.campaign_task_level`). Road fights also load the monster's
+registry spell roster: `run_encounter_battle` passed no enemy_spells at
+all, so no road monster had ever cast anything. Plus the
+`campaign.battle_setup` claim and the `port.campaign_task_level`
 decision. Build, all 28 suites and the extractor/validator checks
 verified green.
 
@@ -33,7 +32,7 @@ verified green.
 
 ### Campaign Layer (Data + engine complete; UI not started)
 - **Map data:** 20 cities, 40 waypoints, 28 ruins, 93 roads (typed graph)
-- **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua)
+- **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua); road fights load the monster's spell roster and compute their difficulty band from `my_level`
 - **Quests:** 142 quests with state machines, prerequisites, per-quest text, battle rewards
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
 - **Conversations:** 273 dialogue trees with backdrops, portraits, branching
@@ -130,12 +129,13 @@ verified green.
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 79 | 10 (4 open) | 23 |
+| `docs/reverse/evidence.yml` | 80 | 10 (4 open) | 24 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
 - `port.human_aim_click` — one click aims a spell (the bar cancels back to the spell question)
 - `port.ai_aim_fallback` — hooks that store nothing aim at nothing; SCHG's row rides as y, the column slot0 as x
+- `port.campaign_task_level` — road task is the encounter's my_level, quest task the monster's base; hero_level_cap stays default
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
@@ -222,7 +222,9 @@ source assets.
    candidate); hover cursor and valid-target highlighting are cosmetic-open,
    and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since
    their hooks store no cell (`port.ai_aim_fallback`)
-5. **Monster spell rosters** — AI only uses `Spell` tags from monster XML; no dynamic selection
+5. **Monster spell rosters** — quest and road fights both load the monster's
+   registry `Spell` tags now; mana-aware dynamic selection and any weighting
+   of spell choice beyond each hook's own board reads remain open
 6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`)
    not wired to dialogue UI
 7. **Conditional quest rewards** — if/else reward branches take the first source-order

@@ -555,13 +555,15 @@ let loadout_of_equipment (e: equipment) : Item.loadout =
 (* Open a battle between two combatants: board, companion OnStartBattle
    hooks (their hits land before the first turn), then each side's item
    start hooks, then the run. Shared by road encounters and quest battles
-   so all of it is the same setup on both paths. *)
+   so all of it is the same setup on both paths. [rules] arrives from
+   [rules_for_battle] in production and stays at [Battle.default_rules]
+   where a test means to pin the fields itself. *)
 let open_battle ?(hero_spells = []) ?(enemy_spells = [])
     ?(hero_items = Item.new_loadout ()) ?(enemy_items = Item.new_loadout ())
-    ?(rng = Random.int)
+    ?(rng = Random.int) ?(rules = Battle.default_rules)
     ~(hero: combatant) ~(enemy: combatant) ~(enemy_tags: string list)
     ~(companions: string list) () : battle =
-  let battle = Battle.create ~rng ~hero_spells ~enemy_spells
+  let battle = Battle.create ~rng ~rules ~hero_spells ~enemy_spells
       ?hero_items:(Some hero_items) ?enemy_items:(Some enemy_items)
       (fresh_board ()) hero enemy in
   let hooks =
@@ -580,17 +582,37 @@ let open_battle ?(hero_spells = []) ?(enemy_spells = [])
   ignore (Item_hooks.apply_start_battle enemy enemy_items);
   battle
 
+(* The rules a campaign fight runs under. Two of [default_rules]' fields stop
+   being defaults here: difficulty, from the recovered hero/task level band
+   (ai.difficulty_from_levels - the gate on the AI's spell skip and the
+   evaluator's jitter), and the hero's own level, which the board evaluator
+   reads for its hero-level band. The task level is the encounter's own
+   [my_level] on the road - the same field the spawn gate compares the hero
+   against - and the monster's registry base in a quest fight; nothing
+   recovered computes either of those at fight time, and [hero_level_cap]
+   stays at the default because nothing recovered says what the engine
+   passes. That mapping is a choice - port.campaign_task_level. *)
+let rules_for_battle ~(player: player) ~(task_level: int) : Battle.rules =
+  { Battle.default_rules with
+    difficulty =
+      Spell.difficulty_for_levels ~hero_level:player.level ~task_level;
+    hero_level = player.level }
+
 (* Run a battle between player and encounter. The hero walks in with the
-   spells the player knows - the loadout choice recorded in
-   port.quest_battle_loop, shared with the quest path below. *)
+   spells the player knows and the monster with its own registry roster -
+   the loadout choice recorded in port.quest_battle_loop, shared with the
+   quest path below - at the difficulty the encounter's level asks for. *)
 let run_encounter_battle (player: player) (enc: encounter) : battle =
+  let monster = Campaign_monsters.monster_by_sprite enc.sprite in
   let hero = player_to_combatant player in
   let enemy = encounter_to_combatant enc player.level in
-  let battle = open_battle ~hero ~enemy
+  let battle = open_battle
+      ~rules:(rules_for_battle ~player ~task_level:enc.my_level)
+      ~hero ~enemy
       ~hero_spells:(spells_of_ids player.known_spells)
+      ~enemy_spells:(spells_of_ids monster.spells)
       ~hero_items:(loadout_of_equipment player.equipment)
-      ~enemy_tags:(monster_type_tags
-        (Campaign_monsters.monster_by_sprite enc.sprite))
+      ~enemy_tags:(monster_type_tags monster)
       ~companions:player.companions ()
   in
   Battle.run battle
@@ -779,6 +801,7 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
           let battle =
             Battle.run
               (open_battle ~rng
+                 ~rules:(rules_for_battle ~player ~task_level:monster.level_base)
                  ~hero_spells:(spells_of_ids
                    (hero_spell_ids @ player.known_spells))
                  ~enemy_spells:(spells_of_ids monster.spells)

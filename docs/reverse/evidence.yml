@@ -1603,9 +1603,11 @@ claims:
       (`pick_ai_spell`, 50/25/0 percent by band) and the board evaluator's
       jitter, so getting it wrong makes every fight the wrong difficulty.
 
-      Ported as `Spell.difficulty_for_levels`. It lives in spell.ml rather than a
-      quest module because there is no quest module yet and that is its only
-      consumer.
+      Ported as `Spell.difficulty_for_levels`, and called for real by the
+      campaign paths through `rules_for_battle` (campaign.battle_setup) - it
+      sat without a caller until road and quest fights computed their rules
+      from it. It lives in spell.ml rather than a quest module because there
+      was no quest module when it was ported.
     evidence:
       - kind: lua
         ref: game/Assets.zip!Assets/Scripts/StandardUtilityScripts.lua
@@ -2633,6 +2635,54 @@ claims:
       SCON could never vote yes; the first positive test caught it, and it now
       compares the other four kinds the way the Lua writes them.
 
+  - id: campaign.battle_setup
+    title: Campaign fights carry the computed difficulty and the monster's own roster
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      The recovered difficulty band (ai.difficulty_from_levels) had no
+      caller: every campaign fight ran on default_rules, so the AI's spell
+      skip sat at band 1's 25 percent and the evaluator's jitter at band 1's
+      noisiness whatever the levels said. Both campaign paths now compute
+      rules through rules_for_battle - the band from the hero's level against
+      the task's, and the hero's own level in rules.hero_level, which the
+      board evaluator reads for its hero-level band. Road fights also hand
+      the monster its registry spell roster: run_encounter_battle passed no
+      enemy_spells at all, so no road monster had ever cast anything, while
+      the quest path already passed monster.spells.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Monsters/MARB.xml
+        note: Spell tag="SWMG" - the roster road fights were not loading
+      - kind: xml
+        ref: game/Assets.zip!Assets/Encounters/EAGO.xml
+        note: my_level, the encounter's own level and the spawn gate's comparator
+      - kind: code
+        ref: lib/spell.ml
+        note: difficulty_for_levels, the band both paths now call
+      - kind: code
+        ref: lib/campaign.ml
+        note: rules_for_battle, and both open_battle paths passing rules and rosters
+      - kind: code
+        ref: test/test_campaign.ml
+      - kind: code
+        ref: test/test_quest_battle.ml
+    affects:
+      [lib/campaign.ml]
+    notes: >
+      What the task level is at fight time is not recovered: the port reads it
+      from the encounter's my_level on the road and the monster's registry
+      level_base in a quest fight, and leaves hero_level_cap at the default
+      because nothing says what the engine passes - all three choices are
+      port.campaign_task_level. Whether the engine's own road fight loads the
+      monster's spells the same way is not shown either; the quest path's
+      roster was already there, so the road follows it rather than inventing
+      a second rule. Mana-aware dynamic selection and any weighting of spell
+      choice beyond each hook's own board reads remain open - see the
+      monster-AI rows in GAPS.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -3345,5 +3395,27 @@ port_decisions:
       player present the cell the same way. And the gates were already the
       count guards before this commit; keeping them means the only behaviour
       added is the cell, which is the half that was missing.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.campaign_task_level
+    decision: >
+      The task level a campaign fight computes difficulty from is the
+      encounter's my_level on the road and the monster's registry level_base
+      in a quest fight; rules.hero_level_cap stays at default_rules' value of
+      20. Everything else in default_rules carries over unchanged, and a test
+      that means to pin a rule field passes its own rules to open_battle.
+    rationale: >
+      Std_GetDifficulty takes (heroLevel, taskLevel) and the assets never say
+      which number either is at fight time. my_level is the one level the
+      encounter record carries - the same field the spawn gate already
+      compares the hero against - so it is the encounter's level by the only
+      reading the data supports. A quest fight has no encounter record; the
+      monster's level_base is the level the registry gives it, and scaling it
+      to the hero would make the band a constant, which would defeat the
+      bridge the band exists to be. hero_level_cap only reaches the
+      evaluator's hero-level jitter at bands 0 and 1, and with nothing
+      recovered about the engine's value the default is the honest one rather
+      than a guessed ceiling.
     supersedes: null
     date: 2026-10-08

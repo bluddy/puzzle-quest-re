@@ -73,9 +73,9 @@
 ### 5. Monster AI & Spell Rosters
 | Gap | Details |
 |-----|---------|
-| Dynamic spell selection | Monsters only use static `Spell` tags from XML; no mana-aware choice |
+| Dynamic spell selection | Quest and road fights both load the static `Spell` tags now; still no mana-aware choice |
 | AI weights | `Ai.weights` exist but only used for swap evaluation, not spell choice |
-| Difficulty scaling | `rules.difficulty` unused in spell selection |
+| Difficulty scaling | ✓ campaign fights compute `rules.difficulty` from the recovered bands (`rules_for_battle`: road my_level, quest level_base) - gates the spell skip and the evaluator jitter |
 
 ### 6. Conversation System
 | Gap | Details |
@@ -155,7 +155,7 @@
 | **3 ✅** | Capture engine ✅ + companion hooks ✅ | Core progression loop (capture → party → bonuses); equip bonuses remain in 8 |
 | **4 ✅** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
 | **5 ✅** | Grid spell targeting | Player aim (click-to-aim) and machine aim (six hook picks) both land; `spell.sfba_target_writeback` settled |
-| **6** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
+| **6 ✅** | Monster spell AI + difficulty | Road rosters load; campaign fights compute their band from the levels |
 | **7** | World map SDL2 + travel UI | Makes campaign playable visually |
 | **7** | City UI (shop, spells, tavern) | Completes town loop |
 | **8** | Conversation branching + portraits | Narrative delivery |
@@ -182,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`; still to add: monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`; still to add: monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -238,7 +238,7 @@ bin/
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
-hooks, companion removal, cell selection, AI aiming). Pick one:
+hooks, companion removal, cell selection, AI aiming, monster rosters). Pick one:
 
-- **Monster spell AI** — per-monster spell rosters beyond the XML `Spell`
-  tags, and difficulty scaling (priority 6)
+- **Campaign tests (rest)** — travel, encounter triggering, income and
+  level-up; the rest of Known Gap 1

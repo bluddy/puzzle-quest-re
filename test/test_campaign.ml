@@ -616,6 +616,51 @@ let () =
      .Campaign.companions = [ "NSER"; "NWIN" ])
 
 let () =
+  (* Campaign fights stop running on hand-set defaults: the recovered hero/task
+     band decides difficulty (the gate on the AI's spell skip and the
+     evaluator's jitter), the hero's real level feeds the evaluator, and a road
+     monster walks in with its own registry spell roster - which it never did:
+     the encounter path passed no enemy_spells at all, so no road monster had
+     ever cast anything. *)
+  let hero_level30 = { (fresh ()) with Campaign.level = 30 } in
+  let band task =
+    (Campaign.rules_for_battle ~player:hero_level30 ~task_level:task)
+      .Battle.difficulty
+  in
+  check_int "task 1 against a level-30 hero is band 0" (band 1) 0;
+  check_int "task 25 against a level-30 hero is band 1" (band 25) 1;
+  check_int "task 30 against a level-30 hero is band 2" (band 30) 2;
+  check_int "task 37 against a level-30 hero is band 3" (band 37) 3;
+  check_int "task 40 against a level-30 hero is band 4" (band 40) 4;
+  check_int "the hero's own level reaches the evaluator"
+    (Campaign.rules_for_battle ~player:hero_level30 ~task_level:1)
+      .Battle.hero_level
+    30;
+
+  let road =
+    { Campaign_encounters.id = "EXXX";
+      description = "test";
+      start = "CGAL";
+      end_ = "WRAR";
+      index = 0;
+      sprite = "ZGSP";
+      lua_file = "";
+      lua_object = "";
+      my_level = 1;
+      chance = 0 }
+  in
+  let b = Campaign.run_encounter_battle hero_level30 road in
+  check_int "the road fight takes the encounter's own level as its task"
+    b.Battle.rules.Battle.difficulty 0;
+  check_int "and carries the hero's level for the evaluator"
+    b.Battle.rules.Battle.hero_level 30;
+  check "the road monster brings its registry spell roster"
+    (List.exists (fun (s : Spell.spell) -> s.Spell.id = "SWMG")
+       b.Battle.enemy_spells);
+  check "the whole roster lands, not just its first spell"
+    (List.length b.Battle.enemy_spells = 3)
+
+let () =
   if !failures > 0 then begin
     Printf.printf "\n%d failure(s)\n" !failures;
     exit 1
