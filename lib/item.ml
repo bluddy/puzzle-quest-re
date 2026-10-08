@@ -66,6 +66,10 @@ type raw_descriptor = {
   restriction_kind : restriction_kind;
   restriction_skill : skill option;
   restriction_level : int;
+  on_start_battle : bool;
+      (** Whether the item's script declares [OnStartBattle] in its table. The
+          one behaviour the generator reads directly from the Lua; the bodies
+          are hand-ported in [Item_hooks]. *)
 }
 
 and restriction_kind = RK_none | RK_skill | RK_level
@@ -86,6 +90,7 @@ type descriptor = {
   rarity : int;
   icon : int;
   restriction : restriction;
+  on_start_battle : bool;
 }
 
 let descriptor_of_raw (d : raw_descriptor) : descriptor =
@@ -95,6 +100,7 @@ let descriptor_of_raw (d : raw_descriptor) : descriptor =
   ; rarity = d.rarity
   ; icon = d.icon
   ; restriction = restriction_of d
+  ; on_start_battle = d.on_start_battle
   }
 
 (** The gem kinds the item and spell scripts refer to, as [CountGems]' arguments.

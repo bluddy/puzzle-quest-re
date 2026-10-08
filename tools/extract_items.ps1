@@ -6,7 +6,9 @@ $ErrorActionPreference = 'Stop'
 #
 # The XML carries the static descriptor: where the item goes, what it costs, how
 # rare it is, and what restricts equipping it. The behaviour is in the Lua and is
-# hand-ported, the same split as spells.
+# hand-ported, the same split as spells - except for the presence flag for
+# OnStartBattle, which is read straight out of each script's declare table so
+# the generated row records what the script itself declares.
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $z = [System.IO.Compression.ZipFile]::OpenRead('game\Assets.zip')
@@ -37,6 +39,19 @@ $locMap = @{ 'weapon' = 'Weapon'; 'head' = 'Head'; 'body' = 'Body'; 'misc' = 'Mi
 $skillMap = @{
   'earth' = 'SEarth'; 'fire' = 'SFire'; 'air' = 'SAir'; 'water' = 'SWater'
   'battle' = 'SBattle'; 'morale' = 'SMorale'; 'cunning' = 'SCunning'
+}
+
+# Which item scripts declare OnStartBattle in their table: IDHE and IFLH add
+# mana, the four IWL* walls life. Read from the paired .lua files in a first
+# pass so the descriptor rows below can carry the flag.
+$startHooks = @{}
+foreach ($e in $z.Entries) {
+  if ($e.FullName -notmatch '^Assets/Items/(I[A-Z0-9]+)\.lua$') { continue }
+  $luaId = $Matches[1]
+  $sr = New-Object System.IO.StreamReader($e.Open())
+  $lua = $sr.ReadToEnd()
+  $sr.Close()
+  if ($lua -match 'OnStartBattle\s*=\s*OnStartBattle') { $startHooks[$luaId] = $true }
 }
 
 foreach ($e in ($z.Entries | Sort-Object FullName)) {
@@ -78,12 +93,14 @@ foreach ($e in ($z.Entries | Sort-Object FullName)) {
     $skillExpr = 'Some Combat.' + $skillMap[$rskill]
   }
   $kind = 'RK_' + $rtype
+  $sb = if ($startHooks.ContainsKey($id)) { 'true' } else { 'false' }
 
   $lines = @()
   $lines += ('  {{ id = "{0}"; location = Item.{1}; shop_cost = {2}; rarity = {3}; icon = {4};' -f `
       $id, $locMap[$location], $(if ($cost) { [int]$cost } else { 0 }), $(if ($rarity) { [int]$rarity } else { 0 }), $(if ($icon) { [int]$icon } else { 0 }))
-  $lines += ('    restriction_kind = Item.{0}; restriction_skill = {1}; restriction_level = {2}; }};' -f `
+  $lines += ('    restriction_kind = Item.{0}; restriction_skill = {1}; restriction_level = {2};' -f `
       $kind, $skillExpr, $rlevel)
+  $lines += ('    on_start_battle = {0}; }};' -f $sb)
   $rows.Add($lines -join "`n")
 }
 $z.Dispose()
@@ -94,7 +111,11 @@ $hdr = @(
   '    The 160 items in [Assets/Items], static descriptor only: where the item'
   '    goes, what it costs, how rare it is, its icon, and what restricts'
   '    equipping it. Behaviour lives in each item''s paired .lua script and is'
-  '    hand-ported into [lib/item.ml].'
+  '    hand-ported into [lib/item_hooks.ml].'
+  ''
+  '    [on_start_battle] is the one piece of behaviour carried here: whether the'
+  '    script''s declare table exports OnStartBattle. The bodies those six items'
+  '    ship are hand-ported into [Item_hooks] alongside the flag''s check.'
   ''
   '    [restriction_skill] is [Item.None] for every item whose restriction is not'
   '    a skill requirement; [Item.descriptor_of_raw] folds the pair back into a'
@@ -114,6 +135,7 @@ $all = @($hdr) + @($rows) + @($tail)
 [System.IO.File]::WriteAllLines((Join-Path (Get-Location) 'lib\item_data.ml'), $all, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Output ('wrote lib\item_data.ml with {0} items' -f $rows.Count)
+Write-Output ('OnStartBattle declared by {0}: {1}' -f $startHooks.Count, (($startHooks.Keys | Sort-Object) -join ', '))
 Write-Output ''
 Write-Output 'location:'
 $loc.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { Write-Output ('{0,5}  {1}' -f $_.Value, $_.Key) }

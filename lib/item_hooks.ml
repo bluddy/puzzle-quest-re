@@ -125,3 +125,53 @@ let item_of_id (id : string) : item option =
         match hook_of id with Some f -> { no_hooks with on_give_damage = Some f } | None -> no_hooks
       in
       Some (make_item ~hooks d)
+
+(** OnStartBattle, hand-ported from the six scripts that declare it - the
+    bodies behind the [on_start_battle] flag the descriptor table carries.
+
+    IDHE and IFLH top up a mana bank ([ADD_MANA_WATER(characterIdx,10)],
+    [ADD_MANA_FIRE(characterIdx,8)]); the four IWL* walls raise the ceiling
+    and the pool together ([ADD_MAX_LIFE] then [ADD_LIFE], the order the
+    scripts use: ceiling first, so the life rise is measured against the new
+    one). Everything is silent - [NOTIFY_OF_ACTIVATED_ITEM] has no log event
+    of its own - and the mana credit is uncapped, the same reading
+    [Campaign_companion_hooks]'s ManaBonus already makes.
+
+    The rune JXXX declares OnStartBattle too, and is deliberately absent: its
+    body reads the equipped rune's power code and data at fire time, state the
+    forge that produces runes does not model yet. A fixed stand-in would be a
+    rune that never rolls what the game rolls. *)
+type start_payoff =
+  | AddMana of Combat.element * int
+  | AddLife of int
+  | AddMaxLife of int
+
+let start_payoffs_of (id : string) : start_payoff list =
+  match id with
+  | "IDHE" -> [ AddMana (Combat.Water, 10) ]
+  | "IFLH" -> [ AddMana (Combat.Fire, 8) ]
+  | "IWLB" -> [ AddMaxLife 100; AddLife 100 ]
+  | "IWLM" -> [ AddMaxLife 200; AddLife 200 ]
+  | "IWLR" -> [ AddMaxLife 20; AddLife 20 ]
+  | "IWLS" -> [ AddMaxLife 50; AddLife 50 ]
+  | _ -> []
+
+let apply_start_payoff (who : Combat.combatant) (p : start_payoff) : unit =
+  match p with
+  | AddMana (e, n) -> who.mana <- Combat.add_mana e n who.mana
+  | AddLife n -> who.life <- who.life + n
+  | AddMaxLife n -> who.max_life <- who.max_life + n
+
+(** Fires every equipped item's start hook on its owner, in the loadout's fixed
+    slot order ([Item.equipped]), returning the ids that had a body to run.
+    Mirrors the companion pass in [Campaign.open_battle]: unknown items and
+    items without the hook are inert. *)
+let apply_start_battle (who : Combat.combatant) (l : loadout) : string list =
+  List.fold_left
+    (fun fired i ->
+      match start_payoffs_of (item_id i) with
+      | [] -> fired
+      | payoffs ->
+          List.iter (apply_start_payoff who) payoffs;
+          fired @ [ item_id i ])
+    [] (equipped l)

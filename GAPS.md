@@ -103,7 +103,7 @@
 | Gap | Details |
 |-----|---------|
 | Equip logic | `equipment` record exists; no `can_equip` checks, no stat bonuses applied |
-| Item effects | `Item.onGiveDamage` etc. extracted; no hook integration in battle — six items and one rune also declare `OnStartBattle`, unwired alongside |
+| Item effects | Damage hooks fold in battle; `OnStartBattle` wired for the six items (`campaign.item_start_battle`, rune JXXX waits on the forge); the mana/gold/xp, start-turn, match and victory hooks are still never invoked |
 | Inventory limits | No capacity, no sorting, no discard |
 
 ### 10. Companion / Mount System
@@ -237,8 +237,9 @@ bin/
 ## Next Action
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
-campaign tests, capture, companion hooks, quest battle loop). Pick one:
+campaign tests, capture, companion hooks, quest battle loop, item start
+hooks). Pick one:
 
-- **Companion edges** — wire `OnStartBattle` for the six items and one rune,
-  extract `QUEST_REMOVE_COMPANION`
+- **Companion edges** — extract `QUEST_REMOVE_COMPANION` and the
+  location-arrival step behind it (the rune's start hook waits on the forge)
 - **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build

@@ -171,7 +171,8 @@ type combatant = {
   id : int;
   name : string;
   cunning : int;
-  max_life : int;
+  (* Mutable: item start-of-battle hooks raise it (ADD_MAX_LIFE). *)
+  mutable max_life : int;
   mutable life : int;
   mutable mana : mana;
   (* The per-element ceiling. See [default_mana_limit] for what is and is not

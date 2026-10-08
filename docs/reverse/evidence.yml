@@ -2365,8 +2365,66 @@ claims:
       the party cap are port choices - see
       port.companion_hooks_fire_for_the_party. Quest battles now run through
       the same constructor as road fights, so the hooks fire on both paths
-      (campaign.quest_battle_flow); the same gap holds for the six items and
-      one rune that declare OnStartBattle.
+      (campaign.quest_battle_flow), and the six items that declare
+      OnStartBattle ride that constructor too (campaign.item_start_battle);
+      the rune's own start hook still waits on the forge.
+
+  - id: campaign.item_start_battle
+    title: Six items raise mana or life the moment the battle opens
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Six of the 160 item scripts declare OnStartBattle - IDHE and IFLH,
+      the two helms, and the four IWL* walls - and the generator reads that
+      flag straight out of each script's declare table, so the descriptor
+      says what the script declares. The bodies are hand-ported into
+      Item_hooks beside the damage hooks: a mana credit for each helm
+      (+10 water, +8 fire), a ceiling raise plus the matching life for each
+      wall, applied to whoever wears the loadout when open_battle
+      assembles the fight - after the companion pass, on both sides,
+      before the first turn. The equipment panel folds into the four
+      battle slots by each item's own location, so a wall parked in the
+      gauntlets field still wears the body slot.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IDHE.lua
+        note: ADD_MANA_WATER(characterIdx,10) then NOTIFY_OF_ACTIVATED_ITEM
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IFLH.lua
+        note: ADD_MANA_FIRE(characterIdx,8)
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IWLM.lua
+        note: ADD_MAX_LIFE then ADD_LIFE of 200, the order the body uses
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[ITMLOC0..3] name the four slots head, body, weapon, misc"
+      - kind: code
+        ref: tools/extract_items.ps1
+        note: the declare-table scan behind the on_start_battle flag
+      - kind: code
+        ref: lib/item_hooks.ml
+        note: the six bodies as a payoff table and the owner-side pass
+      - kind: code
+        ref: lib/campaign.ml
+        note: loadout_of_equipment and the open_battle wiring
+      - kind: code
+        ref: test/test_item.ml
+    affects:
+      [tools/extract_items.ps1, lib/item.ml, lib/item_hooks.ml, lib/combat.ml,
+       lib/campaign.ml]
+    notes: >
+      The rune JXXX declares OnStartBattle too and stays out: its body reads
+      the equipped rune's power code and data, state the forge does not
+      model yet, and a fixed stand-in would be a rune that never rolls what
+      the game rolls. NOTIFY_OF_ACTIVATED_ITEM has no log event of its own,
+      so activations are silent the way the companion note already records;
+      the mana credit is uncapped, the same reading ManaBonus makes, and
+      combatant max_life became mutable for the walls' ADD_MAX_LIFE.
+      Dispatch order across kinds, the panel-to-slot fold, and not re-running
+      can_equip at open are port choices - see
+      port.item_start_battle_dispatch.
 
   - id: campaign.quest_battle_flow
     title: A quest stage picks the fight, and the fight runs through the battle engine
@@ -3054,5 +3112,30 @@ port_decisions:
       refusal, though the removal flow behind it is UI this port does not
       have. The companion's home location and the leaving-a-companion-behind
       flow are not modelled; [COMPANIONSTATUS_OUT0] has a %s for the location.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.item_start_battle_dispatch
+    decision: >
+      Item start hooks fire after the companion pass, for both sides'
+      loadouts; the equipment panel folds into the four battle slots by
+      each item's own location in field order; activations emit no event
+      and the mana credit is uncapped; placement does not re-run can_equip
+    rationale: >
+      The scripts pin the timing only as "whenever a new battle is started,
+      before the first player takes a turn", and nothing recovered says who
+      walks which object kind first, so companions-then-items is a choice -
+      every shipped body is independent of the others'. Both sides get the
+      pass because a city wall's owner is the defender, a fight the
+      campaign does not reach yet, and firing one side only would bake that
+      in. The fold-by-location keeps placement self-describing from the
+      item data rather than from the panel's nine field names, whose split
+      against the four battle slots (ITMLOC0..3) is not recovered; two
+      items of one location leave the later field wearing the slot, which
+      is the record's own order doing the deciding. NOTIFY_OF_ACTIVATED_ITEM
+      is already unmodelled across the companion claim, and uncapped mana
+      follows ManaBonus. can_equip stays with the equip flow this port does
+      not have: with no way to put on gear, re-checking at open would be
+      checking nothing.
     supersedes: null
     date: 2026-10-08

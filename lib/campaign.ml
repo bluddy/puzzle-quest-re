@@ -519,13 +519,38 @@ let spells_of_ids (ids: string list) : Spell.spell list =
     (fun id -> List.find_opt (fun (s: Spell.spell) -> s.Spell.id = id) table)
     (uniq ids)
 
+(* The battle loadout built from the character's equipment panel: each slot's
+   item becomes a runtime [Item] by id and lands where its own location says -
+   the four XML locations (weapon/head/body/misc, [ITMLOC0..3]) decide the
+   placement, so the panel's extra fields (gauntlets, rings, mount, banner,
+   companion) fold in by whatever location they carry. Two items of one
+   location leave the later field's in the slot; that is a choice, since the
+   engine's own fold is not recovered. *)
+let loadout_of_equipment (e: equipment) : Item.loadout =
+  let l = Item.new_loadout () in
+  List.iter
+    (fun (slot : Campaign_items.item option) ->
+      match slot with
+      | None -> ()
+      | Some ci ->
+        (match Item_hooks.item_of_id ci.Campaign_items.id with
+         | None -> ()
+         | Some i -> ignore (Item.equip l i)))
+    [ e.weapon; e.armor; e.helm; e.gauntlets; e.ring1; e.ring2;
+      e.mount; e.banner; e.companion ];
+  l
+
 (* Open a battle between two combatants: board, companion OnStartBattle
-   hooks (their hits land before the first turn), then the run. Shared by
-   road encounters and quest battles so both fire the same setup. *)
-let open_battle ?(hero_spells = []) ?(enemy_spells = []) ?(rng = Random.int)
+   hooks (their hits land before the first turn), then each side's item
+   start hooks, then the run. Shared by road encounters and quest battles
+   so all of it is the same setup on both paths. *)
+let open_battle ?(hero_spells = []) ?(enemy_spells = [])
+    ?(hero_items = Item.new_loadout ()) ?(enemy_items = Item.new_loadout ())
+    ?(rng = Random.int)
     ~(hero: combatant) ~(enemy: combatant) ~(enemy_tags: string list)
     ~(companions: string list) () : battle =
   let battle = Battle.create ~rng ~hero_spells ~enemy_spells
+      ?hero_items:(Some hero_items) ?enemy_items:(Some enemy_items)
       (fresh_board ()) hero enemy in
   let hooks =
     Campaign_companion_hooks.apply_start_battle
@@ -536,6 +561,11 @@ let open_battle ?(hero_spells = []) ?(enemy_spells = []) ?(rng = Random.int)
   in
   List.iter (fun (name, amt) ->
     Battle.emit battle (Battle.Damage (name, amt))) hooks.damaged;
+  (* Items after companions: the engine runs both kinds of start-of-battle
+     callback before the first turn and the order between the kinds is not
+     recovered, and every shipped body is independent of the others'. *)
+  ignore (Item_hooks.apply_start_battle hero hero_items);
+  ignore (Item_hooks.apply_start_battle enemy enemy_items);
   battle
 
 (* Run a battle between player and encounter. The hero walks in with the
@@ -546,6 +576,7 @@ let run_encounter_battle (player: player) (enc: encounter) : battle =
   let enemy = encounter_to_combatant enc player.level in
   let battle = open_battle ~hero ~enemy
       ~hero_spells:(spells_of_ids player.known_spells)
+      ~hero_items:(loadout_of_equipment player.equipment)
       ~enemy_tags:(monster_type_tags
         (Campaign_monsters.monster_by_sprite enc.sprite))
       ~companions:player.companions ()
@@ -723,6 +754,7 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
                  ~hero_spells:(spells_of_ids
                    (hero_spell_ids @ player.known_spells))
                  ~enemy_spells:(spells_of_ids monster.spells)
+                 ~hero_items:(loadout_of_equipment player.equipment)
                  ~hero ~enemy
                  ~enemy_tags:(monster_type_tags monster)
                  ~companions:player.companions ())

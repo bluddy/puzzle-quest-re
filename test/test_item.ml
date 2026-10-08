@@ -37,8 +37,9 @@ let lcg seed =
 let fighter ?(life = 60) id name =
   Combat.make_combatant ~cunning:5 ~max_life:life ~life id name
 
-let descriptor ?(location = Weapon) ?(restriction = NoRequirement) id =
-  { id; location; shop_cost = 0; rarity = 0; icon = 0; restriction }
+let descriptor ?(location = Weapon) ?(restriction = NoRequirement)
+    ?(on_start_battle = false) id =
+  { id; location; shop_cost = 0; rarity = 0; icon = 0; restriction; on_start_battle }
 
 (* ------------------------------------------------------------------ *)
 (* The generated descriptor table                                        *)
@@ -374,7 +375,114 @@ let () =
   ignore (Battle.give_item b b.enemy ~level:1 carried);
   check_eq "the foe now has one too" (List.length (Item.equipped b.enemy_items)) 1;
   check "and the hero still has exactly one"
-    (List.length (Item.equipped b.hero_items) = 1);
+    (List.length (Item.equipped b.hero_items) = 1)
+
+let () =
+  (* OnStartBattle: the flag the generator reads out of each script, the six
+     hand-ported bodies behind it, and the pass that fires them when the
+     battle opens. The rune JXXX declares the hook too and is absent from
+     both the flag and the table - it reads forged-rune state the forge does
+     not model. *)
+  let start_ids =
+    List.filter_map
+      (fun (d : descriptor) -> if d.on_start_battle then Some d.id else None)
+      Item_data.descriptors
+  in
+  check "exactly six scripts declare OnStartBattle"
+    (List.sort compare start_ids = [ "IDHE"; "IFLH"; "IWLB"; "IWLM"; "IWLR"; "IWLS" ]);
+  check "the hand-ported table covers every flag and nothing else"
+    (List.for_all
+       (fun (d : descriptor) ->
+         d.on_start_battle = (Item_hooks.start_payoffs_of d.id <> []))
+       Item_data.descriptors);
+
+  (* Each body applied to its owner, straight through the loadout. *)
+  let loadout_of_id id =
+    let l = new_loadout () in
+    (match Item_hooks.item_of_id id with
+     | Some i -> ignore (equip l i)
+     | None -> check (id ^ " exists in Item_data") false);
+    l
+  in
+  let he = fighter 0 "he" in
+  check "IDHE fires and is reported"
+    (Item_hooks.apply_start_battle he (loadout_of_id "IDHE") = [ "IDHE" ]);
+  check_eq "IDHE adds 10 water" he.mana.water 10;
+  check_eq "IDHE leaves fire alone" he.mana.fire 0;
+  let fh = fighter 0 "fh" in
+  ignore (Item_hooks.apply_start_battle fh (loadout_of_id "IFLH"));
+  check_eq "IFLH adds 8 fire" fh.mana.fire 8;
+  check_eq "IFLH leaves water alone" fh.mana.water 0;
+  let wl = fighter 0 "wl" in
+  check "the wall fires"
+    (Item_hooks.apply_start_battle wl (loadout_of_id "IWLM") = [ "IWLM" ]);
+  check_eq "IWLM raises the ceiling by 200" wl.max_life 260;
+  check_eq "IWLM raises life by 200" wl.life 260;
+  let plain = fighter 0 "plain" in
+  check "an item without the hook is inert"
+    (Item_hooks.apply_start_battle plain (loadout_of_id "IAOM") = []);
+  check_eq "and changes no mana" plain.mana.fire 0;
+  check "an empty loadout fires nothing"
+    (Item_hooks.apply_start_battle plain (new_loadout ()) = []);
+  (* Slot order is the loadout's fixed one: head before body. *)
+  let both = new_loadout () in
+  (match Item_hooks.item_of_id "IDHE" with Some i -> ignore (equip both i) | None -> ());
+  (match Item_hooks.item_of_id "IWLB" with Some i -> ignore (equip both i) | None -> ());
+  check "worn slots fire in fixed order"
+    (Item_hooks.apply_start_battle (fighter 0 "ord") both = [ "IDHE"; "IWLB" ])
+
+let () =
+  (* The equipment panel folds into the four battle slots by each item's own
+     location: helm to head, armor to body, weapon to weapon, and the panel's
+     extra fields to wherever their item says. *)
+  let some_item_by_id id = Some (Campaign_items.item_by_id id) in
+  let e =
+    { Campaign.default_equipment with
+      Campaign.helm = some_item_by_id "IDHE";
+      Campaign.armor = some_item_by_id "IWLS";
+      Campaign.weapon = some_item_by_id "IAOR";
+      Campaign.ring1 = some_item_by_id "IALR" }
+  in
+  let l = Campaign.loadout_of_equipment e in
+  check_str_eq "the helm lands in the head slot"
+    (Item.get_item l Head |> Option.map Item.item_id) (Some "IDHE");
+  check_str_eq "the armor lands in the body slot"
+    (Item.get_item l Body |> Option.map Item.item_id) (Some "IWLS");
+  check_str_eq "the weapon lands in the weapon slot"
+    (Item.get_item l Weapon |> Option.map Item.item_id) (Some "IAOR");
+  check_str_eq "the ring lands in the misc slot"
+    (Item.get_item l Misc |> Option.map Item.item_id) (Some "IALR");
+  (* A body item parked in a non-body panel field still lands by location. *)
+  let e2 =
+    { Campaign.default_equipment with
+      Campaign.gauntlets = Some (Campaign_items.item_by_id "IWLR") }
+  in
+  check_str_eq "a wall in the gauntlets slot still wears the body slot"
+    (Item.get_item (Campaign.loadout_of_equipment e2) Body
+     |> Option.map Item.item_id)
+    (Some "IWLR")
+
+let () =
+  (* Both start passes in one place: companions first, then the items on each
+     side, when the battle opens. NSUN needs the Minotaur tag to fire. *)
+  let e =
+    { Campaign.default_equipment with
+      Campaign.helm = Some (Campaign_items.item_by_id "IDHE") }
+  in
+  let hero = fighter 0 "hero" in
+  let enemy = fighter 1 "foe" in
+  let b =
+    Campaign.open_battle ~hero ~enemy ~enemy_tags:[ "Minotaur" ]
+      ~companions:[ "NSUN" ]
+      ~hero_items:(Campaign.loadout_of_equipment e) ()
+  in
+  check_eq "the equipped helm fired through open_battle" b.hero.mana.water 10;
+  check_eq "the fire companion fired alongside it" b.hero.mana.fire 10;
+  check_eq "the enemy side, with no items, is untouched" b.enemy.mana.water 0;
+  let bare = Campaign.open_battle ~hero:(fighter 0 "h2") ~enemy:(fighter 1 "e2")
+      ~enemy_tags:[] ~companions:[] ()
+  in
+  check_eq "no gear and no party changes nothing" bare.hero.mana.water 0;
 
   if !failures = 0 then print_endline "\nAll item tests passed."
   else begin

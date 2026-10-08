@@ -2,16 +2,15 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync wired the campaign to the battle
-engine: quest Lua's `QUEST_BATTLE` calls and OnCompleteAction branches are
-scanned into per-stage tables (128 stage actions over 155 `<Battle>`
-elements), and `run_quest_battle` runs the stage's fight through the shared
-constructor - monster roster, the fight's spells plus the player's known
-spells, companion hooks - then `quest_battle_settle` applies life, spoils,
-the stage transition, capture and ruin release. The demo's scripted
-"battle won" is gone: it runs the real loop and reports what happened.
-Plus the `campaign.quest_battle_flow` claim and the
-`port.quest_battle_loop` decision. Build, all 28 suites and the
+**Sync:** working tree clean. This sync wired the item start-of-battle
+hooks: the item extractor now reads each script's declare table for
+`OnStartBattle` (six of 160 - two helms, four walls), the bodies are
+hand-ported in `lib/item_hooks.ml`, and `open_battle` fires them on both
+sides after the companion pass, with `loadout_of_equipment` folding the
+nine-field character panel into the four battle slots by each item's own
+location. The rune JXXX declares the hook too and waits on the forge's
+rune state. Plus the `campaign.item_start_battle` claim and the
+`port.item_start_battle_dispatch` decision. Build, all 28 suites and the
 extractor/validator checks verified green.
 
 ---
@@ -90,6 +89,13 @@ extractor/validator checks verified green.
   elements), and `Campaign.run_quest_battle` runs the stage's fight through
   the shared battle constructor - roster, spell line-ups, companion hooks -
   feeding `quest_battle_settle` (life, spoils, stage, capture, ruin release).
+- **Item start hooks (NEW):** `tools/extract_items.ps1` reads each script's
+  declare table for `OnStartBattle` (six of 160 - IDHE/IFLH helms credit
+  mana, the four IWL* walls raise max life and life), `lib/item_hooks.ml`
+  ports the bodies, and `open_battle` fires them on both sides after the
+  companion pass; `loadout_of_equipment` folds the nine-field character
+  panel into the four battle slots by each item's own location, so a wall
+  in the gauntlets field still wears the body slot.
 - **Tests:** `test/test_campaign.ml` (112), `test/test_capture.ml` (57),
   `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 353
   assertions over prerequisites (every
@@ -114,9 +120,10 @@ extractor/validator checks verified green.
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 75 | 10 (5 open) | 20 |
+| `docs/reverse/evidence.yml` | 76 | 10 (5 open) | 21 |
 
 Key decisions recorded:
+- `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
@@ -192,9 +199,10 @@ source assets.
 1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
    lifecycle, the visibility rule, the ruin registry and the save round-trip
    (353 assertions across four campaign suites); travel, encounter triggering, income and level-up are untested
-2. **Companion edges** — `QUEST_REMOVE_COMPANION` (5 sites in Q3S0.lua) and the
-   leave-a-companion-at-a-location flow are not extracted; the six items and
-   one rune that declare OnStartBattle are unwired; equip slot and UI open
+2. **Companion edges** — `QUEST_REMOVE_COMPANION` (six sites: five in
+   Q3S0.lua, one in Q3Q5.lua) and the location-arrival step behind it are not
+   extracted; the rune's `OnStartBattle` waits on the forge's rune state;
+   equip slot and UI open
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic
 4. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics
