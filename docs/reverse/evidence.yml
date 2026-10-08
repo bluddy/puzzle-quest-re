@@ -2316,6 +2316,58 @@ claims:
       capture_begin while the surrounding state (defeats, captives, dungeon)
       round-trips.
 
+  - id: campaign.companion_start_battle
+    title: Party companions fire OnStartBattle once when the battle opens
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Each of the ten companion scripts in Assets/Companions declares exactly
+      one hook, OnStartBattle(characterIdx), and the body is the whole
+      companion mechanic: CHECK_TYPE(other, ...) gates on the enemy's monster
+      types (Undead, Animal, Large, Flying, Machine, City, Good, Minotaur),
+      two scripts gate on a percentile roll and the enemy's life or fire
+      skill, and the payoffs are SUBTRACT_LIFE on the enemy, a temporary
+      resistance or battle-skill bump on the hero, +10 hero fire mana, or
+      NWIN's four SET_MANA_* writes halving the enemy's four banks. The port
+      runs every party member's rule in party order after the battle is
+      created and before the first turn.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Companions/NDKH.lua
+        note: the CHECK_TYPE + SUBTRACT_LIFE shape, with ACTIVATE_COMPANION after
+      - kind: lua
+        ref: game/Assets.zip!Assets/Companions/NPAT.lua
+        note: IS_MONSTER, PERCENTILE_CHANCE_SYNC() < 20, and the life > amt guard
+      - kind: lua
+        ref: game/Assets.zip!Assets/Companions/NWIN.lua
+        note: GET_SKILL(enemy, SKILL_FIRE) >= 15 and the four SET_MANA_* halves
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[COMPANIONS_HELP], [COMPANIONSTATUS_NEW0/1] for the eight-slot party"
+      - kind: code
+        ref: tools/extract_companions.py
+        note: the XML data half and the OnStartBattle presence flag
+      - kind: code
+        ref: lib/campaign_companion_hooks.ml
+        note: the ten hand-ported bodies as a rule table
+      - kind: code
+        ref: test/test_companion.ml
+    affects:
+      [lib/campaign_companions.ml, lib/campaign_companion_hooks.ml, lib/campaign.ml]
+    notes: >
+      MANA_BLUE is Water and MANA_YELLOW is Air - the mapping the spell-effect
+      recon pinned down. IS_MONSTER(other) is true for every road and quest
+      enemy, so it is not modelled as a check. The [SPELL_EFFECT_DAMAGE2] line
+      and its snd_redskull sound have no log event of their own, so hits ride
+      the existing Damage event. Dispatch, ACTIVATE_COMPANION's meaning, and
+      the party cap are port choices - see
+      port.companion_hooks_fire_for_the_party. Quest battles are demo-scripted
+      and never reach a battle constructor, so hooks fire on road battles only
+      (recorded in GAPS.md); the same gap holds for the six items and one rune
+      that declare OnStartBattle.
+
 # ------------------------------------------------------------ open questions ----
 
 open_questions:
@@ -2899,5 +2951,33 @@ port_decisions:
       in progress is not written to the save: the grid is static data, so a
       load rebuilds it with capture_begin while the state that matters -
       defeat counts, captives, the dungeon flag - round-trips.
+    supersedes: null
+    date: 2026-10-08
+
+  - id: port.companion_hooks_fire_for_the_party
+    decision: >
+      Every companion id in the party fires OnStartBattle once, after
+      Battle.create and before the first turn, hero side only;
+      ACTIVATE_COMPANION is recorded as the activated list, and the party is
+      capped at eight
+    rationale: >
+      The ten scripts and the 37-name hook table put OnStartBattle in the
+      engine's dispatch, but the caller that walks the party is behind no
+      capture - the decompiled dumps only hold binding tables - so who fires
+      whom is a choice rather than a recovery. Firing the whole party once at
+      battle open is what the scripts themselves describe: their guard is the
+      enemy, never the timing, and [COMPANIONS_HELP] says the companions
+      "assist you in battle" with no further ceremony. ACTIVATE_COMPANION has
+      no recovered body - the Lua binding is an address with no capture behind
+      it - so it is kept as bookkeeping: the activated list the caller reads
+      back, with each hit riding the existing Damage event where float text
+      already comes from. Only the hero's party is modelled; the
+      characterIdx == 1 branch would be a companion on the enemy side, which
+      the campaign never produces. The eight-slot cap comes from the same help
+      string, and a ninth is turned away at RewardCompanion rather than
+      growing the party - [COMPANIONSTATUS_NEW0] describes exactly that
+      refusal, though the removal flow behind it is UI this port does not
+      have. The companion's home location and the leaving-a-companion-behind
+      flow are not modelled; [COMPANIONSTATUS_OUT0] has a %s for the location.
     supersedes: null
     date: 2026-10-08

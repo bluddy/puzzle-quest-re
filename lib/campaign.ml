@@ -459,9 +459,14 @@ let capture_finish (p: player) (monster_id: string) (attempt: Capture.t) : playe
 (* ------------------------------------------------------------------ *)
 
 (* Convert campaign player to battle combatant *)
+let to_combat_skills (s: skill_affinities) : skills =
+  { earth = s.earth; fire = s.fire; air = s.air; water = s.water;
+    battle = s.battle; morale = s.morale; cunning = s.cunning }
+
 let player_to_combatant (p: player) : combatant =
   make_combatant
     ~cunning:p.skills.cunning
+    ~skills:(to_combat_skills p.skills)
     ~max_life:p.max_life
     ~life:p.life
     0 p.name  (* distinct positive ID *)
@@ -475,9 +480,15 @@ let encounter_to_combatant (enc: encounter) (player_level: int) : combatant =
   let max_life = life in
   make_combatant
     ~cunning:monster.skills.cunning
+    ~skills:(to_combat_skills monster.skills)
     ~max_life
     ~life
     1 monster.name_text  (* distinct positive ID *)
+
+(* The monster type tags the companion scripts CHECK_TYPE against; the
+   monster record keeps up to four, unset ones read "". *)
+let monster_type_tags (m: Campaign_monsters.monster) : string list =
+  List.filter (fun t -> t <> "") [m.type1; m.type2; m.type3; m.type4]
 
 (* Run a battle between player and encounter *)
 let run_encounter_battle (player: player) (enc: encounter) : battle =
@@ -493,8 +504,17 @@ let run_encounter_battle (player: player) (enc: encounter) : battle =
       (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
   in
   let battle = Battle.create board hero enemy in
-  let final_battle = Battle.run battle in
-  final_battle
+  let hooks =
+    Campaign_companion_hooks.apply_start_battle
+      ~rng:(fun () -> battle.rng 100)
+      ~hero ~enemy
+      ~enemy_types:(monster_type_tags
+        (Campaign_monsters.monster_by_sprite enc.sprite))
+      ~companions:player.companions ()
+  in
+  List.iter (fun (name, amt) ->
+    Battle.emit battle (Battle.Damage (name, amt))) hooks.damaged;
+  Battle.run battle
 
 (* Process battle result and update player/quest state *)
 type battle_result = {
@@ -542,7 +562,11 @@ let apply_quest_effect p qeffect =
   | RewardItem item_id ->
     (try { p with inventory = (item_by_id item_id) :: p.inventory } with Not_found -> p)
   | RewardAward award_id -> { p with awards = award_id :: p.awards }
-  | RewardCompanion companion_id -> { p with companions = companion_id :: p.companions }
+  | RewardCompanion companion_id ->
+    (* [COMPANIONS_HELP]: "You can have up to 8 companions at a time." *)
+    if List.mem companion_id p.companions || List.length p.companions >= 8
+    then p
+    else { p with companions = companion_id :: p.companions }
   | RevealNode node_id -> set_location_visible node_id true; p
   | RegisterRuin id -> register_ruin id; p
   | RuinDone id -> set_ruin_done id; p

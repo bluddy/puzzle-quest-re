@@ -2,17 +2,15 @@
 
 **Date:** 2026-10-08  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync landed the capture mini-game: the
-shipped 8x8 `capture_grid` parses through the battle charset, swaps resolve
-with the battle board's own match rules, gravity drops and nothing refills
-(empty grid = won, no legal move = lost), and greedy auto-play reaches a
-verdict on all 60 grids. Campaign-side: wins count per monster on both
-battle paths, `capture_eligible` gates on dungeon + 3 wins,
-`capture_finish` records captives once, all of it round-trips through the
-save with old-save defaults, plus the `campaign.capture_eligible` /
-`campaign.capture_board` evidence claims and the `port.capture_grid_rules`
-decision. Build, all 26 suites and the extractor/validator checks
-verified green.
+**Sync:** working tree clean. This sync landed the companion system: the
+ten `OnStartBattle` bodies are hand-ported as a rule table (type guards,
+NPAT's roll + life guard, NWIN's fire-skill threshold and halved enemy
+bank), every party member fires once between `Battle.create` and the first
+turn with hits riding the log's `Damage` event, combatants now carry the
+real profession and monster skills for the first time, `RewardCompanion`
+dedups and stops at eight, plus the `campaign.companion_start_battle`
+claim and the `port.companion_hooks_fire_for_the_party` decision. Build,
+all 27 suites and the extractor/validator checks verified green.
 
 ---
 
@@ -66,6 +64,18 @@ verified green.
   two `[CAPTURE_LISTHELP]` gates (dungeon built, 3+ wins), `capture_finish`
   adds the captive once, and `test_capture.ml` pins the charset, the
   settle loop, both battle paths, the gates and the save.
+- **Companions (NEW):** `lib/campaign_companion_hooks.ml` ports the ten
+  `OnStartBattle` bodies from `Assets/Companions/*.lua` into one rule table -
+  CHECK_TYPE guards over the monster's type tags, NPAT's percentile roll plus
+  life guard, NWIN's fire-skill threshold - over five payoffs (enemy damage,
+  hero resistance/skill/mana, halved enemy banks); `lib/campaign_companions.ml`
+  is the data half (text tags, home, portrait, hook flag). Hooks fire in party
+  order after `Battle.create` and before the first turn, hits riding the
+  log's `Damage` event since `[SPELL_EFFECT_DAMAGE2]` has none of its own.
+  `player_to_combatant` / `encounter_to_combatant` now populate combatant
+  skills, so `skill_of` reads profession and monster affinities in campaign
+  battles at all; `RewardCompanion` dedups and caps the party at eight
+  (`[COMPANIONS_HELP]`).
 - **Rewards (NEW):** gold/XP/items/awards/companions read from the quest script by
   `tools/extract_quests.py`, which now statically scans quest Lua (file-scope string
   constants + `QUEST_*` calls per top-level function).
@@ -73,14 +83,17 @@ verified green.
   restores it into the tables on load, persists `awards`, the ruin registry
   (counts + done set) and capture state (dungeon flag, defeat counts,
   captives) with old-save defaults; quest states stored as the same ints the player record uses.
-- **Tests:** `test/test_campaign.ml` (112) and `test/test_capture.ml` (57) -
-  169 assertions over prerequisites (every extracted condition), the accept
-  -> battle -> turn-in lifecycle with real rewards, the both-endpoints road
-  rule, the ruin registry (refcounts, shared ruins, the three release paths,
-  the abandonable gate), capture grid parsing and charset, the no-refill
-  settle loop on exact win/loss grids, defeat counting on the road and quest
-  paths, the two capture gates, captives, and save/load round-trips that
-  diverge between save and load so a load that ignores the file cannot pass.
+- **Tests:** `test/test_campaign.ml` (112), `test/test_capture.ml` (57) and
+  `test/test_companion.ml` (110) - 279 assertions over prerequisites (every
+  extracted condition), the accept -> battle -> turn-in lifecycle with real
+  rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
+  ruins, the three release paths, the abandonable gate), capture grid parsing
+  and charset, the no-refill settle loop on exact win/loss grids, defeat
+  counting on the road and quest paths, the two capture gates, captives, save
+  round-trips that diverge between save and load so a load that ignores the
+  file cannot pass, every companion rule against the extracted data, the
+  eight-slot party cap, and a road battle whose log opens on the pre-battle
+  hit.
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → battle win → turn-in (prints rewards) → shop → income →
   level-up → save → load. Verified green 2026-10-08.
@@ -91,7 +104,7 @@ verified green.
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 73 | 10 (5 open) | 18 |
+| `docs/reverse/evidence.yml` | 74 | 10 (5 open) | 19 |
 
 Key decisions recorded:
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
@@ -102,6 +115,8 @@ Key decisions recorded:
 - `campaign.ruin_registry` — ruin refcounts: register on accept, release on battle/turn-in/abandon
 - `campaign.capture_eligible` - capture gates: dungeon built + 3 wins over that monster
 - `campaign.capture_board` - capture clears an 8x8 grid with battle rules, no refill
+- `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
+- `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
 Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
@@ -115,7 +130,7 @@ Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (26 suites: 17 engine + 9 graphics)
+# Run all tests (27 suites: 18 engine + 9 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -125,7 +140,7 @@ opam exec -- dune exec bin/campaign_demo.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 ```
 
-All 26 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+All 27 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -134,14 +149,14 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Ruin capture + companions** | Phase 3 in progress: capture engine landed (grid, states, gates, captives, save); companion party hooks still to land |
+| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap); quest-battle hooks and companion removal still open |
 | **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, ruin registry, save; travel, encounters, income and level-up still untested |
 | **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → quest_battle_complete → turn-in → rewards → map` into one loop (partly landed; still demo-scripted) |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
-| **Medium** | **Companions / Mounts** | Party slots, mount speed/fly, banner effects |
+| **Medium** | **Companions / Mounts** | Companion equip slot + passive bonuses, mount speed/fly, banner effects (party list and battle hooks now exist) |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |
 | **Low** | **Polish** | Key remap, color-blind palettes, UI scale, tooltips, settings menu |
@@ -166,10 +181,11 @@ source assets.
 
 1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
    lifecycle, the visibility rule, the ruin registry and the save round-trip
-   (169 assertions across both campaign suites); travel, encounter triggering, income and level-up are untested
-2. **Companion capture** - companion party hooks not implemented
-   (the capture board, gates, captives and save are done, as is the ruin
-   registry: refcounts, releases, save)
+   (279 assertions across three campaign suites); travel, encounter triggering, income and level-up are untested
+2. **Companion edges** — hooks fire on road battles only (quest battles are
+   demo-scripted); `QUEST_REMOVE_COMPANION` (5 sites in Q3S0.lua) and the
+   leave-a-companion-at-a-location flow are not extracted; the six items and
+   one rune that declare OnStartBattle are unwired; equip slot and UI open
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic
 4. **Spell targeting UI** — grid spells (SFOD, SCON, etc.) need cell selection in graphics
@@ -213,6 +229,8 @@ lib/
   campaign_professions.ml  # 4 classes (skills, spells, XP)
   campaign_monsters.ml     # 60 monsters (capture grids)
   campaign_conversations.ml# 273 dialogues
+  campaign_companions.ml   # 10 companions (text tags, home, hook flag)
+  campaign_companion_hooks.ml # Hand-ported OnStartBattle rule table
   campaign_types.ml        # Shared type aliases
   campaign_save.ml         # JSON save/load incl. live map visibility + awards
 tools/
@@ -221,6 +239,7 @@ tools/
   extract_quests.py        # XML + static Lua scan (QUEST_* calls, rewards, reveals)
   extract_items_professions_monsters.py
   extract_conversations.py
+  extract_companions.py    # Companion XML + OnStartBattle flag
 bin/
   campaign_demo.ml         # Playable loop with save/load
 ```

@@ -31,6 +31,9 @@
 | Global text (2,630 tags — names render, not `[TAG]`) | ✅ |
 | City shops, spells, income | ✅ |
 | Save/Load (JSON round-trip, live map state + awards) | ✅ |
+| Ruin registry (refcounts, hook-bucketed releases, save) | ✅ |
+| Capture (grid, settle, gates, captives, save) | ✅ |
+| Companion hooks (ten `OnStartBattle` bodies, party dispatch, 8-slot cap) | ✅ |
 
 ---
 
@@ -50,7 +53,7 @@
 | ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
 | ~~Ruin mini-game~~ | ✅ `lib/capture.ml`: grid parse, no-refill settle, win/lose, auto-play; gates, captives and save in `campaign.ml` |
 | Quest battle capture flag | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; battle identity within a quest is not modelled, so quest kills count toward eligibility |
-| Companion system | Monster `capture` grids extracted; no party slots, no companion equipping, no companion bonuses |
+| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); companion equipping, `QUEST_REMOVE_COMPANION` (5 sites, Q3S0.lua) and leaving a companion at a location still open |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
 ### 3. Map Progression & Visibility
@@ -100,13 +103,13 @@
 | Gap | Details |
 |-----|---------|
 | Equip logic | `equipment` record exists; no `can_equip` checks, no stat bonuses applied |
-| Item effects | `Item.onGiveDamage` etc. extracted; no hook integration in battle |
+| Item effects | `Item.onGiveDamage` etc. extracted; no hook integration in battle — six items and one rune also declare `OnStartBattle`, unwired alongside |
 | Inventory limits | No capacity, no sorting, no discard |
 
 ### 10. Companion / Mount System
 | Gap | Details |
 |-----|---------|
-| Party slots | `companions: string list` exists; no max size, no swap UI |
+| Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` dedups, ninth refused); no swap/remove UI, no leave-at-location flow |
 | Mount | `mount` equipment slot exists; no speed/fly logic, no banner effects |
 | Capture flow | Engine side done (eligibility, begin/finish, captives, save); no encounter UI wiring a battle win to the capture menu |
 
@@ -149,7 +152,7 @@
 | **1 ✅** | Quest prerequisites + rewards | Unlocks map progression, makes quests meaningful |
 | **2 ✅** | Map visibility + road/ruin unlock | Gives purpose to quests, opens world |
 | **2 ✅** | Global text tables | Names render as strings; blocks every UI otherwise |
-| **3** | Capture engine ✅ + companion system | Core progression loop (capture → party → bonuses) |
+| **3 ✅** | Capture engine ✅ + companion hooks ✅ | Core progression loop (capture → party → bonuses); equip bonuses remain in 8 |
 | **4 ✅** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
 | **5** | Grid spell targeting UI | Required for 11/130 spells; enables AI spell casting |
 | **6** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
@@ -179,7 +182,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`; still to add: grid spell targeting, monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`; still to add: grid spell targeting, monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -205,6 +208,8 @@ lib/
   campaign_professions.ml  # 4 classes (skills, spells, XP)
   campaign_monsters.ml     # 60 monsters (capture grids)
   campaign_conversations.ml# 273 dialogues
+  campaign_companions.ml   # 10 companions (text tags, home, hook flag)
+  campaign_companion_hooks.ml # hand-ported OnStartBattle rule table
   campaign_types.ml        # shared type aliases
   campaign_save.ml         # JSON save/load (live map state + awards)
   text_data.ml             # global TextLibrary, 2,630 tags
@@ -215,6 +220,7 @@ tools/
   extract_quests.py        # XML + static Lua scan
   extract_items_professions_monsters.py
   extract_conversations.py
+  extract_companions.py    # companion XML + OnStartBattle flag
   extract_spell_fx.py
   extract_fx_data.py
   extract_skin_data.py
@@ -230,9 +236,10 @@ bin/
 
 ## Next Action
 
-Phases 1, 2 and 4 are landed (prerequisites, rewards, visibility, text, campaign
-tests). Pick one:
+Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
+campaign tests, capture, companion hooks). Pick one:
 
-- **Companion system** — capture engine landed; the party hooks are the next half of the loop
+- **Companion edges** — wire `OnStartBattle` for the six items and one rune,
+  extract `QUEST_REMOVE_COMPANION`, run hooks on quest battles
 - **Campaign → Battle integration** — one engine loop instead of demo-scripted steps
 - **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build

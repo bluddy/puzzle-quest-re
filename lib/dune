@@ -33,6 +33,8 @@
   campaign_items
   campaign_professions
   campaign_monsters
-  campaign_conversations
-  campaign
-  campaign_save))
+   campaign_conversations
+   campaign_companions
+   campaign_companion_hooks
+   campaign
+   campaign_save))

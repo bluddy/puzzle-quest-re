@@ -35,7 +35,10 @@
     "completed_quests": [],
     "companions": [],
     "awards": [],
-    "current_city": "CBAR"
+    "current_city": "CBAR",
+    "dungeon_built": true,
+    "monster_defeats": [],
+    "captives": []
   },
   "quests": [ { "quest_id": "Q0Q0", "state": 1, "vars": [] } ],
   "map_visibility": {
@@ -49,6 +52,8 @@
       { "from": "CBAR", "to": "WELE" }
     ]
   },
+  "ruin_counts": [],
+  "ruin_done": [],
   "current_location": "CBAR",
   "travel_state": 0
 }
