@@ -148,7 +148,7 @@
 | **2 ✅** | Map visibility + road/ruin unlock | Gives purpose to quests, opens world |
 | **2 ✅** | Global text tables | Names render as strings; blocks every UI otherwise |
 | **3** | Ruin capture + companion system | Core progression loop (capture → party → bonuses) |
-| **4** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
+| **4 ✅** | Campaign tests | The new lifecycle/visibility logic is verified only by demo output |
 | **5** | Grid spell targeting UI | Required for 11/130 spells; enables AI spell casting |
 | **6** | Monster spell AI + difficulty | Makes encounters distinct, scales with level |
 | **7** | World map SDL2 + travel UI | Makes campaign playable visually |
@@ -165,7 +165,7 @@
 1. ~~**Quest prerequisite checks**~~ ✅ wired to `is_quest_available`
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
-4. **Campaign tests** — prerequisites, quest lifecycle, visibility reveal, save round-trip
+4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, save round-trip (78 assertions)
 5. **Ruin capture board** — reuse `Board` + `Battle` with capture grid as initial state; success → add monster to companions
 6. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
 7. **Mount speed** — `mount` slot → modify travel time between nodes
@@ -228,10 +228,9 @@ bin/
 
 ## Next Action
 
-Phases 1 and 2 are landed (prerequisites, rewards, visibility, text). Pick one:
+Phases 1, 2 and 4 are landed (prerequisites, rewards, visibility, text, campaign
+tests). Pick one:
 
-- **Campaign tests** — `test_campaign.ml` over prerequisites, the quest lifecycle,
-  visibility reveals and the save round-trip (the logic is currently proved only
-  by demo output)
 - **Ruin capture + companion system** — the progression loop after quests
+- **Campaign → Battle integration** — one engine loop instead of demo-scripted steps
 - **Grid spell cell selection** — unblocks 11 of 130 spells in the graphics build

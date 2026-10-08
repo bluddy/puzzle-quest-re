@@ -50,6 +50,10 @@ name render as a string. Build, all 24 suites and the demo verified green.
 - **Save/Load:** JSON; now snapshots **live** map visibility (not static defaults),
   restores it into the tables on load, and persists `awards`; quest states stored as
   the same ints the player record uses.
+- **Tests:** `test/test_campaign.ml` — 78 assertions over prerequisites (every
+  extracted condition), the accept → battle → turn-in lifecycle with real rewards,
+  the both-endpoints road rule, and a save/load round-trip that diverges between
+  save and load so a load that ignores the file cannot pass.
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → battle win → turn-in (prints rewards) → shop → income →
   level-up → save → load. Verified green 2026-10-08.
@@ -81,7 +85,7 @@ Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (24 suites: 15 engine + 9 graphics)
+# Run all tests (25 suites: 16 engine + 9 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -91,7 +95,7 @@ opam exec -- dune exec bin/campaign_demo.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 ```
 
-All 24 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+All 25 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -100,7 +104,7 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Campaign tests** | `test_text_data` landed; prerequisites, lifecycle, visibility and save-restore still verified only by demo output |
+| **High** | **Campaign tests (rest)** | `test_campaign` covers prerequisites, lifecycle, visibility, save; travel, encounters, income and level-up still untested |
 | **High** | **Campaign → Battle Integration** | Wire `Encounter → Battle → quest_battle_complete → turn-in → rewards → map` into one loop (partly landed; still demo-scripted) |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
@@ -129,8 +133,9 @@ source assets.
 
 ## Known Gaps
 
-1. **Campaign tests** — prerequisites/lifecycle/visibility/save round-trip untested
-   in `test/` (`test_text_data` covers names only)
+1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the quest
+   lifecycle, the visibility rule and the save round-trip (78 assertions);
+   travel, encounter triggering, income and level-up are untested
 2. **Ruins / companion capture** — mini-game board logic not implemented
 3. **Fog of war / hero marker** — visibility flags exist and save correctly, but there is
    no hero position on the map and no visible-range logic

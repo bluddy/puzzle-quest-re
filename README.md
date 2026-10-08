@@ -124,7 +124,7 @@ ranked, so there is nothing to keep out of the default.
   * `pq_play_gfx.ml`: The same battle in a window, with a mouse and a HUD.
 * `pq_play.ml`: The same battle with you on the hero's turns.
 * `test/`: Automated test suites (`test_board.ml`, `test_ai.ml`, `test_score.ml`, `test_combat.ml`, `test_spell.ml`, `test_battle.ml`, `test_font_data.ml`, `test_skin_data.ml`, `test_gfx_font_layout.ml`, `test_gfx_float_text.ml`, `test_gfx_sound_map.ml`, `test_gfx_anim.ml`, `test_spell_fx.ml`, `test_gfx_fx.ml`,
-`test_text_data.ml`).
+`test_text_data.ml`, `test_campaign.ml`).
 * `docs/`: Comprehensive reverse-engineering documentation:
   * [`REVERSE_ENGINEERING_PLAN.md`](docs/REVERSE_ENGINEERING_PLAN.md): Strategic roadmap and completed milestones.
   * [`GAME_KNOWLEDGE_BASE.md`](docs/GAME_KNOWLEDGE_BASE.md): Mechanics, formulas, attributes, and combat rules.
