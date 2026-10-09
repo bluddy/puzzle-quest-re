@@ -228,17 +228,18 @@ let () =
     p4.Campaign.gold (gold_before + q0t0.Campaign_quests.reward_gold);
   check_int "turn-in pays the xp the script grants"
     p4.Campaign.xp (xp_before + q0t0.Campaign_quests.reward_xp);
-  check "turn-in grants the item"
-    (List.exists (fun (i : Campaign_items.item) -> i.Campaign_items.id = "IBSH")
-       p4.Campaign.inventory);
+  check "turn-in does not grant a callback's item (Q0T0's IBSH is CallbackConvB's)"
+    (not (List.exists (fun (i : Campaign_items.item) -> i.Campaign_items.id = "IBSH")
+            p4.Campaign.inventory));
   check "a second turn-in pays nothing"
     (let p5 = Campaign.quest_turn_in p4 "Q0T0" in
      p5.Campaign.xp = p4.Campaign.xp && state_of p5 "Q0T0" = None);
 
-  (* Rewards that only OnEnd carries: gold, an item, an award (Q1G3) and a
-     companion (Q0Q4). Driven through run_quest_on_end + apply_quest_effect,
-     which is what quest_turn_in does, so a grant landing in the wrong bucket
-     fails here rather than at play time. *)
+  (* Rewards that only OnEnd carries: gold, an item and an award (Q1G3).
+     Grants sitting inside conversation callbacks are not in these buckets
+     any more - they apply when the dialogue fires the scriptcall (see
+     test_callback_effects) - so a grant landing in the wrong bucket fails
+     here rather than at play time. *)
   let effects_of qid =
     let q = quest qid in
     let qi = { Campaign.quest = q; Campaign.state = Campaign.Active 2; Campaign.vars = [] } in
@@ -262,9 +263,8 @@ let () =
 
   let q0q4, e2 = effects_of "Q0Q4" in
   let r2 = apply (fresh ()) e2 in
-  check "Q0Q4 grants a companion the script asked for"
-    (List.exists (fun c -> List.mem c r2.Campaign.companions)
-       q0q4.Campaign_quests.reward_companions);
+  check "Q0Q4's companion moved to CallbackCompanion (not an OnEnd reward)"
+    (q0q4.Campaign_quests.reward_companions = []);
   check "Q0Q4 completes the quest"
     (List.mem "Q0Q4" r2.Campaign.completed_quests);
 

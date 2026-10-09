@@ -422,11 +422,16 @@ check "the Q1Q6 row carries its own primitive (MGUU at index 1, NOCAPTURE)"
    = Some { Campaign_quests.cb_monster_id = "MGUU"; cb_battle_index = 1;
             cb_capture = false; cb_custom = false });
 
-check "an unknown callback name is not a battle"
+check "an unknown callback name does nothing"
   (Campaign.execute_callback ~rng:seed (fresh ()) "Q1Q6" "CallbackNope" = None);
 
-check "a callback outside the battle table is not a battle"
-  (Campaign.execute_callback ~rng:seed (fresh ()) "Q0I2" "CallbackConvB" = None);
+(* Effects without a battle: Q0I2/CallbackConvB's body writes questState = 2
+   and returns a result with no battle attached. *)
+check "a callback outside the battle table still applies its effects"
+  (match Campaign.execute_callback ~rng:seed (active "Q0I2" 1) "Q0I2" "CallbackConvB" with
+   | None -> false
+   | Some r -> r.Campaign.cb_battle = None
+               && List.assoc "Q0I2" r.Campaign.cb_player.active_quests = 2);
 
 (* Both quests have empty battle_actions, so without the override the
    settle falls through to (capture = true, battle_monster) - the quest's
@@ -454,31 +459,39 @@ check "the NOCAPTURE override records nothing (not even the stage's MSCO)"
 let guardian = active "Q0I2" 1 in
 (match Campaign.execute_callback ~rng:seed guardian "Q0I2" "CallbackGuardian" with
  | None -> check "Q0I2/CallbackGuardian fires its battle" false
- | Some (p, b) ->
-   check "the guardian fight is the rat from the cb row"
-     (b.Battle.enemy.name = "[MONSTER_MRAT_NAME]");
-   check "the guardian fight runs to a finish" (Battle.log_of b <> []);
-   check "the settle ran: life follows the fight"
-     (p.Campaign.life = b.Battle.hero.life);
-   let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
-   check "spoils follow the outcome"
-     (p.Campaign.gold = guardian.Campaign.gold + (if won then b.Battle.gold else 0)
-      && p.Campaign.xp = guardian.Campaign.xp + (if won then b.Battle.xp else 0));
-   check "a capturing win records the rat"
-     (Campaign.monster_defeats p "MRAT" = (if won then 1 else 0)));
+ | Some r ->
+   let p = r.Campaign.cb_player in
+   (match r.Campaign.cb_battle with
+    | None -> check "Q0I2/CallbackGuardian fires its battle" false
+    | Some b ->
+      check "the guardian fight is the rat from the cb row"
+        (b.Battle.enemy.name = "[MONSTER_MRAT_NAME]");
+      check "the guardian fight runs to a finish" (Battle.log_of b <> []);
+      check "the settle ran: life follows the fight"
+        (p.Campaign.life = b.Battle.hero.life);
+      let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+      check "spoils follow the outcome"
+        (p.Campaign.gold = guardian.Campaign.gold + (if won then b.Battle.gold else 0)
+         && p.Campaign.xp = guardian.Campaign.xp + (if won then b.Battle.xp else 0));
+      check "a capturing win records the rat"
+        (Campaign.monster_defeats p "MRAT" = (if won then 1 else 0))));
 
 let ambush = active "Q1Q6" 1 in
 (match Campaign.execute_callback ~rng:seed ambush "Q1Q6" "CallbackConvB" with
  | None -> check "Q1Q6/CallbackConvB fires its battle" false
- | Some (p, b) ->
-   check "the callback's own monster fights (MGUU, not the stage's MSCO)"
-     (b.Battle.enemy.name = "[MONSTER_MGUU_NAME]");
-   check "the NOCAPTURE site records no defeat either way"
-     (Campaign.monster_defeats p "MGUU" = 0
-      && Campaign.monster_defeats p "MSCO" = 0);
-   let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
-   check "and OnCompleteAction advances the stage only on a win"
-     (state_of p "Q1Q6" = (if won then Some 2 else Some 1)));
+ | Some r ->
+   let p = r.Campaign.cb_player in
+   (match r.Campaign.cb_battle with
+    | None -> check "Q1Q6/CallbackConvB fires its battle" false
+    | Some b ->
+      check "the callback's own monster fights (MGUU, not the stage's MSCO)"
+        (b.Battle.enemy.name = "[MONSTER_MGUU_NAME]");
+      check "the NOCAPTURE site records no defeat either way"
+        (Campaign.monster_defeats p "MGUU" = 0
+         && Campaign.monster_defeats p "MSCO" = 0);
+      let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+      check "and OnCompleteAction advances the stage only on a win"
+        (state_of p "Q1Q6" = (if won then Some 2 else Some 1))));
 
 (* ------------------------------------------------------------------ *)
 (* Global state cleanup                                                *)

@@ -25,7 +25,8 @@
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
 - **Conversations:** 273 dialogue trees (233 `scriptcall` actions; no choice nodes in the data)
 - **Conversation UI (NEW):** `bin/pq_conv_gfx.exe` — draws the backdrop full-window (dimmed), the current action's aspect-fit portrait and speaker name, word-wrapped dialogue and a skip button; clicks walk the action list; `gfx/conversation_layout.ml` holds 14 assertions over recovered coordinates; `--conv ID --shot [FILE]` photographs one frame as P6 ppm (default conv_shot.ppm). Images resolve from `game/Assets` (`PQ_GAME_ASSETS` overrides) with a `.png`/`.jpg` swap — the shipped backdrops are JPEGs — and missing art falls back to flat colours
-- **Conversation callbacks (NEW):** each `scriptcall` action fires through `Campaign.execute_callback` — the 13 conversation pairs inside the 33-row `callback_battles` table run a headless fight (stage, capture, spoils settle) and banner the outcome; the remaining ~211 grant/flag pairs pass through unported
+- **Conversation callbacks (NEW):** each `scriptcall` action fires through `Campaign.execute_callback` — the body's extracted `callback_effects` apply first (quest-state writes, gold/XP/item/award/companion grants, nested conversations, `QUEST_COMPLETE` ending the quest through OnEnd exactly like a turn-in, `QUEST_MESSAGE` recorded as a data-only `Message`), then the 13 conversation pairs inside the 33-row `callback_battles` table run their headless fight (stage, capture, spoils settle) and banner the outcome; a pair with neither effects nor battle answers `None`. Effects-before-battle matches the Lua body order (Q3D1/CallbackConvB writes state 5 before its fight, so the settle advances from 5)
+- **Conversation triggers (NEW):** the quest engine queues conversation ids in `Campaign.pending_conversations` — `quest_accept` queues the OnBegin intro (first source-order site; Q3Q7's award branch keeps both trees, first wins), `enter_location` queues the arrivals attributed to their `(questState, idLocation)` guard (state `-1` = any stage), callbacks queue nested trees; `campaign_demo` prints the queue and `pq_conv_gfx` prompts it. The 94 `OnExecuteAction` and 50 `OnCompleteAction` sites are extracted but dormant — the location-action flow has no UI yet
 - **Global text (NEW):** `lib/text_data.ml` — 2,630 tags from the fifteen
   `English/*Text.xml` TextLibrary files; `Text_data.text` resolves a tag or returns
   it unchanged. Quest titles, city/item/monster/profession names now render as
@@ -95,8 +96,9 @@
   companion pass; `loadout_of_equipment` folds the nine-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (175), `test/test_capture.ml` (57),
-  `test/test_companion.ml` (110) and `test/test_quest_battle.ml` (74) - 416
+- **Tests:** `test/test_campaign.ml` (186), `test/test_capture.ml` (57),
+  `test/test_companion.ml` (110), `test/test_quest_battle.ml` (87) and
+  `test/test_callback_effects.ml` (24) - 464
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -106,8 +108,10 @@
   round-trips that diverge between save and load so a load that ignores the
   file cannot pass, every companion rule against the extracted data, the
   eight-slot party cap, a road battle whose log opens on the pre-battle
-  hit, and the quest-battle loop (stage picks the fight, per-stage capture
-  flag, loss branches, settle driving the win bookkeeping).
+  hit, the quest-battle loop (stage picks the fight, per-stage capture
+  flag, loss branches, settle driving the win bookkeeping), and the
+  conversation triggers + callback effects (queue fill/drain, state writes,
+  grants, completes, reattribution, effects-before-battle ordering).
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → a real quest battle through `run_quest_battle`
   (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
@@ -151,7 +155,7 @@ Open questions (4): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (29 suites: 19 engine + 10 graphics)
+# Run all tests (30 suites: 20 engine + 10 graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -169,7 +173,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 29 suites pass (exit 0, 2026-10-09). Extractor `--check` modes validate against
+All 30 suites pass (exit 0, 2026-10-09). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -179,7 +183,7 @@ source assets.
 | Priority | Area | Description |
 |----------|------|-------------|
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
-| **High** | **Campaign → Battle Integration** | **Landed for battles:** `execute_callback` + the 33-row `callback_battles` table settle conversation fights (stage, capture, spoils), and `pq_conv_gfx` fires the 13 conversation battle pairs from its scriptcall step behind a Victory/Defeat banner. Open: non-battle callbacks (~211 grant/flag pairs pass through; `CallbackConv*` grants apply at turn-in, not at the dialogue) and in-campaign conversation triggering (`start_conversation` has no caller) |
+| **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Open: the location-action flow (94 OnExecuteAction + 50 OnCompleteAction sites extracted, dormant — no action UI), a message popup for the 18 `QUEST_MESSAGE` sites, and the two callback-site `QUEST_REMOVE_COMPANION` removals |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
@@ -207,12 +211,12 @@ source assets.
 
 ## Known Gaps
 
-1. **Campaign → Battle Integration** — landed for battles: `pq_conv_gfx` walks the actions and hands each `scriptcall` to `execute_callback` (13 conversation battle pairs against the 33-row table), settling stage/capture/spoils behind an outcome banner. Still open: non-battle callbacks (~211 grant/flag pairs pass through; `CallbackConv*` grants apply at turn-in, not at the dialogue) and no in-campaign conversation trigger (`Campaign.start_conversation` is unused — the front end opens a tree with `--conv`).
+1. **Campaign → Battle Integration** — landed: `pq_conv_gfx` walks the actions and hands each `scriptcall` to `execute_callback`, which applies the body's extracted effects first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then runs the 33-row table's fight behind an outcome banner; quest state queues conversations (`pending_conversations`: OnBegin intros, guarded arrivals, nested trees — printed by the demo). Still open: the location-action conversations (94 OnExecuteAction + 50 OnCompleteAction sites extracted, dormant — no action UI), a popup for the 18 `QUEST_MESSAGE` sites, and no UI *opens* a queued tree interactively (`start_conversation` is still unused).
 2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under, and no travel step calls enter_location yet); the rune's `OnStartBattle` waits on the forge's rune state; equip slot and UI open
 3. **Fog of war / visible range** — visibility flags exist and save correctly, and the map window now draws the hero's position (current node, or on the road); still open is visible-*range* logic - recomputing what the hero can see from where they stand - and fog painting
 4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover cursor and valid-target highlighting are cosmetic-open, and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
 5. **Monster spell rosters** — quest and road fights both load the monster's registry `Spell` tags now; mana-aware dynamic selection and any weighting of spell choice beyond each hook's own board reads remain open
-6. **Conversation branching** — wired: `pq_conv_gfx` walks the `talk_*/wait/end/scriptcall` actions with the speaking character's portrait and name (the data ships no choice nodes, so there is nothing to branch on); what remains is opening conversations from quest state
+6. **Conversation branching** — wired: `pq_conv_gfx` walks the `talk_*/wait/end/scriptcall` actions with the speaking character's portrait and name (the data ships no choice nodes, so there is nothing to branch on), and quest state now queues trees (`pending_conversations`: intros, arrivals, nested callback trees); what remains is an interactive UI that opens a queued tree and the location-action flow (execute/complete sites dormant)
 7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
 
@@ -240,10 +244,12 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe
 
 ```
 lib/
-  campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility, execute_callback
+  campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility, execute_callback,
+                             # pending-conversation queue + per-callback effects
   campaign_map.ml          # 20 cities, 40 waypoints, 28 ruins, 93 roads
   campaign_encounters.ml   # 57 encounters (my_level, chance)
-  campaign_quests.ml       # 142 quests + per-quest text + extracted rewards/reveals + callback_battles table
+  campaign_quests.ml       # 142 quests + per-quest text + extracted rewards/reveals + conversations
+                             # + callback_effects + callback_battles table
   campaign_items.ml        # 160 items
   campaign_professions.ml  # 4 classes (skills, spells, XP)
   campaign_monsters.ml     # 60 monsters (capture grids)
@@ -256,13 +262,14 @@ lib/
 tools/
   extract_campaign_map.py
   extract_encounters.py
-  extract_quests.py        # XML + static Lua scan (QUEST_* calls, rewards, reveals, callback battles)
+  extract_quests.py        # XML + static Lua scan (QUEST_* calls, rewards, reveals, conversations,
+                             # per-callback effects, callback battles)
   extract_items_professions_monsters.py
   extract_conversations.py
   extract_companions.py    # Companion XML + OnStartBattle flag
 bin/
   campaign_demo.ml         # Playable loop with save/load
-  pq_conv_gfx.ml           # Conversation panel: backdrop, portrait, dialogue, callback battles
+  pq_conv_gfx.ml           # Conversation panel: backdrop, portrait, dialogue, scriptcall effects + battles
 gfx/
   conversation_layout.ml   # Pure geometry + 14 assertions; --conv --shot
 ```

@@ -42,11 +42,24 @@ unterminated string/comment, or a trailing semicolon in a preceding toplevel
   `Get-ChildItem`. Redirect all output with `*>&1 | Out-File ...` when a
   command's stderr matters (dune writes errors to stderr).
 
+## Windows file locks (learned the hard way)
+
+- **A file can be held by a memory-mapped section** (dune's cache, an
+  editor, a previous failed write). Symptoms: the edit tool fails with
+  `FileSystem.writeFile`, Python `open(path, 'w')` raises
+  `OSError: [Errno 22] Invalid argument`, .NET `WriteAllText` raises
+  "user-mapped section open". Fix: write a sibling `NAME.new` file and
+  `Move-Item -Force` it over the target — rename does not need the
+  target's data handle. `tools/extract_quests.py` already writes its
+  output that way.
+
 ## Project conventions
 
-- No Lua: every Lua callback in the original game is ported to an optional
-  OCaml function (see `Campaign.execute_callback` and the
-  `callback_battles_table` in `lib/campaign_quests.ml`).
+- No Lua: every Lua callback in the original game is ported to OCaml —
+  `Campaign.execute_callback` applies the extracted `callback_effects`
+  (state writes, grants, nested conversations, `QUEST_COMPLETE`) and then
+  runs the body's fight when it has one (`callback_battles_table` in
+  `lib/campaign_quests.ml`).
 - Generated files (`lib/campaign_quests.ml`, `lib/campaign_conversations.ml`,
   etc.) are produced by scripts in `tools/` — edit the generator, not the
   output.

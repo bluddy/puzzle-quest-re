@@ -775,10 +775,34 @@ let apply_quest_effect p qeffect =
           else qid :: p.completed_quests }
   | _ -> p
 
+(* ------------------------------------------------------------------ *)
+(* Pending conversations                                                 *)
+(* ------------------------------------------------------------------ *)
+
+(* Conversation ids the quest engine has queued for the player: OnBegin
+   intros, OnEnterLocation arrivals, OnAbandon epilogues (the shipped data
+   has none, the field exists for completeness), and the nested
+   QUEST_CONVERSATION sites inside conversation callbacks. The UI layer
+   drains them one at a time (campaign_demo prints them; pq_conv_gfx polls).
+   OnExecuteAction / OnCompleteAction sites are extracted too but nothing
+   fires them until the location-action flow has a UI. Stored as ids, not
+   records: resolving the id to conversation data stays with whoever
+   displays it. *)
+let pending_conversations : string list ref = ref []
+
+let queue_conversation (conv_id : string) : unit =
+  pending_conversations := !pending_conversations @ [conv_id]
+
+let take_pending_conversation () : string option =
+  match !pending_conversations with
+  | [] -> None
+  | conv :: rest -> pending_conversations := rest; Some conv
+
 (* A hero arrived at [location]: every active quest gets its OnEnterLocation
    rules evaluated against the arrival, effects applying in active-quest
    order so a later rule sees an earlier removal - the order the engine's
-   single hero would. *)
+   single hero would. Arrival conversations attributed to the same guard
+   (state -1 = any stage) queue alongside the rules. *)
 let enter_location (player: player) (location: string) : player =
   List.fold_left
     (fun p (qid, st) ->
@@ -786,7 +810,12 @@ let enter_location (player: player) (location: string) : player =
       let qi = { quest = q; state = Active st;
                  vars = quest_var_set [] "questState" (string_of_int st) } in
       let _, effects = run_quest_on_enter_location qi location in
-      List.fold_left (fun p' e -> apply_quest_effect p' e) p effects)
+      let p = List.fold_left (fun p' e -> apply_quest_effect p' e) p effects in
+      List.iter
+        (fun (st', loc', conv) ->
+          if (st' = -1 || st' = st) && loc' = location then queue_conversation conv)
+        q.conversations_enter;
+      p)
     player player.active_quests
 
 (* ------------------------------------------------------------------ *)
@@ -794,7 +823,10 @@ let enter_location (player: player) (location: string) : player =
 (* ------------------------------------------------------------------ *)
 
 (* Accept a quest: runs OnBegin (node reveals + ruin registration) and adds
-   it to active_quests at state 1. No-op if the quest isn't available. *)
+   it to active_quests at state 1. The OnBegin intro conversation queues for
+   the UI (first extracted site: an if/else branch like Q3Q7's award check
+   takes the first source-order tree, same convention as the reward
+   fields). No-op if the quest isn't available. *)
 let quest_accept (player: player) (qid: string) : player =
   let q = quest_by_id qid in
   if not (is_quest_available player q) then player
@@ -803,7 +835,12 @@ let quest_accept (player: player) (qid: string) : player =
     let _qi, effects = run_quest_on_begin qi in
     let p = List.fold_left apply_quest_effect player effects in
     if List.exists (fun (id, _) -> id = qid) p.active_quests then p
-    else { p with active_quests = (qid, 1) :: p.active_quests }
+    else begin
+      (match q.conversations_begin with
+       | conv :: _ -> queue_conversation conv
+       | [] -> ());
+      { p with active_quests = (qid, 1) :: p.active_quests }
+    end
 
 (* Resolve the quest's battle at its current stage. On success the stage
    moves to the OnCompleteAction success-branch value when the script sets
@@ -947,7 +984,11 @@ let quest_abandon (player: player) (qid: string) : player =
       let qi = { quest = q; state = Active 1; vars = quest_var_set [] "questState" "1" } in
       let _qi, effects = run_quest_on_abandon qi in
       let p = List.fold_left apply_quest_effect player effects in
-      { p with active_quests = List.filter (fun (id, _) -> id <> qid) p.active_quests }
+      let p = { p with active_quests = List.filter (fun (id, _) -> id <> qid) p.active_quests } in
+      (match q.conversations_abandon with
+       | conv :: _ -> queue_conversation conv
+       | [] -> ());
+      p
 
 (* Complete a road encounter: run the battle and apply loot. Road encounters
    are random travel fights; quest progress is driven by quest_battle_complete
@@ -964,45 +1005,104 @@ let quest_abandon (player: player) (qid: string) : player =
    [callback_battles] below is that table - do not shadow it with a stub:
    a local [fun _ -> None] makes execute_callback silently return None. *)
 
-(* Execute a conversation/message callback by name. Returns the updated player
-   and the battle if a battle was triggered. *)
-let execute_callback ?(rng = Random.int) (player: player) (qid: string) (callback_name: string)
-    : (player * battle) option =
-  match callback_battles (qid, callback_name) with
-  | None -> None
-  | Some cb ->
-    let q = quest_by_id qid in
-    match (try Some (Campaign_monsters.monster_by_id cb.cb_monster_id)
-           with Not_found -> None) with
+(* Apply one extracted callback effect (the [callback_effects] row for this
+   quest+callback). Rewards reuse [apply_quest_effect] so grants run through
+   the same inventory/cap/level-up path as turn-in. [SetQuestState] writes
+   the active quest's stage directly - apply_quest_effect's SetState is a
+   no-op, the lifecycle functions own the stage - and no-ops when the quest
+   is not active (the Lua write happened unconditionally, but a dialogue for
+   a quest the port dropped cannot advance anything). [Complete] ends the
+   quest from dialogue: QUEST_COMPLETE behaves as a turn-in, running OnEnd
+   (inferred: OnEnd is documented "called when a quest has ended", ships no
+   decompiled body, and quest_turn_in already no-ops when not active).
+   [Conversation] queues the next tree; [Message] is recorded data with no
+   message UI yet, so it applies nothing. *)
+let apply_callback_effect (p : player) (qid : string) (e : callback_effect) : player =
+  match e with
+  | SetQuestState n ->
+    (match List.assoc_opt qid p.active_quests with
+     | None -> p
+     | Some _ ->
+       { p with active_quests =
+                  List.map (fun (id, s) -> if id = qid then (id, n) else (id, s))
+                      p.active_quests })
+  | Complete -> quest_turn_in p qid
+  | GiveGold n -> apply_quest_effect p (RewardGold n)
+  | GiveXp n -> apply_quest_effect p (RewardXP n)
+  | GiveItem id -> apply_quest_effect p (RewardItem id)
+  | GiveAward id -> apply_quest_effect p (RewardAward id)
+  | GiveCompanion id -> apply_quest_effect p (RewardCompanion id)
+  | Conversation conv -> queue_conversation conv; p
+  | Message -> p
+
+(* What a conversation/message callback did: the player with its body's
+   effects applied, plus the battle when it triggered one. *)
+type callback_result = {
+  cb_player : player;
+  cb_battle : battle option;
+}
+
+(* Execute a conversation/message callback by name. The extracted body
+   effects apply first (state writes, grants, nested conversations,
+   QUEST_COMPLETE) and the battle - when the callback has one - runs and
+   settles after: that is the order the Lua body runs in, so the stage
+   advance that follows reads the stage the callback left (Q3D1/CallbackConvB
+   sets 5 before its fight; Q1Q6/CallbackConvB has no state write and settles
+   from the stage as before). [None] means the pair has neither effects nor a
+   battle - an unknown name, or a body only doing bookkeeping the port skips
+   (QUEST_UPDATE_MAP, other Lua locals). *)
+let execute_callback ?(rng = Random.int) (player: player) (qid: string)
+    (callback_name: string) : callback_result option =
+  let q_opt = (try Some (quest_by_id qid) with Not_found -> None) in
+  let effects : callback_effect list option =
+    match q_opt with
     | None -> None
-    | Some monster ->
-      let hero = player_to_combatant player in
-      let enemy = monster_to_combatant monster player.level in
-      let hero_spells =
-        (match List.nth_opt q.battles cb.cb_battle_index with
-         | Some (_, spells) -> spells
-         | None -> []) @ player.known_spells
-      in
-      let battle =
-        Battle.run
-          (open_battle ~rng
-             ~rules:(rules_for_battle ~player ~task_level:monster.level_base)
-             ~hero_spells:(spells_of_ids hero_spells)
-             ~enemy_spells:(spells_of_ids monster.spells)
-             ~hero_items:(loadout_of_equipment player.equipment)
-             ~hero ~enemy
-             ~enemy_tags:(monster_type_tags monster)
-             ~companions:player.companions ())
-      in
-      let won = battle.enemy.is_dead && not battle.hero.is_dead in
-      (* The defeat record is the callback's own primitive: cb_capture says
-         whether this site captures (Q1Q6/CallbackConvB does not) and
-         cb_monster_id the monster the callback called - the stage's
-         battle_actions describe the location fights, not this one. *)
-      let p = quest_battle_settle
-          ~capture:cb.cb_capture ~monster:cb.cb_monster_id
-          player qid won battle in
-      Some (p, battle)
+    | Some q -> List.assoc_opt callback_name q.callback_effects
+  in
+  match effects, callback_battles (qid, callback_name) with
+  | None, None -> None
+  | _, cbrow ->
+    let p =
+      match effects with
+      | None -> player
+      | Some effs ->
+        List.fold_left (fun acc e -> apply_callback_effect acc qid e) player effs
+    in
+    match cbrow with
+    | None -> Some { cb_player = p; cb_battle = None }
+    | Some cb ->
+      match (try Some (Campaign_monsters.monster_by_id cb.cb_monster_id)
+             with Not_found -> None) with
+      | None -> Some { cb_player = p; cb_battle = None }
+      | Some monster ->
+        let battles = match q_opt with Some q -> q.battles | None -> [] in
+        let hero = player_to_combatant p in
+        let enemy = monster_to_combatant monster p.level in
+        let hero_spells =
+          (match List.nth_opt battles cb.cb_battle_index with
+           | Some (_, spells) -> spells
+           | None -> []) @ p.known_spells
+        in
+        let battle =
+          Battle.run
+            (open_battle ~rng
+               ~rules:(rules_for_battle ~player ~task_level:monster.level_base)
+               ~hero_spells:(spells_of_ids hero_spells)
+               ~enemy_spells:(spells_of_ids monster.spells)
+               ~hero_items:(loadout_of_equipment p.equipment)
+               ~hero ~enemy
+               ~enemy_tags:(monster_type_tags monster)
+               ~companions:p.companions ())
+        in
+        let won = battle.enemy.is_dead && not battle.hero.is_dead in
+        (* The defeat record is the callback's own primitive: cb_capture says
+           whether this site captures (Q1Q6/CallbackConvB does not) and
+           cb_monster_id the monster the callback called - the stage's
+           battle_actions describe the location fights, not this one. *)
+        let p = quest_battle_settle
+            ~capture:cb.cb_capture ~monster:cb.cb_monster_id
+            p qid won battle in
+        Some { cb_player = p; cb_battle = Some battle }
 
 let complete_encounter (player: player) (enc: encounter) : player =
   let battle = run_encounter_battle player enc in

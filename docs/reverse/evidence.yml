@@ -2139,10 +2139,10 @@ claims:
       run. The extractor records every call site for items, awards and companions
       (a superset on the handful of quests whose branches differ) and the first
       call site in file order for gold and xp, where source order puts the if-branch
-      first. Grants made from conversation callbacks (CallbackConvB/C/DE, where the
-      player is standing in the dialogue) are collected but applied at turn-in
-      rather than at the callback, because no dialogue has been wired to the quest
-      state machine yet.
+      first. Grants made from conversation callbacks are NOT part of these turn-in
+      buckets: they are attributed to the callback (callback_effects) and apply
+      when the dialogue fires the scriptcall, so nothing double-applies (see
+      campaign.conversation_triggers).
     evidence:
       - kind: code
         ref: tools/extract_quests.py
@@ -2154,6 +2154,58 @@ claims:
       Reconciliation in --check keeps the raw and extracted call counts equal (89
       gold, 138 xp, 22 item, 12 award, 11 companion), so nothing is silently
       dropped; what is not recovered is which branch the player would have taken.
+
+  - id: campaign.conversation_triggers
+    title: Conversations fire from quest state, and a callback's body applies when the dialogue runs it
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      QUEST_CONVERSATION sites (274, one per guarded call) are grouped by the hook
+      that runs them: OnBegin (101, queued when quest_accept makes the quest new;
+      an if/else branch like Q3Q7's award check contributes both trees and the
+      first source-order one fires), OnEnterLocation (13, attributed to the nearest
+      questState/idLocation guard - an idLocation-only guard carries state -1,
+      meaning any stage - and queued by enter_location), and sites inside
+      conversation callbacks (16, queued when that scriptcall fires). The 94
+      OnExecuteAction and 50 OnCompleteAction sites (the location-action flow)
+      are extracted into conversations_execute / conversations_complete but
+      nothing fires them: that UI does not exist yet. The non-battle half of each
+      callback body is extracted per (quest, callback) as callback_effects -
+      questState writes (first source order), reward calls (all sites, deduped),
+      nested QUEST_CONVERSATION, QUEST_COMPLETE, and QUEST_MESSAGE recorded as a
+      data-only Message - and execute_callback applies them before the body's
+      battle, the order the Lua body runs in (Q3D1/CallbackConvB writes state 5
+      before its fight, so the stage advance reads 5).
+    evidence:
+      - kind: code
+        ref: tools/extract_quests.py
+      - kind: code
+        ref: lib/campaign.ml
+        fn: execute_callback
+      - kind: code
+        ref: lib/campaign.ml
+        fn: quest_accept
+      - kind: code
+        ref: lib/campaign.ml
+        fn: enter_location
+      - kind: test
+        ref: test/test_callback_effects.ml
+    affects: [tools/extract_quests.py, lib/campaign_quests.ml, lib/campaign.ml,
+              bin/campaign_demo.ml, bin/pq_conv_gfx.ml]
+    notes: >
+      QUEST_COMPLETE behaves as a turn-in: the quest leaves active_quests with
+      OnEnd rewards applied. That reading is inferred (status of this entry rests
+      on the trigger wiring, which is direct) - OnEnd is documented "called when a
+      quest has ended", ships no decompiled body, and quest_turn_in no-ops when
+      the quest is not active. The Message effect applies nothing: there is no
+      message popup yet, the 18 sites are counted data. Reward reattribution moved
+      callback-owned grants out of the turn-in buckets (Q0T0's IBSH, Q0Q4's NDKH),
+      pinned by test_campaign and test_callback_effects. Ordering note: an
+      effects-then-settle read matches the Lua causality for the four battle-table
+      callbacks that also write questState (Q0T1/Q0T2 write 1, Q3D1 writes 5,
+      QS00 writes 2).
 
   - id: campaign.ruin_registry
     title: A ruin stays registered until every quest holding it has released it

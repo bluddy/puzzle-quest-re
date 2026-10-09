@@ -6,6 +6,20 @@ open Campaign_map
 open Campaign_encounters
 open Campaign_quests
 
+(* Print and clear conversations the quest engine queued (OnBegin intros,
+   arrivals, nested callback trees) - the UI would open them one at a time. *)
+let drain_conversations (label : string) : unit =
+  let rec collect acc =
+    match Campaign.take_pending_conversation () with
+    | None -> List.rev acc
+    | Some conv_id -> collect (conv_id :: acc)
+  in
+  match collect [] with
+  | [] -> ()
+  | convs ->
+    print_endline (label ^ ":");
+    List.iter (fun c -> print_endline ("  queued conversation: " ^ c)) convs
+
 let () =
   Random.self_init ();
   print_endline "=== Puzzle Quest Campaign Demo ===\n";
@@ -106,6 +120,7 @@ let () =
     print_endline ("Quest: " ^ Campaign_quests.quest_name q ^ " (" ^ q.id ^ ")");
     let pq0 = Campaign.quest_accept player5 q.id in
     print_endline ("  accepted: active=" ^ String.concat ", " (List.map fst pq0.Campaign.active_quests));
+    drain_conversations "  conversations queued at accept";
     if q.Campaign_quests.reveal_on_begin <> [] then
       List.iter (fun n -> print_endline ("  revealed at accept: " ^ n ^ " visible=" ^ string_of_bool (Campaign.node_visible n)))
         q.Campaign_quests.reveal_on_begin;
@@ -151,7 +166,8 @@ let () =
      print_endline ("Battle quest: " ^ Campaign_quests.quest_name bq
                     ^ " (" ^ bq.Campaign_quests.id
                     ^ ", offered at " ^ bq.Campaign_quests.avail_location ^ ")");
-     let b0 = Campaign.quest_accept player5 bq.Campaign_quests.id in
+      let b0 = Campaign.quest_accept player5 bq.Campaign_quests.id in
+      drain_conversations "  conversations queued at accept";
      (match Campaign.run_quest_battle b0 bq.Campaign_quests.id with
       | None -> print_endline "  no battle ran at stage 1"
       | Some (b1, b) ->

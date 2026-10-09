@@ -6,10 +6,11 @@
     [scriptcall] action names a quest callback ([scriptcall_object] is the
     quest id, [scriptcall_function] the callback). This front end walks the
     actions on click and hands each scriptcall to [Campaign.execute_callback]:
-    callbacks in the generated battle table run a headless fight, the player
-    settles it (stage, capture record, spoils), and an outcome banner shows
-    the result until clicked; callbacks outside that table (grants, flags)
-    are not ported yet and simply advance.
+    the callback's extracted body effects apply first (quest-state writes,
+    grants, nested conversations), then a battle-table callback runs a
+    headless fight and the player settles it (stage, capture record,
+    spoils); an outcome banner shows the battle until clicked, and
+    conversations the body queued print as prompts.
 
     Missing art falls back to flat colours, so a fresh checkout still runs.
     Run [tools/extract_text_tables.py] first to populate the conversation
@@ -317,9 +318,21 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                 ui.conversation <- None
             end))
 
+(* Conversations the firing callback queued (nested QUEST_CONVERSATION)
+   print as prompts; the overlay would open them next. *)
+let drain_queued () : unit =
+  let rec go () =
+    match take_pending_conversation () with
+    | None -> ()
+    | Some conv_id ->
+      Printf.printf "  queued conversation: %s\n" conv_id;
+      go ()
+  in
+  go ()
+
 (* Run the current action when it is a scriptcall: the quest callback fires
-   once, the conversation moves on, and a battle callback leaves its outcome
-   banner behind. Non-battle callbacks are not ported yet - they just pass. *)
+   once (body effects, then its battle if it has one), the conversation
+   moves on, and any battle outcome banner waits for a click. *)
 let step (ui : ui) (_dt : float) : unit =
   match ui.battle with
   | Some _ -> ()
@@ -334,22 +347,26 @@ let step (ui : ui) (_dt : float) : unit =
                   action.Campaign_conversations.scriptcall_function) with
            | Some obj, Some fn ->
              (match execute_callback ~rng:Random.int ui.player obj fn with
-              | Some (player, battle) ->
-                let won =
-                  battle.Battle.enemy.is_dead
-                  && not battle.Battle.hero.is_dead
-                in
-                ui.player <- player;
-                ui.battle <- Some (player, battle);
-                Printf.printf "  %s: %s in %d turns (life %d, +%d gold, +%d xp) [%s/%s]\n"
-                  (Text_data.text battle.Battle.enemy.name)
-                  (if won then "won" else "lost")
-                  battle.Battle.turns_elapsed player.Campaign.life
-                  (if won then battle.Battle.gold else 0)
-                  (if won then battle.Battle.xp else 0)
-                  obj fn;
-                flush stdout
-              | None -> ())
+              | Some res ->
+                ui.player <- res.cb_player;
+                (match res.cb_battle with
+                 | Some battle ->
+                   let won =
+                     battle.Battle.enemy.is_dead
+                     && not battle.Battle.hero.is_dead
+                   in
+                   ui.battle <- Some (res.cb_player, battle);
+                   Printf.printf "  %s: %s in %d turns (life %d, +%d gold, +%d xp) [%s/%s]\n"
+                     (Text_data.text battle.Battle.enemy.name)
+                     (if won then "won" else "lost")
+                     battle.Battle.turns_elapsed res.cb_player.Campaign.life
+                     (if won then battle.Battle.gold else 0)
+                     (if won then battle.Battle.xp else 0)
+                     obj fn;
+                   flush stdout
+                 | None -> ());
+                drain_queued ()
+              | None -> drain_queued ())
            | _ -> ())
         | _ -> ()))
 

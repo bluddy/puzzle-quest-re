@@ -23,11 +23,29 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     guards (Q0I5's didShrine check) run unconditionally - the same branch
     heuristic as the reward fields, bounded by the engine's no-op on an
     unregistered id.
-  * reward_gold/xp  = first call site in file order; if/else reward branches
-    are not evaluated (source order puts the if-branch first) - see
-    campaign.quest_rewards_conditional
-  * reward_items/awards/companions = all call sites (superset on the few
-    quests whose branches grant different items)
+  * reward_gold/xp  = first call site in file order among the engine hooks;
+    if/else reward branches are not evaluated (source order puts the
+    if-branch first) - see campaign.quest_rewards_conditional
+  * reward_items/awards/companions = all engine-hook call sites (superset on
+    the few quests whose branches grant different items). Reward calls inside
+    conversation/message callbacks are NOT in these turn-in buckets: they are
+    extracted per callback (callback_effects) and apply when the dialogue
+    fires the scriptcall, so nothing double-applies.
+  * conversations_* = QUEST_CONVERSATION sites grouped by the hook that runs
+    them: OnBegin (intro - fired at accept; branches take the first
+    source-order tree), OnAbandon, OnEnterLocation (attributed to the
+    nearest questState/idLocation guard, fired on arrival), OnExecuteAction
+    and OnCompleteAction (the location-action flow, which has no UI yet -
+    extracted but dormant). conversation_callbacks carries the sites inside
+    callbacks (fired when the dialogue runs that scriptcall).
+  * callback_effects = the non-battle half of each callback body, keyed
+    (quest, callback): questState writes (first source order), QUEST_COMPLETE
+    (ends the quest: OnEnd runs as at turn-in), reward calls, nested
+    QUEST_CONVERSATION, and QUEST_MESSAGE(_CALLBACK) recorded as Message -
+    counted but not applied, there is no message UI yet. QUEST_UPDATE_MAP
+    and QUEST_STOP_MOVEMENT are skipped (bookkeeping the port's own state
+    already carries), and other Lua locals (triedNecro, didShrine, ...) are
+    not tracked - their guards are unevaluated anyway.
   * battles/battle_actions/battle_stage_advances/battle_stage_fails = the
     quest-battle loop. Every QUEST_BATTLE / _NOCAPTURE / _CUSTOM call, from
     any hook (OnExecuteAction for location actions, conversation callbacks
@@ -53,6 +71,7 @@ English\\Quests\\X_Text.xml).
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import re
+import os
 import sys
 
 XML_DIR = Path("game/Assets/Assets/Quests")
@@ -183,6 +202,10 @@ CALL_PATTERNS = {
         r'QUEST_ADD_COMPANION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
     'remove_companion': re.compile(
         r'QUEST_REMOVE_COMPANION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
+    'conversation': re.compile(
+        r'QUEST_CONVERSATION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'),
+    'complete': re.compile(r'QUEST_COMPLETE\s*\('),
+    'message': re.compile(r'QUEST_MESSAGE(?:_CALLBACK)?\s*\('),
 }
 # raw counts: the call name and open paren, whatever the arguments look like
 RAW_RE = {k: re.compile(v.pattern.split(r'\s*\(')[0] + r'\s*\(')
@@ -220,6 +243,27 @@ def ruin_done_bucket(hook):
     if hook == 'OnCompleteAction':
         return 'battle'
     return 'end'
+
+
+def conversation_id(path):
+    """Assets\\Conversations\\Conv_X.xml -> Conv_X (the id the conversation
+    table is keyed by)."""
+    name = path.replace('\\', '/').rsplit('/', 1)[-1]
+    if name.lower().endswith('.xml'):
+        name = name[:-4]
+    return name
+
+
+# QUEST_CONVERSATION sites grouped by the engine event that runs their hook.
+# OnExecuteAction / OnCompleteAction are the location-action flow: extracted
+# so the data is ready, but nothing fires them until that UI exists.
+CONV_BUCKETS = {
+    'OnBegin': 'begin',
+    'OnExecuteAction': 'execute',
+    'OnCompleteAction': 'complete',
+    'OnAbandon': 'abandon',
+    'OnEnterLocation': 'enter',
+}
 
 
 # ---------------------------------------------------------------- quest battles
@@ -365,10 +409,18 @@ def analyze_lua(src, qid, stats):
     stage_advances = {}
     stage_fails = {}
     enter_removes = []
+    conv_buckets = {'begin': [], 'execute': [], 'complete': [],
+                    'abandon': [], 'enter': []}
+    conv_enter = []
+    conv_callbacks = {}
+    cb_events = {}
 
     for hook, (start, end) in funcs.items():
         body = nc[start:end]
         body_ns = ns[start:end]
+        # Engine hooks fire from the quest lifecycle; everything else is a
+        # conversation/message callback (or a helper only they call).
+        is_callback = not hook.startswith('On')
         m = CALL_PATTERNS['visibility'].finditer(body)
         for hit in m:
             stats['extracted']['visibility'] += 1
@@ -398,12 +450,18 @@ def analyze_lua(src, qid, stats):
         for hit in CALL_PATTERNS['gold'].finditer(body):
             stats['extracted']['gold'] += 1
             stats['hooks'][('gold', hook)] += 1
-            if gold == 0:
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'gold', int(hit.group(1))))
+            elif gold == 0:
                 gold = int(hit.group(1))
         for hit in CALL_PATTERNS['xp'].finditer(body):
             stats['extracted']['xp'] += 1
             stats['hooks'][('xp', hook)] += 1
-            if xp == 0:
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'xp', int(hit.group(1))))
+            elif xp == 0:
                 xp = int(hit.group(1))
         for hit in CALL_PATTERNS['item'].finditer(body):
             stats['extracted']['item'] += 1
@@ -412,7 +470,11 @@ def analyze_lua(src, qid, stats):
             if target is None:
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
-            items.append(target)
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'item', target))
+            else:
+                items.append(target)
         for hit in CALL_PATTERNS['award'].finditer(body):
             stats['extracted']['award'] += 1
             stats['hooks'][('award', hook)] += 1
@@ -420,7 +482,11 @@ def analyze_lua(src, qid, stats):
             if target is None:
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
-            awards.append(target)
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'award', target))
+            else:
+                awards.append(target)
         for hit in CALL_PATTERNS['companion'].finditer(body):
             stats['extracted']['companion'] += 1
             stats['hooks'][('companion', hook)] += 1
@@ -428,7 +494,71 @@ def analyze_lua(src, qid, stats):
             if target is None:
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
-            companions.append(target)
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'companion', target))
+            else:
+                companions.append(target)
+        # QUEST_CONVERSATION: the hook that runs the call opens the tree.
+        for hit in CALL_PATTERNS['conversation'].finditer(body):
+            stats['extracted']['conversation'] += 1
+            stats['hooks'][('conversation', hook)] += 1
+            tok = resolve(hit.group(1), consts)
+            if tok is None:
+                stats['unresolved'].append((qid, hook, hit.group(1)))
+                continue
+            cid = conversation_id(tok)
+            if hook == 'OnEnterLocation':
+                # same nearest-guard attribution as enter_removes: the
+                # questState and idLocation the arrival is tested against.
+                # A site with no questState guard (idLocation-only, e.g.
+                # Q1Q0's "WBHE") fires on arrival at any stage - recorded as
+                # state -1, the runtime's wildcard. Guards on other Lua
+                # locals (doneConversation, ...) are unevaluated anywhere.
+                st = None
+                for g in STATE_EQ.finditer(body[:hit.start()]):
+                    st = int(g.group(1))
+                loc_tok = None
+                for g in IDLOC_EQ.finditer(body[:hit.start()]):
+                    loc_tok = g.group(1)
+                loc = resolve(loc_tok, consts) if loc_tok else None
+                if loc is None:
+                    stats['unresolved'].append((qid, hook, hit.group(1)))
+                    continue
+                conv_enter.append((st if st is not None else -1, loc, cid))
+            elif is_callback:
+                lst = conv_callbacks.setdefault(hook, [])
+                if cid not in lst:
+                    lst.append(cid)
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'conversation', cid))
+            else:
+                bucket = CONV_BUCKETS.get(hook, 'execute')
+                if hook not in CONV_BUCKETS:
+                    stats['conv_other_hooks'].append((qid, hook, cid))
+                if cid not in conv_buckets[bucket]:
+                    conv_buckets[bucket].append(cid)
+        # QUEST_COMPLETE / QUEST_MESSAGE end the quest or pop a dialog from
+        # inside a callback; the hook sites count for reconciliation and the
+        # callback sites become effects (Message applies nothing - no UI).
+        for hit in CALL_PATTERNS['complete'].finditer(body):
+            stats['extracted']['complete'] += 1
+            stats['hooks'][('complete', hook)] += 1
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'complete', None))
+        for hit in CALL_PATTERNS['message'].finditer(body):
+            stats['extracted']['message'] += 1
+            stats['hooks'][('message', hook)] += 1
+            if is_callback:
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'message', None))
+        # questState writes inside callbacks drive the state machine from the
+        # dialogue (first source-order value wins, like the reward fields).
+        if is_callback:
+            for hit in STATE_ASSIGN.finditer(body):
+                cb_events.setdefault(hook, []).append(
+                    (hit.start(), 'state', int(hit.group(1))))
         # QUEST_REMOVE_COMPANION: the OnEnterLocation sites carry the whole
         # rule - the questState and idLocation guards in the surrounding if,
         # the companion id as the argument. The nearest preceding guard of
@@ -489,6 +619,25 @@ def analyze_lua(src, qid, stats):
 
     battle_actions = dedup(battle_actions)
 
+    def finalize_cb(effs):
+        """Ordered effects for one callback: first source-order value wins
+        for state/gold/xp (the reward convention); value-carrying grants
+        dedup preserving order; Message keeps one entry per site."""
+        out, first, seen = [], set(), set()
+        for _, kind, val in sorted(effs, key=lambda t: t[0]):
+            if kind in ('state', 'gold', 'xp'):
+                if kind in first:
+                    continue
+                first.add(kind)
+            elif kind == 'message':
+                pass
+            else:
+                if (kind, val) in seen:
+                    continue
+                seen.add((kind, val))
+            out.append((kind, val))
+        return out
+
     return {
         'reveal_on_begin': dedup(reveals['begin']),
         'reveal_on_end': dedup(reveals['end']),
@@ -505,6 +654,14 @@ def analyze_lua(src, qid, stats):
         'battle_stage_advances': list(stage_advances.items()),
         'battle_stage_fails': list(stage_fails.items()),
         'enter_removes': enter_removes,
+        'conversations_begin': conv_buckets['begin'],
+        'conversations_execute': conv_buckets['execute'],
+        'conversations_complete': conv_buckets['complete'],
+        'conversations_abandon': conv_buckets['abandon'],
+        'conversations_enter': conv_enter,
+        'conversation_callbacks': [(cb, cs) for cb, cs in conv_callbacks.items()],
+        'callback_effects': [(cb, finalize_cb(evts))
+                             for cb, evts in sorted(cb_events.items())],
     }
 
 
@@ -556,6 +713,10 @@ def parse_quest(xml_path, stats):
         'reward_awards': [], 'reward_companions': [],
         'battle_actions': [], 'battle_stage_advances': [],
         'battle_stage_fails': [], 'enter_removes': [],
+        'conversations_begin': [], 'conversations_execute': [],
+        'conversations_complete': [], 'conversations_abandon': [],
+        'conversations_enter': [], 'conversation_callbacks': [],
+        'callback_effects': [],
     }
 
     return {
@@ -638,6 +799,41 @@ def ocaml_state_triples(rows):
                            for st, loc, cid in rows) + "]"
 
 
+def ocaml_effect(kind, val):
+    if kind == 'state':
+        return f'SetQuestState {val}'
+    if kind == 'complete':
+        return 'Complete'
+    if kind == 'gold':
+        return f'GiveGold {val}'
+    if kind == 'xp':
+        return f'GiveXp {val}'
+    if kind == 'message':
+        return 'Message'
+    ctor = {'item': 'GiveItem', 'award': 'GiveAward',
+            'companion': 'GiveCompanion', 'conversation': 'Conversation'}[kind]
+    return f'{ctor} "{ocaml_str(val)}"'
+
+
+def ocaml_callback_effects(pairs):
+    if not pairs:
+        return "[]"
+    parts = ['("%s", [%s])' % (ocaml_str(cb),
+                               "; ".join(ocaml_effect(k, v) for k, v in effs))
+             for cb, effs in pairs]
+    return "[" + "; ".join(parts) + "]"
+
+
+def ocaml_callback_pairs(pairs):
+    """[(callback, [conversation ids])] - the scriptcall sites inside
+    callbacks, ordered, deduped by the extractor."""
+    if not pairs:
+        return "[]"
+    parts = ['("%s", %s)' % (ocaml_str(cb), ocaml_list(convs))
+             for cb, convs in pairs]
+    return "[" + "; ".join(parts) + "]"
+
+
 def ocaml_lua(source):
     if not source:
         return '""'
@@ -653,11 +849,12 @@ def new_stats():
     return {'raw': Counter(), 'extracted': Counter(), 'hooks': Counter(),
             'unresolved': [], 'missing_lua': [],
             'battle_unattributed': [], 'battle_conflicts': [],
-            'remove_elsewhere': []}
+            'remove_elsewhere': [], 'conv_other_hooks': []}
 
 
 def main():
     import argparse
+    from collections import Counter
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--output", default="lib/campaign_quests.ml")
@@ -689,6 +886,29 @@ def main():
               f"{len(stats['remove_elsewhere'])} in other hooks")
         for row in stats['remove_elsewhere']:
             print(f"  elsewhere: {row}")
+        n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
+                  for b in ('begin', 'abandon', 'execute', 'complete')}
+        n_conv_enter = sum(len(q["conversations_enter"]) for q in quests)
+        n_conv_cb = sum(len(v) for q in quests for _, v in q["conversation_callbacks"])
+        print(f"conversations: begin={n_conv['begin']} "
+              f"abandon={n_conv['abandon']} enter={n_conv_enter} "
+              f"callbacks={n_conv_cb} (dormant: execute={n_conv['execute']} "
+              f"complete={n_conv['complete']})")
+        if stats['conv_other_hooks']:
+            print(f"conversation sites in other hooks -> execute "
+                  f"({len(stats['conv_other_hooks'])}):")
+            for row in stats['conv_other_hooks']:
+                print(f"  {row}")
+        eff_kinds = Counter()
+        n_eff = 0
+        for q in quests:
+            for _, effs in q["callback_effects"]:
+                n_eff += 1
+                for k, _ in effs:
+                    eff_kinds[k] += 1
+        print(f"callback effects: {n_eff} callbacks, "
+              + (", ".join(f"{k}={n}" for k, n in sorted(eff_kinds.items()))
+                 or "none"))
         n_battles = sum(len(q["battles"]) for q in quests)
         n_actions = sum(len(q["battle_actions"]) for q in quests)
         n_adv = sum(len(q["battle_stage_advances"]) for q in quests)
@@ -730,6 +950,15 @@ def main():
                       f"adv={q['battle_stage_advances']} fail={q['battle_stage_fails']}")
             if q['enter_removes']:
                 print(f"    enter_removes={q['enter_removes']}")
+            if (q['conversations_begin'] or q['conversations_abandon']
+                    or q['conversations_enter'] or q['conversation_callbacks']
+                    or q['callback_effects']):
+                print(f"    conv: begin={q['conversations_begin']} "
+                      f"abandon={q['conversations_abandon']} "
+                      f"enter={q['conversations_enter']} "
+                      f"cb={q['conversation_callbacks']}")
+                for cb, effs in q['callback_effects']:
+                    print(f"    {cb}: {effs}")
             if q['texts']:
                 for tag, txt in list(q['texts'].items())[:2]:
                     print(f"    {tag}: {txt[:60]}")
@@ -786,6 +1015,22 @@ def main():
 
     lines.append("(* Generated by tools/extract_quests.py — do not edit *)")
     lines.append("")
+    # The non-battle half of a conversation/message callback body: what runs
+    # when the dialogue fires that scriptcall (the battle half lives in
+    # callback_battle). Renamed SetQuestState to stay clear of Campaign's
+    # quest_effect.SetState; Message records a QUEST_MESSAGE(_CALLBACK)
+    # site - counted, not applied, there is no message UI yet.
+    lines.append("type callback_effect =")
+    lines.append("  | SetQuestState of int")
+    lines.append("  | Complete")
+    lines.append("  | GiveGold of int")
+    lines.append("  | GiveXp of int")
+    lines.append("  | GiveItem of string")
+    lines.append("  | GiveAward of string")
+    lines.append("  | GiveCompanion of string")
+    lines.append("  | Conversation of string")
+    lines.append("  | Message")
+    lines.append("")
     lines.append("type quest = {")
     lines.append("  id: string;")
     lines.append("  name_text: string;")
@@ -833,6 +1078,13 @@ def main():
     lines.append("  reward_items: string list;")
     lines.append("  reward_awards: string list;")
     lines.append("  reward_companions: string list;")
+    lines.append("  conversations_begin: string list;")
+    lines.append("  conversations_execute: string list;")
+    lines.append("  conversations_complete: string list;")
+    lines.append("  conversations_abandon: string list;")
+    lines.append("  conversations_enter: (int * string * string) list;")
+    lines.append("  conversation_callbacks: (string * string list) list;")
+    lines.append("  callback_effects: (string * callback_effect list) list;")
     lines.append("}")
     lines.append("")
 
@@ -888,6 +1140,13 @@ def main():
         lines.append(f'    reward_items = {ocaml_list(q["reward_items"])};')
         lines.append(f'    reward_awards = {ocaml_list(q["reward_awards"])};')
         lines.append(f'    reward_companions = {ocaml_list(q["reward_companions"])};')
+        lines.append(f'    conversations_begin = {ocaml_list(q["conversations_begin"])};')
+        lines.append(f'    conversations_execute = {ocaml_list(q["conversations_execute"])};')
+        lines.append(f'    conversations_complete = {ocaml_list(q["conversations_complete"])};')
+        lines.append(f'    conversations_abandon = {ocaml_list(q["conversations_abandon"])};')
+        lines.append(f'    conversations_enter = {ocaml_state_triples(q["conversations_enter"])};')
+        lines.append(f'    conversation_callbacks = {ocaml_callback_pairs(q["conversation_callbacks"])};')
+        lines.append(f'    callback_effects = {ocaml_callback_effects(q["callback_effects"])};')
         lines.append("  };")
     lines.append("]")
     lines.append("")
@@ -941,8 +1200,13 @@ def main():
     lines.append("  try Some (List.assoc key callback_battles_table) with Not_found -> None")
     lines.append("")
 
-    Path(args.output).write_text("\n".join(lines), encoding="utf-8", newline="\n")
-    print(f"Wrote {args.output}")
+    # Write via temp+rename: a plain truncate fails on Windows when another
+    # process (dune's cache, an editor) holds a mapping of the output file.
+    out = Path(args.output)
+    tmp = out.with_name(out.name + ".new")
+    tmp.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    os.replace(tmp, out)
+    print(f"Wrote {out}")
 
 
 if __name__ == "__main__":
