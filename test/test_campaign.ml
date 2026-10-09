@@ -894,7 +894,7 @@ let () =
      | Some c -> List.hd c.Conversation.lines = { Conversation.speaker = "Queen Gwendholyn"; text = "I have another message for you to deliver." }
      | None -> false);
   check "a non-existent conversation returns None"
-    (Conversation.find convs "NONEXISTENT" = None);
+    (Conversation.find convs "NONEXISTENT" = None)
 
 let () =
   if !failures > 0 then begin
@@ -902,3 +902,4 @@ let () =
     exit 1
   end;
   print_endline "all campaign tests passed"
+

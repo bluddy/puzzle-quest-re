@@ -49,3 +49,7 @@
 (executable
  (name pq_map_gfx)
  (libraries puzzle_quest_lib pq_gfx tsdl))
+
+(env
+  (dev
+    (flags (:standard -warn-error -A -w -30))))
