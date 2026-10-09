@@ -178,7 +178,6 @@ source assets.
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
 | **High** | **Campaign tests (rest)** | Landed: travel primitives, encounter appearance, income and level-up now tested (159 assertions in test_campaign); the travel journey step awaits the world map |
 | **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
-| **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
@@ -186,6 +185,7 @@ source assets.
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |
 | **Low** | **Polish** | Key remap, color-blind palettes, UI scale, tooltips, settings menu |
+| **Optional** | **AI Enhancements** | *Beyond 1.0:* cascade planning, strategic gem evaluation, spell priority reordering — the original AI only scores immediate swaps via probe window and uses spell list order + hook returns |
 
 ---
 
