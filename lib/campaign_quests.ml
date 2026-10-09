@@ -2711,7 +2711,7 @@ let quests = [
     battle_spells = [];
     battles = [("MKNI", []); ("MKNI", []); ("MKNI", ["SARC"]); ("MKNI", []); ("MKNI", [])];
     battle_actions = [(1, 0, false); (1, 1, false); (1, 2, false); (1, 3, false); (1, 4, false)];
-    battle_stage_advances = [];
+    battle_stage_advances = [(1, 2)];
     battle_stage_fails = [];
     enter_removes = [];
     reveal_on_begin = [];
@@ -5465,8 +5465,8 @@ let quests = [
     battle_spells = [];
     battles = [("MWIG", []); ("MOGR", []); ("MDGG", [])];
     battle_actions = [(2, 0, true); (3, 2, false); (4, 2, false)];
-    battle_stage_advances = [(2, 3)];
-    battle_stage_fails = [(3, 4)];
+    battle_stage_advances = [(2, 3); (3, 4)];
+    battle_stage_fails = [];
     enter_removes = [];
     reveal_on_begin = [];
     reveal_on_end = ["CDKO"];
@@ -12414,7 +12414,7 @@ let quests = [
     battle_spells = [];
     battles = [("MOLO", [])];
     battle_actions = [(1, 0, true); (2, 0, true)];
-    battle_stage_advances = [];
+    battle_stage_advances = [(1, 2); (2, 2)];
     battle_stage_fails = [];
     enter_removes = [];
     reveal_on_begin = ["WRMO"; "WSFA"; "WBHE"; "WWSK"];
@@ -32264,7 +32264,7 @@ let quests = [
     battle_spells = [];
     battles = [("MZOM", []); ("MWIG", []); ("MDOO", []); ("MARK", [])];
     battle_actions = [(1, 0, true); (2, 1, true); (3, 2, true); (4, 3, true)];
-    battle_stage_advances = [];
+    battle_stage_advances = [(1, 2)];
     battle_stage_fails = [];
     enter_removes = [];
     reveal_on_begin = [];
@@ -33289,8 +33289,8 @@ let quests = [
     battle_spells = [];
     battles = [("MNEC", [])];
     battle_actions = [];
-    battle_stage_advances = [];
-    battle_stage_fails = [(1, 2); (2, 2)];
+    battle_stage_advances = [(1, 2); (2, 2)];
+    battle_stage_fails = [];
     enter_removes = [];
     reveal_on_begin = ["WTIR"; "WIGK"; "WLOB"; "CLBC"; "WSOI"; "WGRW"];
     reveal_on_end = [];
@@ -42273,13 +42273,13 @@ type callback_battle = {
 let callback_battles_table = [
   ("Q0I2", "CallbackGuardian"), { cb_monster_id = "MRAT"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q0Q0", "CallbackAmbush"), { cb_monster_id = "MTHF"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
-  ("Q0Q7", "CallbackAmbush"), { cb_monster_id = "MTHF"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q0Q7", "CallbackAmbush"), { cb_monster_id = "MOGR"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
   ("Q0T1", "CallbackConvA"), { cb_monster_id = "MTUT"; cb_battle_index = 0; cb_capture = true; cb_custom = true; };
   ("Q0T2", "CallbackConvA"), { cb_monster_id = "MKNI"; cb_battle_index = 0; cb_capture = true; cb_custom = true; };
   ("Q1E0", "OnExecuteAction"), { cb_monster_id = "MFEL"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
-  ("Q1Q4", "CallbackMsgA"), { cb_monster_id = "MWLF"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
-  ("Q1Q4", "CallbackMsgB"), { cb_monster_id = "MWLF"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
-  ("Q1Q6", "CallbackConvB"), { cb_monster_id = "MSCO"; cb_battle_index = 1; cb_capture = false; cb_custom = false; };
+  ("Q1Q4", "CallbackMsgA"), { cb_monster_id = "MORC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1Q4", "CallbackMsgB"), { cb_monster_id = "MOGM"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q1Q6", "CallbackConvB"), { cb_monster_id = "MGUU"; cb_battle_index = 1; cb_capture = false; cb_custom = false; };
   ("Q1Q6", "CallbackMsgA"), { cb_monster_id = "MSCO"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q1Q7", "CallbackMsgB"), { cb_monster_id = "MDSP"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q1Q8", "CallbackMsgB"), { cb_monster_id = "MWYV"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
@@ -42296,8 +42296,6 @@ let callback_battles_table = [
   ("Q3E1", "CallbackMsg"), { cb_monster_id = "MDRR"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q3E2", "CallbackMsg"), { cb_monster_id = "MDRB"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q3I3", "CallbackConvB"), { cb_monster_id = "MDOO"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
-  ("Q3Q5", "OnExecuteAction"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
-  ("Q3Q5", "OnExecuteAction"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q3Q5", "OnExecuteAction"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q3Q5", "CallbackConvB"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
   ("Q3Q5", "CallbackConvC"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };

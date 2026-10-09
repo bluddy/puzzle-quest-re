@@ -14,16 +14,6 @@ let hashtbl_append tbl key value =
   with Not_found ->
     Hashtbl.add tbl key [value]
 
-(** Find the next underscore after position [pos]. *)
-let find_underscore_after s pos =
-  let len = String.length s in
-  let rec loop i =
-    if i >= len then len
-    else if s.[i] = '_' then i
-    else loop (i + 1)
-  in
-  if pos >= String.length s then String.length s else loop pos
-
 (** A single line of dialogue. *)
 type line = {
   speaker: string;     (** Character name, from the NAME tag *)
@@ -41,27 +31,28 @@ type t = {
 let load_all : unit -> t list = fun () ->
   let table = Text_data.entries in
   let conv_map = Hashtbl.create 300 in
-  (* First pass: collect character names *)
-  List.iter (fun (tag, text) ->
-    if String.length tag > 10 && String.sub tag 0 9 = "[Conv_" then begin
-      let underscore_pos = find_underscore_after tag 5 in
-      let conv_id = String.sub tag 5 (find_underscore_after tag 5 - 5) in
-      let suffix = String.sub tag (find_underscore_after tag (underscore_pos + 1)) (String.length tag - find_underscore_after tag 5 - 1) in
-      if suffix = "NAME1" then Hashtbl.replace conv_map conv_id text
-      else ()
-    end)
-    table;
   let lines_map = Hashtbl.create 300 in
+  let is_conv tag =
+    String.length tag > 7 && String.sub tag 0 6 = "[Conv_"
+    && tag.[String.length tag - 1] = ']'
+  in
+  let parse tag =
+    (* tag = [Conv_<id>_<suffix>] *)
+    let body = String.sub tag 6 (String.length tag - 7) in
+    match String.index_opt body '_' with
+    | None -> None
+    | Some u ->
+      Some (String.sub body 0 u,
+            String.sub body (u + 1) (String.length body - u - 1))
+  in
   List.iter (fun (tag, text) ->
-    if String.length tag > 9 && String.sub tag 0 9 = "[Conv_" then begin
-      let underscore_pos = find_underscore_after tag 5 in
-      let conv_id = String.sub tag 5 (underscore_pos - 5) in
-      let suffix = String.sub tag (find_underscore_after tag (underscore_pos + 1)) (String.length tag - underscore_pos - 1) in
-      if String.length suffix > 0 && suffix.[0] >= '0' && suffix.[0] <= '9' then begin
-        let line_num = int_of_string suffix in
-        hashtbl_append lines_map conv_id (line_num, text)
-      end
-    end)
+    if is_conv tag then
+      match parse tag with
+      | Some (conv_id, "NAME1") -> Hashtbl.replace conv_map conv_id text
+      | Some (conv_id, suffix) when String.length suffix > 0
+                                    && suffix.[0] >= '0' && suffix.[0] <= '9' ->
+          hashtbl_append lines_map conv_id (int_of_string suffix, text)
+      | _ -> ())
     table;
   (* Build conversation records *)
   let rec build conv_ids acc =

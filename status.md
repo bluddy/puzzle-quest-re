@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Conversation UI implemented — 273 dialogue trees with portraits, backdrops, and branching choices now render via `pq_conv_gfx.exe`. The pure geometry lives in `gfx/conversation_layout.ml` and the panel photographs itself with `--conv --shot`. All 29 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Conversation UI + callback battles landed — `pq_conv_gfx.exe` renders portraits and backdrops from `game/Assets` (override `PQ_GAME_ASSETS`), walks each tree's action list on click, and hands every `scriptcall` action to `Campaign.execute_callback`: the 13 conversation battle pairs run a headless fight behind a Victory/Defeat banner, while grant/flag callbacks pass through unported (conversations ship no choice nodes, so the choice band just advances). The pure geometry lives in `gfx/conversation_layout.ml` and the panel photographs itself with `--conv ID --shot`. All 29 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -23,8 +23,9 @@
 - **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua); road fights load the monster's spell roster and compute their difficulty band from `my_level`
 - **Quests:** 142 quests with state machines, prerequisites, per-quest text, battle rewards
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
-- **Conversations:** 273 dialogue trees with backdrops, portraits, branching
-- **Conversation UI (NEW):** `bin/pq_conv_gfx.exe` — renders portrait, backdrop, dialogue text, and choice buttons; `gfx/conversation_layout.ml` holds 14 assertions over recovered coordinates; `--conv --shot` pixel-checks the panel
+- **Conversations:** 273 dialogue trees (233 `scriptcall` actions; no choice nodes in the data)
+- **Conversation UI (NEW):** `bin/pq_conv_gfx.exe` — draws the backdrop full-window (dimmed), the current action's aspect-fit portrait and speaker name, word-wrapped dialogue and a skip button; clicks walk the action list; `gfx/conversation_layout.ml` holds 14 assertions over recovered coordinates; `--conv ID --shot [FILE]` photographs one frame as P6 ppm (default conv_shot.ppm). Images resolve from `game/Assets` (`PQ_GAME_ASSETS` overrides) with a `.png`/`.jpg` swap — the shipped backdrops are JPEGs — and missing art falls back to flat colours
+- **Conversation callbacks (NEW):** each `scriptcall` action fires through `Campaign.execute_callback` — the 13 conversation pairs inside the 33-row `callback_battles` table run a headless fight (stage, capture, spoils settle) and banner the outcome; the remaining ~211 grant/flag pairs pass through unported
 - **Global text (NEW):** `lib/text_data.ml` — 2,630 tags from the fifteen
   `English/*Text.xml` TextLibrary files; `Text_data.text` resolves a tag or returns
   it unchanged. Quest titles, city/item/monster/profession names now render as
@@ -162,7 +163,9 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 # World map (SDL2/OpenGL); --city opens the start city's panel
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 
-# Conversation panel (SDL2/OpenGL); --conv --shot pixel-checks the panel
+# Conversation panel (SDL2/OpenGL); --conv picks the tree (Conv_ prefix optional),
+# --shot [FILE] writes one frame as P6 ppm (default conv_shot.ppm) and exits;
+# portraits/backdrops load from game/Assets (PQ_GAME_ASSETS overrides)
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
@@ -176,7 +179,7 @@ source assets.
 | Priority | Area | Description |
 |----------|------|-------------|
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
-| **High** | **Campaign → Battle Integration** | **Partially landed:** `execute_callback` in `campaign.ml` and `callback_battles` table in `campaign_quests.ml` wire 45 conversation callbacks to battles; 36 guardless `QUEST_BATTLE` calls from conversation callbacks (Q3Q5, QU02, etc.) now have engine support but callback wiring to conversation choices pending |
+| **High** | **Campaign → Battle Integration** | **Landed for battles:** `execute_callback` + the 33-row `callback_battles` table settle conversation fights (stage, capture, spoils), and `pq_conv_gfx` fires the 13 conversation battle pairs from its scriptcall step behind a Victory/Defeat banner. Open: non-battle callbacks (~211 grant/flag pairs pass through; `CallbackConv*` grants apply at turn-in, not at the dialogue) and in-campaign conversation triggering (`start_conversation` has no caller) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
@@ -204,12 +207,12 @@ source assets.
 
 ## Known Gaps
 
-1. **Campaign → Battle Integration** — `execute_callback` and `callback_battles` table land the engine support for 45 conversation callbacks; wiring conversation choice buttons to `execute_callback` is the remaining step for the 36 guardless `QUEST_BATTLE` calls (Q3Q5, QU02, etc.).
+1. **Campaign → Battle Integration** — landed for battles: `pq_conv_gfx` walks the actions and hands each `scriptcall` to `execute_callback` (13 conversation battle pairs against the 33-row table), settling stage/capture/spoils behind an outcome banner. Still open: non-battle callbacks (~211 grant/flag pairs pass through; `CallbackConv*` grants apply at turn-in, not at the dialogue) and no in-campaign conversation trigger (`Campaign.start_conversation` is unused — the front end opens a tree with `--conv`).
 2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under, and no travel step calls enter_location yet); the rune's `OnStartBattle` waits on the forge's rune state; equip slot and UI open
 3. **Fog of war / visible range** — visibility flags exist and save correctly, and the map window now draws the hero's position (current node, or on the road); still open is visible-*range* logic - recomputing what the hero can see from where they stand - and fog painting
 4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover cursor and valid-target highlighting are cosmetic-open, and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
 5. **Monster spell rosters** — quest and road fights both load the monster's registry `Spell` tags now; mana-aware dynamic selection and any weighting of spell choice beyond each hook's own board reads remain open
-6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`) not wired to dialogue UI
+6. **Conversation branching** — wired: `pq_conv_gfx` walks the `talk_*/wait/end/scriptcall` actions with the speaking character's portrait and name (the data ships no choice nodes, so there is nothing to branch on); what remains is opening conversations from quest state
 7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
 
@@ -259,7 +262,7 @@ tools/
   extract_companions.py    # Companion XML + OnStartBattle flag
 bin/
   campaign_demo.ml         # Playable loop with save/load
-  pq_conv_gfx.ml           # Conversation panel: portrait, backdrop, dialogue, choices
+  pq_conv_gfx.ml           # Conversation panel: backdrop, portrait, dialogue, callback battles
 gfx/
   conversation_layout.ml   # Pure geometry + 14 assertions; --conv --shot
 ```

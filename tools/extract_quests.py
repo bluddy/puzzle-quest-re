@@ -231,6 +231,14 @@ def ruin_done_bucket(hook):
 # multi-stage headers like `questState==3 or questState==4` resolve the way
 # the script means them, and an assignment inside `if (success == 1)` stays
 # on the win side even when a nested if/else splits it (Q1E0).
+#
+# The polarity of the success test matters: `success == 1` opens the win
+# branch and `success == 0` the fail branch (Q3Q5, Q1Q0, Q3Q2, Q0I6, Q0Q7
+# invert it), and an elseif/else that carries no success test of its own
+# runs only when the chain's last success test failed - so after
+# `if (success == 0)` every later branch of that chain is the win side.
+# A frame remembers both the side of the branch currently open and the side
+# of the last success test in its chain to compute that.
 
 BATTLE_CALL = re.compile(
     r'QUEST_BATTLE(\w*)\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*|\d+)\s*,\s*(\d+)')
@@ -238,6 +246,19 @@ STATE_ASSIGN = re.compile(r'questState\s*=\s*(\d+)')
 STATE_EQ = re.compile(r'questState\s*==\s*(\d+)')
 IDLOC_EQ = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
 LUA_KW = re.compile(r'\b(if|then|else|elseif|end|do|function|repeat|until)\b')
+
+
+def success_side(header):
+    """'win' / 'fail' when the header tests success: `success == 1` opens the
+    win branch, `success == 0` the fail branch; None when it does not."""
+    m = re.search(r'success\s*==\s*(\d+)', header)
+    if m is None:
+        return None
+    return 'win' if int(m.group(1)) != 0 else 'fail'
+
+
+def flip_side(side):
+    return 'fail' if side == 'win' else 'win'
 
 
 def scan_battle_branches(body_ns, body_nc, collect_assigns):
@@ -251,8 +272,11 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
         events += [(m.start(), 'assign', m) for m in STATE_ASSIGN.finditer(body_ns)]
     events.sort(key=lambda t: t[0])
 
-    stack = []  # {'stages': [int] | None, 'success': bool,
-                #  'else_seen': bool, 'generic': bool}
+    stack = []  # {'stages': [int] | None, 'side': 'win'|'fail'|None,
+                #  'chain': 'win'|'fail'|None, 'generic': bool}
+                # side is the branch currently open at this frame, chain the
+                # side of the last success test in the frame's if/elseif
+                # chain (later branches run under its negation).
     calls, assigns = [], []
     ei = 0
 
@@ -264,8 +288,8 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
 
     def side():
         for fr in reversed(stack):
-            if not fr['generic'] and fr['success']:
-                return 'fail' if fr['else_seen'] else 'win'
+            if not fr['generic'] and fr['side'] is not None:
+                return fr['side']
         return 'none'
 
     def header_at(pos):
@@ -286,23 +310,30 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
             ei += 1
         if k == 'if':
             header = header_at(pos)
+            s = success_side(header)
             stack.append({
                 'stages': [int(x) for x in STATE_EQ.findall(header)],
-                'success': re.search(r'success\s*==', header) is not None,
-                'else_seen': False,
+                'side': s,
+                'chain': s,
                 'generic': False,
             })
         elif k == 'elseif' and stack and not stack[-1]['generic']:
             header = header_at(pos)
-            stack[-1]['stages'] = [int(x) for x in STATE_EQ.findall(header)]
-            stack[-1]['success'] = re.search(r'success\s*==', header) is not None
-            stack[-1]['else_seen'] = False
+            fr = stack[-1]
+            fr['stages'] = [int(x) for x in STATE_EQ.findall(header)]
+            s = success_side(header)
+            if s is not None:
+                fr['chain'] = s
+                fr['side'] = s
+            else:
+                fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
         elif k == 'else' and stack and not stack[-1]['generic']:
-            stack[-1]['else_seen'] = True
-            stack[-1]['stages'] = []
+            fr = stack[-1]
+            fr['stages'] = []
+            fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
         elif k in ('do', 'function', 'repeat'):
-            stack.append({'stages': None, 'success': False,
-                          'else_seen': False, 'generic': True})
+            stack.append({'stages': None, 'side': None, 'chain': None,
+                          'generic': True})
         elif k in ('end', 'until'):
             if stack:
                 stack.pop()
@@ -707,43 +738,49 @@ def main():
     lines = []
 
     # Callback battles table - conversation/message callbacks that trigger battles
-    # Generated from unattributed QUEST_BATTLE calls in quest scripts
+    # Generated from unattributed QUEST_BATTLE calls in quest scripts.
+    # Rows are (quest, callback, battle_index, capture, custom); the monster
+    # is deliberately not listed - it resolves from the quest's battles
+    # [battle_index], so it cannot drift from the <Battle> elements (the
+    # hand-transcribed column had four wrong ids: Q0Q7/CallbackAmbush,
+    # Q1Q4/CallbackMsgA, Q1Q4/CallbackMsgB, Q1Q6/CallbackConvB). Capture is
+    # the primitive's: QUEST_BATTLE always captures, QUEST_BATTLE_NOCAPTURE
+    # never does (evidence campaign.capture_eligible - the stage's primitive
+    # decides, the third Lua argument disagrees on some sites).
     known_callback_battles = [
-        ("Q0I2", "CallbackGuardian", "MRAT", 0, True, False),
-        ("Q0Q0", "CallbackAmbush", "MTHF", 0, True, False),
-        ("Q0Q7", "CallbackAmbush", "MTHF", 1, True, False),
-        ("Q0T1", "CallbackConvA", "MTUT", 0, True, True),  # CUSTOM
-        ("Q0T2", "CallbackConvA", "MKNI", 0, True, True),  # CUSTOM
-        ("Q1E0", "OnExecuteAction", "MFEL", 1, True, False),
-        ("Q1Q4", "CallbackMsgA", "MWLF", 0, True, False),
-        ("Q1Q4", "CallbackMsgB", "MWLF", 1, True, False),
-        ("Q1Q6", "CallbackConvB", "MSCO", 1, False, False),  # NOCAPTURE
-        ("Q1Q6", "CallbackMsgA", "MSCO", 0, True, False),
-        ("Q1Q7", "CallbackMsgB", "MDSP", 0, True, False),
-        ("Q1Q8", "CallbackMsgB", "MWYV", 0, True, False),
-        ("Q1R0", "CallbackMsgA", "MFGI", 0, True, False),
-        ("Q1R1", "CallbackMsgA", "MWYV", 0, True, False),
-        ("Q1R2", "CallbackMsgA", "MMED", 0, True, False),
-        ("Q1R3", "CallbackMsgA", "MMIN", 0, True, False),
-        ("Q1R3", "CallbackMsgE", "MMIN", 1, True, False),
-        ("Q2M0", "CallbackConvB", "MFEL", 0, True, False),
-        ("Q2Q9", "CallbackConvC", "MMGO", 0, False, False),  # NOCAPTURE
-        ("Q3D0", "CallbackMsg", "MARB", 0, True, False),
-        ("Q3D1", "CallbackConvB", "MDRU", 0, True, False),
-        ("Q3E0", "CallbackMsg", "MDRG", 0, True, False),
-        ("Q3E1", "CallbackMsg", "MDRR", 0, True, False),
-        ("Q3E2", "CallbackMsg", "MDRB", 0, True, False),
-        ("Q3I3", "CallbackConvB", "MDOO", 1, True, False),
-        ("Q3Q5", "OnExecuteAction", "MNEC", 0, True, False),
-        ("Q3Q5", "OnExecuteAction", "MNEC", 0, True, False),
-        ("Q3Q5", "OnExecuteAction", "MNEC", 0, True, False),
-        ("Q3Q5", "CallbackConvB", "MNEC", 0, True, False),
-        ("Q3Q5", "CallbackConvC", "MNEC", 0, True, False),
-        ("Q3Q5", "CallbackConvD", "MNEC", 0, True, False),
-        ("QA01", "CallbackConvB", "MKNI", 0, True, False),
-        ("QA03", "CallbackConvB", "MLIA", 0, True, False),
-        ("QK06", "MsgCallbackA", "MDDW", 0, True, False),
-        ("QS00", "CallbackConvB", "MIMG", 0, True, False),
+        ("Q0I2", "CallbackGuardian", 0, True, False),
+        ("Q0Q0", "CallbackAmbush", 0, True, False),
+        ("Q0Q7", "CallbackAmbush", 1, True, False),
+        ("Q0T1", "CallbackConvA", 0, True, True),  # CUSTOM
+        ("Q0T2", "CallbackConvA", 0, True, True),  # CUSTOM
+        ("Q1E0", "OnExecuteAction", 1, True, False),
+        ("Q1Q4", "CallbackMsgA", 0, True, False),
+        ("Q1Q4", "CallbackMsgB", 1, True, False),
+        ("Q1Q6", "CallbackConvB", 1, False, False),  # NOCAPTURE
+        ("Q1Q6", "CallbackMsgA", 0, True, False),
+        ("Q1Q7", "CallbackMsgB", 0, True, False),
+        ("Q1Q8", "CallbackMsgB", 0, True, False),
+        ("Q1R0", "CallbackMsgA", 0, True, False),
+        ("Q1R1", "CallbackMsgA", 0, True, False),
+        ("Q1R2", "CallbackMsgA", 0, True, False),
+        ("Q1R3", "CallbackMsgA", 0, True, False),
+        ("Q1R3", "CallbackMsgE", 1, True, False),
+        ("Q2M0", "CallbackConvB", 0, True, False),
+        ("Q2Q9", "CallbackConvC", 0, False, False),  # NOCAPTURE
+        ("Q3D0", "CallbackMsg", 0, True, False),
+        ("Q3D1", "CallbackConvB", 0, True, False),
+        ("Q3E0", "CallbackMsg", 0, True, False),
+        ("Q3E1", "CallbackMsg", 0, True, False),
+        ("Q3E2", "CallbackMsg", 0, True, False),
+        ("Q3I3", "CallbackConvB", 1, True, False),
+        ("Q3Q5", "OnExecuteAction", 0, True, False),  # three identical sites
+        ("Q3Q5", "CallbackConvB", 0, True, False),
+        ("Q3Q5", "CallbackConvC", 0, True, False),
+        ("Q3Q5", "CallbackConvD", 0, True, False),
+        ("QA01", "CallbackConvB", 0, True, False),
+        ("QA03", "CallbackConvB", 0, True, False),
+        ("QK06", "MsgCallbackA", 0, True, False),
+        ("QS00", "CallbackConvB", 0, True, False),
         # QS02 has non-literal index (currBattle) - skip for now
     ]
 
@@ -879,7 +916,24 @@ def main():
     lines.append("}")
     lines.append("")
     lines.append("let callback_battles_table = [")
-    for qid, cb_name, monster, idx, capture, custom in known_callback_battles:
+    quest_lookup = {q["id"]: q for q in quests}
+    emitted = {}
+    for qid, cb_name, idx, capture, custom in known_callback_battles:
+        key = (qid, cb_name)
+        row = (idx, capture, custom)
+        if key in emitted:
+            if emitted[key] != row:
+                raise SystemExit(
+                    "callback row conflict: %s/%s %r vs %r"
+                    % (qid, cb_name, emitted[key], row))
+            continue
+        emitted[key] = row
+        battles = quest_lookup[qid]["battles"]
+        if not 0 <= idx < len(battles):
+            raise SystemExit(
+                "callback row out of range: %s/%s index %d, %d battles"
+                % (qid, cb_name, idx, len(battles)))
+        monster = battles[idx][0]
         lines.append(f'  ("{qid}", "{cb_name}"), {{ cb_monster_id = "{monster}"; cb_battle_index = {idx}; cb_capture = {str(capture).lower()}; cb_custom = {str(custom).lower()}; }};')
     lines.append("]")
     lines.append("")

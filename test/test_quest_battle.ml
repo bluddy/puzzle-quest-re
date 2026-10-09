@@ -7,8 +7,9 @@
    the stage table drives which monster and which spells show up (Q0Q7's
    three fights are three different enemies), that a QUEST_BATTLE_NOCAPTURE
    stage records no defeat while its capturing sibling does, that a lost
-   fight follows the script's else-branch state (Q0Q7 sends Dugog to the
-   retry state 4) while a quest with no else entry keeps its stage, that a
+   fight follows the script's fail branch when the extraction found one
+   (Q2M4 retries its lost fight from state 2) while a quest with no fail
+   entry keeps its stage (Q0Q7's Dugog fight stays at 3 on a loss), that a
    conversation-gated stage has no battle to run, and that the win/lose
    transitions match the extracted OnCompleteAction branches (including
    Q1E0, where two win-side values compete and source order decides).
@@ -152,8 +153,8 @@ let q0q7 = quest "Q0Q7" in
 check "Q0Q7: three fights, capture only on the caravan one"
   (q0q7.Campaign_quests.battles = [ ("MWIG", []); ("MOGR", []); ("MDGG", []) ]
    && q0q7.Campaign_quests.battle_actions = [ (2, 0, true); (3, 2, false); (4, 2, false) ]
-   && q0q7.Campaign_quests.battle_stage_advances = [ (2, 3) ]
-   && q0q7.Campaign_quests.battle_stage_fails = [ (3, 4) ]);
+   && q0q7.Campaign_quests.battle_stage_advances = [ (2, 3); (3, 4) ]
+   && q0q7.Campaign_quests.battle_stage_fails = []);
 
 let q1e0 = quest "Q1E0" in
 check "Q1E0: two win-side values, source order decides"
@@ -171,7 +172,24 @@ check "Q3Q2: four fights in a row, four monsters"
      [ ("MZOM", []); ("MWIG", []); ("MDOO", []); ("MARK", []) ]
    && q3q2.Campaign_quests.battle_actions =
      [ (1, 0, true); (2, 1, true); (3, 2, true); (4, 3, true) ]
-   && q3q2.Campaign_quests.battle_stage_advances = []);
+   && q3q2.Campaign_quests.battle_stage_advances = [ (1, 2) ]
+   && q3q2.Campaign_quests.battle_stage_fails = []);
+
+(* The polarity fix touched four more tables; pin each one down. *)
+let q0i6 = quest "Q0I6" in
+check "Q0I6: a win walks 1 -> 2 (the script's all-five gate is not stage-shaped)"
+  (q0i6.Campaign_quests.battle_stage_advances = [ (1, 2) ]
+   && q0i6.Campaign_quests.battle_stage_fails = []);
+
+let q1q0 = quest "Q1Q0" in
+check "Q1Q0: source order keeps the first win-side value (1->2, 2->2)"
+  (q1q0.Campaign_quests.battle_stage_advances = [ (1, 2); (2, 2) ]
+   && q1q0.Campaign_quests.battle_stage_fails = []);
+
+let q3q5 = quest "Q3Q5" in
+check "Q3Q5: a win walks to 2 unless all three kills make the script branch"
+  (q3q5.Campaign_quests.battle_stage_advances = [ (1, 2); (2, 2) ]
+   && q3q5.Campaign_quests.battle_stage_fails = []);
 
 (* ------------------------------------------------------------------ *)
 (* The loop itself: Q0I0 - capture, ruin release, spoils, turn-in      *)
@@ -200,7 +218,7 @@ check "a quest with no active entry has no battle"
      b.Battle.rules.Battle.difficulty 2;
    check_int "and carries the hero's level for the evaluator"
      b.Battle.rules.Battle.hero_level p1.Campaign.level;
-   check "the hero took the loss: no else entry, stage stays 1"
+   check "the hero took the loss: no fail entry, stage stays 1"
      (state_of p2 "Q0I0" = Some 1);
    check "a lost fight records no defeat"
      (Campaign.monster_defeats p2 "MTRO" = 0);
@@ -247,7 +265,7 @@ check "accepting Q0S1 holds ROTO"
  | None -> check "Q0S1 stage 1 has a battle" false
  | Some (s2, b1) ->
    check "the first fight runs to a finish" (Battle.log_of b1 <> []);
-   check "state 1 stays on the loss (no else entry)" (state_of s2 "Q0S1" = Some 1);
+   check "state 1 stays on the loss (no fail entry)" (state_of s2 "Q0S1" = Some 1);
    check "QUEST_BATTLE_NOCAPTURE records no defeat"
      (Campaign.monster_defeats s2 "MOGR" = 0);
    check "and a loss leaves ROTO held"
@@ -297,9 +315,9 @@ let caravan = { (active "Q0Q7" 2) with Campaign.companions = [ "NDKH" ] } in
    check "the Wight's roster is on the enemy side"
      (spell_ids bw.Battle.enemy_spells = [ "SSPF"; "SCTO" ]);
    check "the caravan fight runs to a finish" (Battle.log_of bw <> []);
-   check "losing at stage 2, which has no else entry, keeps the stage"
-     (state_of q2 "Q0Q7" = Some 2
-      && Campaign.monster_defeats q2 "MWIG" = 0);
+    check "losing at stage 2, which has no fail entry, keeps the stage"
+      (state_of q2 "Q0Q7" = Some 2
+       && Campaign.monster_defeats q2 "MWIG" = 0);
    let q3p = Campaign.quest_battle_settle caravan "Q0Q7" true bw in
    check "capturing the caravan counts the Wight's defeat"
      (Campaign.monster_defeats q3p "MWIG" = 1);
@@ -314,20 +332,20 @@ let caravan = { (active "Q0Q7" 2) with Campaign.companions = [ "NDKH" ] } in
          | Battle.TurnStart _ :: _ -> true
          | _ -> false);
       check "the Dugog fight runs too" (Battle.log_of bd <> []);
-      check "losing the Dugog fight takes the retry state 4 (else-branch)"
-        (state_of q4 "Q0Q7" = Some 4);
+      check "losing the Dugog fight keeps its stage (no fail entry)"
+        (state_of q4 "Q0Q7" = Some 3);
       check "QUEST_BATTLE_NOCAPTURE again: Dugog's defeat is not recorded"
         (Campaign.monster_defeats q4 "MDGG" = 0);
       (match Campaign.run_quest_battle ~rng:seed q4 "Q0Q7" with
-       | None -> check "stage 4 has the retry battle" false
+       | None -> check "the retry at state 3 has a battle" false
        | Some (q5, b4) ->
-         check "stage 4 runs the same Dugog fight, no capture"
+         check "the retry runs the same Dugog fight, no capture"
            (b4.Battle.enemy.name = "[MONSTER_MDGG_NAME]");
-         check "stage 4 has no else entry: the loss keeps it"
-           (state_of q5 "Q0Q7" = Some 4);
+         check "losing again keeps the stage too"
+           (state_of q5 "Q0Q7" = Some 3);
          let q5w = Campaign.quest_battle_settle q4 "Q0Q7" true b4 in
-         check "a win at stage 4 walks on to 5"
-           (state_of q5w "Q0Q7" = Some 5);
+         check "a win at state 3 walks to 4 (extracted advance)"
+           (state_of q5w "Q0Q7" = Some 4);
          check "and records no Dugog defeat"
            (Campaign.monster_defeats q5w "MDGG" = 0))));
 
@@ -352,7 +370,13 @@ check "Q2M4 loss at stage 2 -> 2 (stays)"
   (state_of (Campaign.quest_battle_complete (active "Q2M4" 2) "Q2M4" false) "Q2M4"
    = Some 2);
 
-check "Q3Q2 walks 1 -> 2 -> 3 -> 4 -> 5 on four wins (no entries, +1)"
+check "Q0Q7 at state 4: a win walks on to 5, a loss keeps 4"
+  (state_of (Campaign.quest_battle_complete (active "Q0Q7" 4) "Q0Q7" true) "Q0Q7"
+   = Some 5
+   && state_of (Campaign.quest_battle_complete (active "Q0Q7" 4) "Q0Q7" false) "Q0Q7"
+   = Some 4);
+
+check "Q3Q2 walks 1 -> 2 -> 3 -> 4 -> 5 on four wins (entry, then +1)"
   (let p = active "Q3Q2" 1 in
    let p = Campaign.quest_battle_complete p "Q3Q2" true in
    let p = Campaign.quest_battle_complete p "Q3Q2" true in
@@ -361,7 +385,7 @@ check "Q3Q2 walks 1 -> 2 -> 3 -> 4 -> 5 on four wins (no entries, +1)"
    state_of p "Q3Q2" = Some 5);
 check "and stage 5 has no battle left to run"
   (Campaign.run_quest_battle ~rng:seed (active "Q3Q2" 5) "Q3Q2" = None);
-check "a loss with no else entry keeps its stage (Q0I0 stays put)"
+check "a loss with no fail entry keeps its stage (Q0I0 stays put)"
   (state_of (Campaign.quest_battle_complete (active "Q0I0" 1) "Q0I0" false) "Q0I0"
    = Some 1);
 
@@ -382,6 +406,79 @@ check "a loss with no else entry keeps its stage (Q0I0 stays put)"
  | Some (_, b32) ->
    check "stage 2 picks index 1, the second monster"
      (b32.Battle.enemy.name = "[MONSTER_MWIG_NAME]"));
+
+(* ------------------------------------------------------------------ *)
+(* Conversation callbacks that fire battles (execute_callback)         *)
+(* ------------------------------------------------------------------ *)
+
+check "33 callback battle rows, every key unique"
+  (let rows = Campaign_quests.callback_battles_table in
+   let keys = List.map fst rows in
+   List.length rows = 33
+   && List.length keys = List.length (List.sort_uniq compare keys));
+
+check "the Q1Q6 row carries its own primitive (MGUU at index 1, NOCAPTURE)"
+  (Campaign_quests.callback_battles ("Q1Q6", "CallbackConvB")
+   = Some { Campaign_quests.cb_monster_id = "MGUU"; cb_battle_index = 1;
+            cb_capture = false; cb_custom = false });
+
+check "an unknown callback name is not a battle"
+  (Campaign.execute_callback ~rng:seed (fresh ()) "Q1Q6" "CallbackNope" = None);
+
+check "a callback outside the battle table is not a battle"
+  (Campaign.execute_callback ~rng:seed (fresh ()) "Q0I2" "CallbackConvB" = None);
+
+(* Both quests have empty battle_actions, so without the override the
+   settle falls through to (capture = true, battle_monster) - the quest's
+   first monster rather than the callback's own. *)
+check "without the override a Q1Q4 win would record MORC"
+  (let pb = Campaign.quest_battle_complete (active "Q1Q4" 1) "Q1Q4" true in
+   Campaign.monster_defeats pb "MORC" = 1
+   && Campaign.monster_defeats pb "MOGM" = 0);
+
+check "the callback override records its own capturing monster (MOGM)"
+  (let pb = Campaign.quest_battle_complete ~capture:true ~monster:"MOGM"
+       (active "Q1Q4" 1) "Q1Q4" true in
+   Campaign.monster_defeats pb "MOGM" = 1
+   && Campaign.monster_defeats pb "MORC" = 0);
+
+check "the NOCAPTURE override records nothing (not even the stage's MSCO)"
+  (let pb = Campaign.quest_battle_complete ~capture:false ~monster:"MGUU"
+       (active "Q1Q6" 1) "Q1Q6" true in
+   Campaign.monster_defeats pb "MGUU" = 0
+   && Campaign.monster_defeats pb "MSCO" = 0);
+
+(* End to end: the callback runs the fight, settles it, and hands the
+   updated player back. The outcome lands on the fixed die either way, so
+   the win-shaped assertions follow the battle's own verdict. *)
+let guardian = active "Q0I2" 1 in
+(match Campaign.execute_callback ~rng:seed guardian "Q0I2" "CallbackGuardian" with
+ | None -> check "Q0I2/CallbackGuardian fires its battle" false
+ | Some (p, b) ->
+   check "the guardian fight is the rat from the cb row"
+     (b.Battle.enemy.name = "[MONSTER_MRAT_NAME]");
+   check "the guardian fight runs to a finish" (Battle.log_of b <> []);
+   check "the settle ran: life follows the fight"
+     (p.Campaign.life = b.Battle.hero.life);
+   let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+   check "spoils follow the outcome"
+     (p.Campaign.gold = guardian.Campaign.gold + (if won then b.Battle.gold else 0)
+      && p.Campaign.xp = guardian.Campaign.xp + (if won then b.Battle.xp else 0));
+   check "a capturing win records the rat"
+     (Campaign.monster_defeats p "MRAT" = (if won then 1 else 0)));
+
+let ambush = active "Q1Q6" 1 in
+(match Campaign.execute_callback ~rng:seed ambush "Q1Q6" "CallbackConvB" with
+ | None -> check "Q1Q6/CallbackConvB fires its battle" false
+ | Some (p, b) ->
+   check "the callback's own monster fights (MGUU, not the stage's MSCO)"
+     (b.Battle.enemy.name = "[MONSTER_MGUU_NAME]");
+   check "the NOCAPTURE site records no defeat either way"
+     (Campaign.monster_defeats p "MGUU" = 0
+      && Campaign.monster_defeats p "MSCO" = 0);
+   let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+   check "and OnCompleteAction advances the stage only on a win"
+     (state_of p "Q1Q6" = (if won then Some 2 else Some 1)));
 
 (* ------------------------------------------------------------------ *)
 (* Global state cleanup                                                *)

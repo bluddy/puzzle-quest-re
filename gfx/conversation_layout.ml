@@ -78,14 +78,14 @@ let in_rect (r : Layout.rect) (mx : int) (my : int) : bool =
   mx >= r.Layout.x && mx < r.Layout.x + r.Layout.w
   && my >= r.Layout.y && my < r.Layout.y + r.Layout.h
 
-(** Which part of the conversation screen a click lands on. *)
+(** Which part of the conversation screen a click lands on.
+    Choices are checked first: their band (y 440-520) overlaps the
+    portrait and dialogue rects, and a choice button must win there. *)
 let hit (mx : int) (my : int) =
-  if in_rect { Layout.x = 50; y = 150; w = 256; h = 384 } mx my then `Portrait
+  if my >= 440 && my < 520 && mx >= 200 && mx < 800 then
+    `Choice ((my - 440) / 40)
+  else if in_rect { Layout.x = 50; y = 150; w = 256; h = 384 } mx my then `Portrait
   else if in_rect { Layout.x = 330; y = 150; w = 660; h = 300 } mx my then `Dialogue
-  else if my >= 400 && my < 500 then begin
-    if mx >= 200 && mx < 800 then `Choice ((my - 400) / 40)
-    else `Miss
-  end
   else if in_rect { Layout.x = 884; y = 562; w = 128; h = 35 } mx my then `Skip
   else `Miss
 

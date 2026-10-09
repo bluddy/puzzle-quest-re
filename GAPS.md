@@ -45,6 +45,7 @@
 | ~~Prerequisite checks~~ | ✅ `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`, `item`, `notitem`, `award`, `notaward` all wired in `is_quest_available` |
 | ~~Quest rewards~~ | ✅ gold/XP/items/awards/companions from the quest script (`run_quest_on_end`), not the 200/200 default |
 | ~~Quest failure paths~~ | `quest_abandon` runs OnAbandon (releases + state reset) and respects the `abandonable` flag; `run_quest_on_fail` still has no caller — no OnFail hook |
+| ~~Conversation battle callbacks~~ | ✅ the 13 conversation pairs in the 33-row `callback_battles` table fire through `Campaign.execute_callback` from `pq_conv_gfx`'s scriptcall step — headless fight, stage/capture/spoils settle, Victory/Defeat banner |
 | Conversation callbacks | `CallbackConv*` grants (item/award/companion/xp) are applied at turn-in rather than at the dialogue; `QUEST_REMOVE_COMPANION` sites inside callbacks (Q3Q5, QU02) have no arrival event to run under |
 
 ### 2. Ruins & Companion Capture
@@ -80,9 +81,9 @@
 ### 6. Conversation System
 | Gap | Details |
 |-----|---------|
-| Branching dialogues | `Action.type` = `talk_youngmale`/`oldmale`/`youngfemale`/`oldfemale`/`wait`/`end`; no choice nodes |
-| Quest integration | Conversations triggered by quest state; no `Conversation` → `Quest` hooks |
-| Portrait/backdrop rendering | Assets extracted; no SDL2 rendering |
+| Branching dialogues | No choice nodes ship in the data — actions are `talk_youngmale`/`oldmale`/`youngfemale`/`oldfemale`/`wait`/`end`/`scriptcall`/`player`/`npc`, walked in order by `pq_conv_gfx` on click |
+| Quest integration | `Campaign.start_conversation` / `has_conversation` exist but nothing calls them; no quest-state → conversation trigger; the front end opens a tree with `--conv` |
+| Portrait/backdrop rendering | ✅ `pq_conv_gfx` draws the backdrop full-window (dimmed) with the current action's aspect-fit portrait and speaker name; images resolve from `game/Assets` (`PQ_GAME_ASSETS` overrides) with a `.png`/`.jpg` swap since backdrops ship as JPEGs; missing art falls back to flat colours |
 
 ### 7. World Map UI (SDL2)
 | Gap | Details |
@@ -158,7 +159,7 @@
 | **6 ✅** | Monster spell AI + difficulty | Road rosters load; campaign fights compute their band from the levels |
 | **7 ✅** | World map SDL2 + travel UI | `pq_map_gfx`: segments, roads, nodes, hero, click-to-walk, encounter popup |
 | **7 ✅** | City UI (shop, spells, tavern) | The panel buys, tabs and reads rumors on ShopMenu's own geometry |
-| **8** | Conversation branching + portraits | Narrative delivery |
+| **8 ✅** | Conversation UI + portraits | Narrative delivery — `pq_conv_gfx`: action walk, portraits/backdrop, callback-battle banner (choice nodes do not exist in the data) |
 | **8** | Equipment/item effects + mount | Stat progression depth |
 | **9** | Character creation + main menu | Polish for "game" feel |
 | **10** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
@@ -238,7 +239,11 @@ bin/
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
-hooks, companion removal, cell selection, AI aiming, monster rosters). Pick one:
+hooks, companion removal, cell selection, AI aiming, monster rosters), and
+the conversation UI now walks actions, renders portraits/backdrops and fires
+battle callbacks. Pick one:
 
-- **Conversation UI (SDL2)** — dialogue trees with portraits and
-  choice nodes (priority 8)
+- **Conversation triggers + grants** — open conversations from quest state
+  (`start_conversation` has no caller) and apply the non-battle
+  `CallbackConv*` grants at the dialogue instead of at turn-in
+- **Companion equip** — equip slot + passive bonuses (phase 8)
