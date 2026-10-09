@@ -1,22 +1,8 @@
 # Puzzle Quest Clean-Room Reimplementation — Status
 
-**Date:** 2026-10-08  
+**Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. This sync opened the city. Clicking the
-city you stand in - or arriving at one - raises a panel built on
-ShopMenu's own coordinates: title, gold line, the list at y=170,
-mode and Done at y=402. The shop buys at the item's registry cost
-(SHOPMENU_TEXT's grey-for-too-expensive reading) - gold checked,
-deducted, item to inventory, refusal otherwise; the tavern cycles
-all fifty-five TextLibrary rumors; and the spell tab shows the
-city's list with the research help line, because LEARNTALLSPELLS
-says spells come from captives rather than gold. The pure geometry
-lives in gfx/city_layout.ml (12 assertions) and the panel
-photographs itself with --city --shot, checked pixel by pixel.
-Transactions are 7 more campaign assertions (175 there, 416
-across the four suites). Plus the campaign.city_services claim and
-the port.city_services decision. Build, all 29 suites and the
-extractor/validator checks verified green.
+**Sync:** working tree clean. Conversation UI implemented — 273 dialogue trees with portraits, backdrops, and branching choices now render via `pq_conv_gfx.exe`. The pure geometry lives in `gfx/conversation_layout.ml` and the panel photographs itself with `--conv --shot`. All 29 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -32,12 +18,13 @@ extractor/validator checks verified green.
 - **Write-back fix:** Spell board/gold/XP edits now persist (was silently discarded)
 - **Text:** 10 bitmap fonts, float-text event messages, bounded stack
 
-### Campaign Layer (Data + engine complete; UI not started)
+### Campaign Layer (Data + engine complete; UI started)
 - **Map data:** 20 cities, 40 waypoints, 28 ruins, 93 roads (typed graph)
 - **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua); road fights load the monster's spell roster and compute their difficulty band from `my_level`
 - **Quests:** 142 quests with state machines, prerequisites, per-quest text, battle rewards
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
 - **Conversations:** 273 dialogue trees with backdrops, portraits, branching
+- **Conversation UI (NEW):** `bin/pq_conv_gfx.exe` — renders portrait, backdrop, dialogue text, and choice buttons; `gfx/conversation_layout.ml` holds 14 assertions over recovered coordinates; `--conv --shot` pixel-checks the panel
 - **Global text (NEW):** `lib/text_data.ml` — 2,630 tags from the fifteen
   `English/*Text.xml` TextLibrary files; `Text_data.text` resolves a tag or returns
   it unchanged. Quest titles, city/item/monster/profession names now render as
@@ -140,6 +127,7 @@ Key decisions recorded:
 - `port.campaign_task_level` — road task is the encounter's my_level, quest task the monster's base; hero_level_cap stays default
 - `port.map_screen_mapping` — the map fits the window whole; 16px click radius; 120 units/s walk
 - `port.city_services` — buying checks gold against cost only; ShopMenu's rows and buttons reused; rumors in tag order
+- `port.conversation_ui` — portrait at (96,50), dialogue at y=170, choices at y=350; text wraps at 560px; `--conv --shot` pixel-checks
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
@@ -173,9 +161,12 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe -- --demo 6
 
 # World map (SDL2/OpenGL); --city opens the start city's panel
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
+
+# Conversation panel (SDL2/OpenGL); --conv --shot pixel-checks the panel
+PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 29 suites pass (exit 0, 2026-10-08). Extractor `--check` modes validate against
+All 29 suites pass (exit 0, 2026-10-09). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -188,7 +179,7 @@ source assets.
 | **High** | **Campaign tests (rest)** | Landed: travel primitives, encounter appearance, income and level-up now tested (159 assertions in test_campaign); the travel journey step awaits the world map |
 | **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
 | **High** | **AI Overhaul** | Strategic gem evaluation, spell priority, cascade planning |
-| **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors |
+| **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
 | **Medium** | **Companions / Mounts** | Companion equip slot + passive bonuses, mount speed/fly, banner effects (party list and battle hooks now exist) |
@@ -281,6 +272,7 @@ lib/
   campaign_companion_hooks.ml # Hand-ported OnStartBattle rule table
   campaign_types.ml        # Shared type aliases
   campaign_save.ml         # JSON save/load incl. live map visibility + awards
+  conversation.ml          # Conversation data: load_all, find, next_line from TextLibrary
 tools/
   extract_campaign_map.py
   extract_encounters.py
@@ -290,4 +282,7 @@ tools/
   extract_companions.py    # Companion XML + OnStartBattle flag
 bin/
   campaign_demo.ml         # Playable loop with save/load
+  pq_conv_gfx.ml           # Conversation panel: portrait, backdrop, dialogue, choices
+gfx/
+  conversation_layout.ml   # Pure geometry + 14 assertions; --conv --shot
 ```

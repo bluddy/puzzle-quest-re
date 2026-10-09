@@ -845,6 +845,64 @@ let () =
          && desc = Text_data.text "[RUMOR_U000_DESC]")
   | [] -> check "the first is the library's first" false)
 
+check "one call pays exactly one level, whatever the xp holds"
+    ((Campaign.check_level_up { p with Campaign.xp = 9999 }).Campaign.level = 2);
+  check "a second call pays the next one"
+    ((Campaign.check_level_up
+        (Campaign.check_level_up { p with Campaign.xp = 9999 })).Campaign.level
+     = 3)
+
+let () =
+  (* City transactions: the shop charges the registry's cost, takes the gold
+     or refuses, and the tavern's rumors are the TextLibrary's own pairs. *)
+  let p = fresh () in
+  let forsale = List.hd Campaign_items.items in
+  let price = forsale.Campaign_items.cost in
+  let rich = { p with Campaign.gold = price + 5 } in
+  (match Campaign.buy_item rich forsale with
+  | Some bought ->
+      check_int "the gold is paid exactly" bought.Campaign.gold 5;
+      check "the item lands in the inventory"
+        (List.exists
+           (fun (i : Campaign_items.item) ->
+             i.Campaign_items.id = forsale.Campaign_items.id)
+           bought.Campaign.inventory)
+  | None -> check "a rich buyer buys" false);
+  check "one gold piece short is refused"
+    (Campaign.buy_item { p with Campaign.gold = price - 1 } forsale = None);
+  check "and a broke hero's inventory never grows"
+    ((Campaign.buy_item { p with Campaign.gold = 0 } forsale) = None
+     && p.Campaign.inventory = []);
+  check "the tavern has its full fifty-five rumors"
+    (List.length Campaign.rumors = 55);
+  check "every rumor carries both halves"
+    (List.for_all (fun (n, d) -> n <> "" && d <> "") Campaign.rumors);
+  (match Campaign.rumors with
+  | (name, desc) :: _ ->
+      check "the first rumor is the library's first"
+        (name = Text_data.text "[RUMOR_U000_NAME]"
+         && desc = Text_data.text "[RUMOR_U000_DESC]")
+  | [] -> check "the first is the library's first" false)
+
+let () =
+  (* Conversation system: the engine triggers conversations via
+     Lua_QUEST_CONVERSATION with two string args (conversation ID and
+     starting point). The text data is in the TextLibrary under tags
+     like [Conv_Q0I2a_NAME1], [Conv_Q0I2a_0000], etc. *)
+  let convs = Conversation.load_all () in
+  check "the conversation table loads"
+    (List.length convs > 200);
+  check "Q0I2a exists and has the right speaker"
+    (match Conversation.find convs "Q0I2a" with
+     | Some c -> c.Conversation.speaker_name = "Queen Gwendholyn"
+     | None -> false);
+  check "Q0I2a has the expected first line"
+    (match Conversation.find convs "Q0I2a" with
+     | Some c -> List.hd c.Conversation.lines = { Conversation.speaker = "Queen Gwendholyn"; text = "I have another message for you to deliver." }
+     | None -> false);
+  check "a non-existent conversation returns None"
+    (Conversation.find convs "NONEXISTENT" = None)
+
 let () =
   if !failures > 0 then begin
     Printf.printf "\n%d failure(s)\n" !failures;

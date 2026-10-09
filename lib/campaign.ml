@@ -476,14 +476,26 @@ let rumors : (string * string) list =
   List.filter_map
     (fun (k, v) ->
       let n = String.length k in
-      if n > 12 && String.sub k 0 7 = "[RUMOR_"
-                && String.sub k (n - 6) 6 = "_NAME]"
+      if n > 12 && String.sub k 0 7 = "[RUMOR_" && String.sub k (n - 6) 6 = "_NAME]"
       then
         match Text_data.lookup (String.sub k 0 (n - 6) ^ "_DESC]") with
         | Some d -> Some (v, d)
         | None -> None
       else None)
     Text_data.entries
+
+(* ------------------------------------------------------------------ *)
+(* Conversation system                                                   *)
+(* ------------------------------------------------------------------ *)
+
+(* Start a conversation by ID. The conversation runs in the UI layer;
+   this function just validates the ID and returns the conversation data. *)
+let start_conversation (conv_id: string) : Conversation.t option =
+  Conversation.find (Conversation.load_all ()) conv_id
+
+(* Check if a conversation ID exists. *)
+let has_conversation (conv_id: string) : bool =
+  Conversation.find (Conversation.load_all ()) conv_id <> None
 
 (* ------------------------------------------------------------------ *)
 (* Level up *)

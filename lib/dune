@@ -36,5 +36,6 @@
    campaign_conversations
    campaign_companions
    campaign_companion_hooks
+   conversation
    campaign
    campaign_save))

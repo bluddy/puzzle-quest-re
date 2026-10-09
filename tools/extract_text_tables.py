@@ -20,7 +20,8 @@ files and the same 2638 entries:
     English/StandardSpellEffectsText.xml  spell effect school names
     English/GameText.xml              interface strings
     English/RunesText.xml             rune mini-game text
-    English/TutorialsText.xml         tutorial panels
+    English/StandardTutorialsText.xml         tutorial panels
+    English/Conversations/                    conversation dialogues (273 files)
 
 This matters because the per-asset extracts do not carry these strings. A quest's
 own `*_Text.xml` holds its ACTION/FIRST/STEP lines but not `[QUEST_X_NAME]`, and
@@ -86,6 +87,12 @@ def load(language: str) -> tuple[dict[str, str], list[str], int, int]:
     files = sorted(lang_dir.glob("*Text.xml"))
     if not files:
         raise SystemExit(f"error: no *Text.xml under {lang_dir}")
+
+    # Also load conversation texts from the Conversations subdirectory
+    conv_dir = ASSETS / "English" / "Conversations"
+    if conv_dir.is_dir():
+        conv_files = sorted(conv_dir.glob("*_Text.xml"))
+        files.extend(conv_files)
 
     table: dict[str, str] = {}
     entries = 0
