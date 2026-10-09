@@ -10,7 +10,11 @@
     grants, nested conversations), then a battle-table callback runs a
     headless fight and the player settles it (stage, capture record,
     spoils); an outcome banner shows the battle until clicked, and
-    conversations the body queued print as prompts.
+    conversations the body queued print as prompts. A [ShowMessage] effect
+    (the extracted message boxes - arrival, execute, the lone OnEnd) shows
+    as a modal popup over whatever is on screen: title, wrapped text, and
+    an OK click that fires the box's callback through [execute_callback],
+    exactly like the game's message window.
 
     Missing art falls back to flat colours, so a fresh checkout still runs.
     Run [tools/extract_text_tables.py] first to populate the conversation
@@ -48,6 +52,7 @@ type ui = {
   mutable action_index : int;
   mutable player : Campaign.player;
   mutable battle : (Campaign.player * Battle.battle) option;  (* settled callback fight *)
+  mutable message : Campaign.pending_message option;  (* modal box, top of the stack *)
 }
 
 (* Conversation images are referenced by the conversation XML as paths rooted
@@ -284,6 +289,32 @@ let draw_battle_banner (ui : ui) (rs : Gl.run list ref) (gl : Gl.context) : unit
     let hint = "click to continue" in
     text_of ui rs gl (Layout.rgb 240 210 90) hint (centred hint) (box.Layout.y + 164)
 
+(* A queued message box, modal over the conversation (or the empty screen):
+   dim, panel, title, wrapped body, OK hint. Dismissed by any click, which
+   fires its callback if it carries one. *)
+let draw_message (ui : ui) (rs : Gl.run list ref) (gl : Gl.context) : unit =
+  match ui.message with
+  | None -> ()
+  | Some (m : Campaign.pending_message) ->
+    let measure = measure_of ui in
+    let box = { Layout.x = 200; y = 240; w = 600; h = 280 } in
+    solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+      (Layout.rgba 0 0 0 200);
+    solid rs gl box (Layout.rgb 30 30 40);
+    let title = Text_data.text m.Campaign.pmsg_title in
+    text_of ui rs gl name_colour title
+      (box.Layout.x + 16) (box.Layout.y + 16);
+    let body = Text_data.text m.Campaign.pmsg_text in
+    List.iteri (fun i line ->
+        text_of ui rs gl text_color line
+          (box.Layout.x + 16)
+          (box.Layout.y + 56 + (i * line_height)))
+      (List.take 8 (wrap_lines measure (box.Layout.w - 32) body));
+    let ok = "OK - click to continue" in
+    text_of ui rs gl (Layout.rgb 240 210 90) ok
+      (box.Layout.x + ((box.Layout.w - measure ok) / 2))
+      (box.Layout.y + box.Layout.h - 32)
+
 let draw ?(present = true) (ui : ui) : unit =
   let gl = ui.gl in
   Gl.begin_frame ui.gl;
@@ -291,14 +322,53 @@ let draw ?(present = true) (ui : ui) : unit =
   (match ui.conversation with
    | Some _ -> draw_conversation ui rs gl
    | None -> ());
+  draw_message ui rs gl;
   draw_battle_banner ui rs gl;
   Gl.submit ui.gl !rs;
   if present then Gl.present ui.gl
+
+(* Conversations the firing callback queued (nested QUEST_CONVERSATION)
+   print as prompts; the overlay would open them next. *)
+let drain_queued () : unit =
+  let rec go () =
+    match take_pending_conversation () with
+    | None -> ()
+    | Some conv_id ->
+      Printf.printf "  queued conversation: %s\n" conv_id;
+      go ()
+  in
+  go ()
+
+(* Dismiss the modal box: its callback applies through execute_callback -
+   body effects first, then its battle if the table has one - and any
+   conversation the body queued comes up next. *)
+let dismiss_message (ui : ui) (m : Campaign.pending_message) : unit =
+  ui.message <- None;
+  Printf.printf "  message ok: [%s] %s\n"
+    m.Campaign.pmsg_title m.Campaign.pmsg_text;
+  flush stdout;
+  if m.Campaign.pmsg_callback <> "" then begin
+    Printf.printf "  firing %s on %s\n"
+      m.Campaign.pmsg_callback m.Campaign.pmsg_quest;
+    flush stdout;
+    (match execute_callback ~rng:Random.int ui.player m.Campaign.pmsg_quest
+             m.Campaign.pmsg_callback with
+     | Some res ->
+       ui.player <- res.cb_player;
+       (match res.cb_battle with
+        | Some b -> ui.battle <- Some (res.cb_player, b)
+        | None -> ());
+       drain_queued ()
+     | None -> drain_queued ())
+  end
 
 let handle_click (ui : ui) (mx : int) (my : int) : unit =
   match ui.battle with
   | Some _ -> ui.battle <- None
   | None ->
+    (match ui.message with
+     | Some m -> dismiss_message ui m
+     | None ->
     (match ui.conversation with
      | None -> ()
      | Some conv ->
@@ -316,19 +386,7 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
               ui.action_index <- ui.action_index + 1;
               if ui.action_index >= List.length conv.Campaign_conversations.actions then
                 ui.conversation <- None
-            end))
-
-(* Conversations the firing callback queued (nested QUEST_CONVERSATION)
-   print as prompts; the overlay would open them next. *)
-let drain_queued () : unit =
-  let rec go () =
-    match take_pending_conversation () with
-    | None -> ()
-    | Some conv_id ->
-      Printf.printf "  queued conversation: %s\n" conv_id;
-      go ()
-  in
-  go ()
+            end)))
 
 (* Run the current action when it is a scriptcall: the quest callback fires
    once (body effects, then its battle if it has one), the conversation
@@ -337,6 +395,16 @@ let step (ui : ui) (_dt : float) : unit =
   match ui.battle with
   | Some _ -> ()
   | None ->
+    (match ui.message with
+     | Some _ -> ()  (* modal until the click dismisses it *)
+     | None ->
+    (match take_pending_message () with
+     | Some m ->
+       ui.message <- Some m;
+       Printf.printf "  message: [%s] %s\n" m.Campaign.pmsg_title
+         m.Campaign.pmsg_text;
+       flush stdout
+     | None ->
     (match ui.conversation with
      | None -> ()
      | Some conv ->
@@ -368,7 +436,7 @@ let step (ui : ui) (_dt : float) : unit =
                 drain_queued ()
               | None -> drain_queued ())
            | _ -> ())
-        | _ -> ()))
+        | _ -> ()))))
 
 let () =
   Random.self_init ();
@@ -424,7 +492,7 @@ let () =
     { gl; images; fonts; system = Font_layout.metrics_of_tag "font_system";
       conversation; action_index = 0;
       player = Campaign.create_player "TestHero" "PWAR" 0 0;
-      battle = None }
+      battle = None; message = None }
   in
   Printf.printf "renderer: %s\n  GL: %s\n  conversation: %s\n"
     (Gl.renderer_name ()) (Gl.gl_version ())

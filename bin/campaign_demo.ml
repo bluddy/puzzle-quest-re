@@ -14,11 +14,63 @@ let drain_conversations (label : string) : unit =
     | None -> List.rev acc
     | Some conv_id -> collect (conv_id :: acc)
   in
-  match collect [] with
+    match collect [] with
   | [] -> ()
   | convs ->
     print_endline (label ^ ":");
     List.iter (fun c -> print_endline ("  queued conversation: " ^ c)) convs
+
+(* Print and clear messages the quest engine queued (arrival boxes, execute
+   messages, the lone OnEnd box) - the UI pops them one at a time. *)
+let drain_messages (label : string) : unit =
+  let rec collect acc =
+    match Campaign.take_pending_message () with
+    | None -> List.rev acc
+    | Some m -> collect (m :: acc)
+  in
+  match collect [] with
+  | [] -> ()
+  | msgs ->
+    print_endline (label ^ ":");
+    List.iter
+      (fun (m : Campaign.pending_message) ->
+        print_endline
+          ("  queued message: [" ^ m.Campaign.pmsg_title ^ "] "
+           ^ m.Campaign.pmsg_text
+           ^ (if m.Campaign.pmsg_callback <> "" then
+                " (on dismiss: " ^ m.Campaign.pmsg_callback ^ ")"
+              else "")))
+      msgs
+
+(* Show one queued message and, when it carries a callback, fire it the way
+   the UI's OK button would; returns the player the callback left behind. *)
+let pop_one_message (p : Campaign.player) : Campaign.player =
+  match Campaign.take_pending_message () with
+  | None ->
+    print_endline "  (no message queued)";
+    p
+  | Some (m : Campaign.pending_message) ->
+    print_endline ("  message shown: [" ^ m.Campaign.pmsg_title ^ "] "
+                   ^ m.Campaign.pmsg_text);
+    if m.Campaign.pmsg_callback = "" then p
+    else begin
+      print_endline ("  OK fires " ^ m.Campaign.pmsg_callback);
+      match
+        Campaign.execute_callback ~rng:(fun n -> Random.int n) p
+          m.Campaign.pmsg_quest m.Campaign.pmsg_callback
+      with
+      | None -> print_endline "  (callback answered None)"; p
+      | Some r ->
+        print_endline
+          ("  stage now "
+           ^ (match
+                List.assoc_opt m.Campaign.pmsg_quest
+                  r.Campaign.cb_player.Campaign.active_quests
+              with
+              | Some s -> string_of_int s
+              | None -> "done"));
+        r.Campaign.cb_player
+    end
 
 let () =
   Random.self_init ();
@@ -191,6 +243,65 @@ let () =
                          ^ " completed=" ^ String.concat ", " b2.Campaign.completed_quests)
         end
         else print_endline "  fight lost; the quest waits at stage 1"));
+  print_endline "";
+
+  (* Location actions - the city-action flow a driver calls around
+     dialogue/battles: query lists what the hero can do here, execute starts
+     the action (queueing its conversation or message), the callbacks the
+     dialogue fires advance the stage, and complete runs OnCompleteAction's
+     outcome groups. Q0I2 walks the whole chain at CENM; Q0Q0 shows an
+     arrival box at WSIR. *)
+  print_endline "=== Location actions ===";
+  let la0 = { player5 with active_quests = [ ("Q0I2", 1) ] } in
+  let show_actions p loc =
+    match Campaign.query_actions p loc with
+    | [] -> "  actions at " ^ loc ^ ": (none)"
+    | rows ->
+      "  actions at " ^ loc ^ ": "
+      ^ String.concat ", " (List.map (fun (q, tag) -> q ^ " -> " ^ tag) rows)
+  in
+  print_endline (show_actions la0 "CENM");
+  let la1 = Campaign.execute_action la0 "Q0I2" "CENM" in
+  drain_conversations "  execute queued (stage 1)";
+  drain_messages "  execute queued messages";
+  let la1b =
+    match
+      Campaign.execute_callback ~rng:(fun n -> Random.int n) la1 "Q0I2"
+        "CallbackConvB"
+    with
+    | None -> print_endline "  CallbackConvB did not answer"; la1
+    | Some r ->
+      print_endline
+        ("  CallbackConvB: stage="
+         ^ (match List.assoc_opt "Q0I2" r.Campaign.cb_player.Campaign.active_quests with
+            | Some s -> string_of_int s
+            | None -> "done"));
+      r.Campaign.cb_player
+  in
+  print_endline (show_actions la1b "CENM");
+  let la2 = Campaign.execute_action la1b "Q0I2" "CENM" in
+  drain_conversations "  execute queued (stage 2)";
+  let la2b = pop_one_message la2 in
+  drain_messages "  message leftovers";
+  let la3 = Campaign.complete_action ~success:true la2b "Q0I2" "CENM" in
+  drain_conversations "  complete queued (success)";
+  drain_messages "  complete queued messages";
+  (match
+     Campaign.execute_callback ~rng:(fun n -> Random.int n) la3 "Q0I2"
+       "CallbackConvC"
+   with
+   | None -> print_endline "  CallbackConvC did not answer"
+   | Some r ->
+     let p = r.Campaign.cb_player in
+     print_endline
+       ("  CallbackConvC: completed="
+        ^ String.concat ", " p.Campaign.completed_quests
+        ^ " still-active="
+        ^ string_of_int (List.length p.Campaign.active_quests)));
+  let la4 = { player5 with active_quests = [ ("Q0Q0", 1) ] } in
+  let _la5 = Campaign.enter_location la4 "WSIR" in
+  drain_conversations "  arrival queued at WSIR";
+  drain_messages "  arrival messages";
   print_endline "";
 
   (* Test save/load *)

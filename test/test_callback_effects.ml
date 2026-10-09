@@ -5,22 +5,22 @@
    QUEST_COMPLETE, queued conversations) - the non-battle half of
    execute_callback.
 
-   What this file proves that the extraction listings did not: that the
-   queues actually fill and drain (accept queues the intro, an arrival at a
-   guarded location queues its tree, a wildcard-state arrival queues at any
-   stage, firing a callback queues its nested tree), that the effects land
-   on a real player (state 1 -> 2, gold/xp/item/companion grants, a
-   completes quest runs OnEnd exactly like turn-in), that reattribution
-   kept rewards single-owner (Q0T0's IBSH and Q0Q4's NDKH live in their
-   callbacks, not the turn-in buckets), that a Message-only callback is a
-   recorded no-op, and that body effects apply before a battle-table
-   callback settles (Q3D1/CallbackConvB writes questState = 5 first, so the
-   stage advance reads 5).
+    What this file proves that the extraction listings did not: that the
+    queues actually fill and drain (accept queues the intro, an arrival at a
+    guarded location queues its tree, a wildcard-state arrival queues at any
+    stage, firing a callback queues its nested tree or message box), that the
+    effects land on a real player (state 1 -> 2, gold/xp/item/companion
+    grants, a completes quest runs OnEnd exactly like turn-in), that
+    reattribution kept rewards single-owner (Q0T0's IBSH and Q0Q4's NDKH live
+    in their callbacks, not the turn-in buckets), that a message-only
+    callback queues its box without touching the player, and that body
+    effects apply before a battle-table callback settles (Q3D1/CallbackConvB
+    writes questState = 5 first, so the stage advance reads 5).
 
-   The map tables and the ruin registry are global mutable state, so the
-   whole file snapshots them first and restores at the end, like
-   test_campaign and test_quest_battle. The pending-conversation queue is
-   global too: drained at the start and before every assertion on it. *)
+    The map tables and the ruin registry are global mutable state, so the
+    whole file snapshots them first and restores at the end, like
+    test_campaign and test_quest_battle. The pending queues are global too:
+    both drained at the start and before every assertion on them. *)
 
 open Puzzle_quest_lib
 
@@ -67,7 +67,13 @@ let drain () =
     | None -> ()
     | Some _ -> go ()
   in
-  go ()
+  go ();
+  let rec gm () =
+    match Campaign.take_pending_message () with
+    | None -> ()
+    | Some _ -> gm ()
+  in
+  gm ()
 
 let take_one () = Campaign.take_pending_conversation ()
 
@@ -101,12 +107,14 @@ check "Q0I2's callback effects: a state write and a complete"
 
 let q3q1 = quest "Q3Q1" in
 check "Q3Q1's arrivals are attributed to state+location"
-  (q3q1.Campaign_quests.conversations_enter =
-   [ (1, "WETO", "Conv_Q3Q1b"); (2, "CYLA", "Conv_Q3Q1c") ]);
+  (q3q1.Campaign_quests.enter_effects =
+   [ (1, "WETO", [ Campaign_quests.Conversation "Conv_Q3Q1b" ]);
+     (2, "CYLA", [ Campaign_quests.Conversation "Conv_Q3Q1c" ]) ]);
 
 let q0q5 = quest "Q0Q5" in
 check "an arrival with no questState guard carries the wildcard state"
-  (q0q5.Campaign_quests.conversations_enter = [ (-1, "WHPS", "Conv_Q0Q5b") ]);
+  (q0q5.Campaign_quests.enter_effects =
+   [ (-1, "WHPS", [ Campaign_quests.Conversation "Conv_Q0Q5b" ]) ]);
 
 let q3q7 = quest "Q3Q7" in
 check "Q3Q7's branch keeps both trees (first source order fires)"
@@ -116,11 +124,21 @@ check "callback rewards left the turn-in buckets"
   ((quest "Q0T0").Campaign_quests.reward_items = []
    && (quest "Q0Q4").Campaign_quests.reward_companions = []);
 
-check "location-action conversations are extracted but dormant"
-  (List.exists (fun (q : Campaign_quests.quest) -> q.Campaign_quests.conversations_execute <> [])
-      Campaign_quests.quests
-   && List.exists (fun (q : Campaign_quests.quest) -> q.Campaign_quests.conversations_complete <> [])
-      Campaign_quests.quests);
+check "location-action conversations live in the execute/complete groups"
+  (List.exists
+     (fun (q : Campaign_quests.quest) ->
+       List.exists (fun (_, _, effs) ->
+           List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
+             effs)
+         q.Campaign_quests.execute_effects)
+     Campaign_quests.quests
+   && List.exists
+        (fun (q : Campaign_quests.quest) ->
+          List.exists (fun (_, _, _, effs) ->
+              List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
+                effs)
+            q.Campaign_quests.complete_effects)
+        Campaign_quests.quests);
 
 check "no OnAbandon conversations ship (the queue path is completeness only)"
   (List.for_all (fun (q : Campaign_quests.quest) -> q.Campaign_quests.conversations_abandon = [])
@@ -228,11 +246,20 @@ check "Q0Q4/CallbackCompanion grants NDKH and completes the quest"
      List.mem "NDKH" p.Campaign.companions
      && List.mem "Q0Q4" p.Campaign.completed_quests);
 
-check "a Message-only callback applies nothing but still answers"
-  (let before = active "Q0Q6" 1 in
+check "a Message-only callback queues its box and applies nothing else"
+  (drain ();
+   let before = active "Q0Q6" 1 in
    match Campaign.execute_callback ~rng:seed before "Q0Q6" "CallbackConvB" with
    | None -> false
-   | Some r -> r.Campaign.cb_battle = None && r.Campaign.cb_player = before);
+   | Some r ->
+     let msg = Campaign.take_pending_message () in
+     r.Campaign.cb_battle = None && r.Campaign.cb_player = before
+     && (match msg with
+         | Some m ->
+           m.Campaign.pmsg_text = "[Q0Q6_GIFT]"
+           && m.Campaign.pmsg_quest = "Q0Q6"
+           && Campaign.take_pending_message () = None
+         | None -> false));
 
 check "an unknown callback answers None (no effects, no battle)"
   (Campaign.execute_callback ~rng:seed (fresh ()) "Q0I2" "CallbackNope" = None);

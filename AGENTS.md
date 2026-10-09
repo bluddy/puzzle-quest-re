@@ -60,6 +60,7 @@ unterminated string/comment, or a trailing semicolon in a preceding toplevel
   (state writes, grants, nested conversations, `QUEST_COMPLETE`) and then
   runs the body's fight when it has one (`callback_battles_table` in
   `lib/campaign_quests.ml`).
+- **Location actions:** `Campaign.query_actions` (first match), `execute_action`, `complete_action`, `enter_location` apply the extracted guarded effect groups against the live quest state; `Campaign.pending_messages` queues `ShowMessage` boxes (popped via `take_pending_message`, callback fired through `execute_callback`). Both pending queues are global: drain before asserting on them in tests.
 - Generated files (`lib/campaign_quests.ml`, `lib/campaign_conversations.ml`,
   etc.) are produced by scripts in `tools/` — edit the generator, not the
   output.

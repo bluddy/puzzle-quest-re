@@ -31,18 +31,27 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     conversation/message callbacks are NOT in these turn-in buckets: they are
     extracted per callback (callback_effects) and apply when the dialogue
     fires the scriptcall, so nothing double-applies.
-  * conversations_* = QUEST_CONVERSATION sites grouped by the hook that runs
-    them: OnBegin (intro - fired at accept; branches take the first
-    source-order tree), OnAbandon, OnEnterLocation (attributed to the
-    nearest questState/idLocation guard, fired on arrival), OnExecuteAction
-    and OnCompleteAction (the location-action flow, which has no UI yet -
-    extracted but dormant). conversation_callbacks carries the sites inside
-    callbacks (fired when the dialogue runs that scriptcall).
+  * conversations_begin/abandon = QUEST_CONVERSATION sites in OnBegin (intro
+    - fired at accept; branches take the first source-order tree) and
+    OnAbandon. conversation_callbacks carries the sites inside callbacks
+    (fired when the dialogue runs that scriptcall).
+  * query_actions = OnQueryAction's menu label per branch: (state, location,
+    text tag), source order, first match wins at runtime; -1 / "" are the
+    wildcards for untested guards (Q3Q1 has no questState test).
+  * enter/execute/complete/end_effects = the location-action flow, one
+    effect group per open-if guard key: OnEnterLocation (arrival),
+    OnExecuteAction (the player starts the action here), OnCompleteAction
+    (return from the action, keyed with the success side; -1 = either) and
+    OnEnd (turn-in, state guard only). Groups carry Conversation,
+    ShowMessage, SetQuestState and Complete rows attributed by the branch
+    Lua would run - see make_guard_lookup / resolve_message. OnCancelAction
+    sites are counted but not stored (no cancel event in the port yet).
   * callback_effects = the non-battle half of each callback body, keyed
     (quest, callback): questState writes (first source order), QUEST_COMPLETE
     (ends the quest: OnEnd runs as at turn-in), reward calls, nested
-    QUEST_CONVERSATION, and QUEST_MESSAGE(_CALLBACK) recorded as Message -
-    counted but not applied, there is no message UI yet. QUEST_UPDATE_MAP
+    QUEST_CONVERSATION, and QUEST_MESSAGE(_CALLBACK) as ShowMessage (title +
+    text tags, callback name) - queued when the dialogue fires the scriptcall.
+    QUEST_UPDATE_MAP
     and QUEST_STOP_MOVEMENT are skipped (bookkeeping the port's own state
     already carries), and other Lua locals (triedNecro, didShrine, ...) are
     not tracked - their guards are unevaluated anyway.
@@ -205,7 +214,16 @@ CALL_PATTERNS = {
     'conversation': re.compile(
         r'QUEST_CONVERSATION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'),
     'complete': re.compile(r'QUEST_COMPLETE\s*\('),
-    'message': re.compile(r'QUEST_MESSAGE(?:_CALLBACK)?\s*\('),
+    # groups: callback flag, title arg, text arg, location arg, quest id
+    # token, callback name token (the last two only on the _CALLBACK form;
+    # both may be a literal or a file constant like myCode).
+    'message': re.compile(
+        r'QUEST_MESSAGE(_CALLBACK)?\s*\(\s*([^,]+),\s*([^,]+),\s*([^,)]*?)'
+        r'(?:\s*,\s*("[^"\n]*"|[A-Za-z_]\w*)\s*,\s*'
+        r'("[^"\n]*"|[A-Za-z_]\w*)\s*)?\)'),
+    # OnQueryAction's menu label: `return GET_TEXT("[TAG]")`. Also matches
+    # OnSave's step-text returns - counted as query_elsewhere.
+    'query': re.compile(r'return\s+GET_TEXT\s*\(\s*"(\[[^"\n]*\])"\s*\)'),
 }
 # raw counts: the call name and open paren, whatever the arguments look like
 RAW_RE = {k: re.compile(v.pattern.split(r'\s*\(')[0] + r'\s*\(')
@@ -255,15 +273,26 @@ def conversation_id(path):
 
 
 # QUEST_CONVERSATION sites grouped by the engine event that runs their hook.
-# OnExecuteAction / OnCompleteAction are the location-action flow: extracted
-# so the data is ready, but nothing fires them until that UI exists.
+# OnBegin / OnAbandon stay flat string lists (no guards to attribute); the
+# location-action events (enter/execute/complete) are folded into the
+# unified effect groups below so one runtime fold fires conversations,
+# messages, state writes and completes together under one guard.
 CONV_BUCKETS = {
     'OnBegin': 'begin',
+    'OnAbandon': 'abandon',
+}
+ACTION_HOOKS = {
+    'OnEnterLocation': 'enter',
     'OnExecuteAction': 'execute',
     'OnCompleteAction': 'complete',
-    'OnAbandon': 'abandon',
-    'OnEnterLocation': 'enter',
+    'OnEnd': 'end',
 }
+
+# message-argument variable assignments: `local myTitle = GET_TEXT("[T]")`,
+# bare `myMessage = GET_TEXT("[T]")`, or a plain string literal binding.
+MSG_ASSIGN = re.compile(
+    r'(?:local\s+)?([A-Za-z_]\w*)\s*=\s*'
+    r'(?:GET_TEXT\s*\(\s*"(\[[^"\n]*\])"\s*\)|"(\[[^"\n]*\])")')
 
 
 # ---------------------------------------------------------------- quest battles
@@ -387,6 +416,223 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
     return calls, assigns
 
 
+def header_states(header, s_max):
+    """questState tests in one if-header -> the finite state set they allow.
+    `==`/`>`/`>=`/`<`/`<=` expand (the open range tops out at s_max, the
+    file's highest state value + 1 - states below 1 do not exist); `~=`  negates, subtracted when positives exist, complemented when alone.
+    No test -> []."""
+    pos, neg = [], set()
+    for m in re.finditer(r'questState\s*(==|~=|>=|<=|>|<)?\s*(\d+)', header):
+        op = m.group(1) or '=='
+        n = int(m.group(2))
+        if op == '==':
+            pos.append(n)
+        elif op == '>':
+            pos.extend(range(n + 1, s_max + 1))
+        elif op == '>=':
+            pos.extend(range(n, s_max + 1))
+        elif op == '<':
+            pos.extend(range(1, n))
+        elif op == '<=':
+            pos.extend(range(1, n + 1))
+        else:  # ~=
+            neg.add(n)
+    if pos:
+        return [x for x in dedup(pos) if x not in neg]
+    if neg:
+        return [x for x in range(1, s_max + 1) if x not in neg]
+    return []
+
+
+def make_guard_lookup(body_ns, body_nc, consts, s_max):
+    """Context lookup for effect attribution: lookup(pos) ->
+    (stages | None, locs | None, side) evaluated over the if-chain OPEN at
+    pos - the same frame walk as scan_battle_branches (if/elseif/else over
+    end, do/function/repeat opaque), plus idLocation tests. stages is the
+    innermost open header's questState set (None = untested; an
+    else-branch carries [] and falls through, since it means "not these");
+    locs likewise from idLocation== resolved through the file constants;
+    side is 'win'/'fail'/'none' from the success tests. Closed blocks do
+    not leak - unlike nearest-preceding scans."""
+    kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
+    idloc = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
+
+    def header_at(pos):
+        then = next((p for k, p in kws if k == 'then' and p > pos), len(body_ns))
+        return body_nc[pos:then]
+
+    def header_locs(header):
+        out = []
+        for g in idloc.finditer(header):
+            tok = g.group(1)
+            loc = tok[1:-1] if tok.startswith('"') else consts.get(tok)
+            if loc is not None:
+                out.append(loc)
+        return out
+
+    stack = []
+    changes = []  # (keyword pos, snapshot) - snapshot valid from pos on
+
+    def snap():
+        stages = locs = None
+        side = 'none'
+        for fr in reversed(stack):
+            if fr['generic']:
+                continue
+            if stages is None and fr['stages']:
+                stages = list(fr['stages'])
+            if locs is None and fr['locs']:
+                locs = list(fr['locs'])
+            if side == 'none' and fr['side'] is not None:
+                side = fr['side']
+        return (stages, locs, side)
+
+    changes.append((-1, snap()))
+    for k, pos in kws:
+        if k == 'if':
+            header = header_at(pos)
+            s = success_side(header)
+            stack.append({
+                'stages': header_states(header, s_max),
+                'locs': header_locs(header),
+                'side': s,
+                'chain': s,
+                'generic': False,
+            })
+        elif k == 'elseif' and stack and not stack[-1]['generic']:
+            header = header_at(pos)
+            fr = stack[-1]
+            fr['stages'] = header_states(header, s_max)
+            fr['locs'] = header_locs(header)
+            s = success_side(header)
+            if s is not None:
+                fr['chain'] = s
+                fr['side'] = s
+            else:
+                fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
+        elif k == 'else' and stack and not stack[-1]['generic']:
+            fr = stack[-1]
+            fr['stages'] = []
+            fr['locs'] = []
+            fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
+        elif k in ('do', 'function', 'repeat'):
+            stack.append({'stages': None, 'locs': None, 'side': None,
+                          'chain': None, 'generic': True})
+        elif k in ('end', 'until'):
+            if stack:
+                stack.pop()
+        changes.append((pos, snap()))
+
+    import bisect
+    poses = [p for p, _ in changes]
+
+    def lookup(pos):
+        return changes[bisect.bisect_right(poses, pos) - 1][1]
+
+    return lookup
+
+
+def guard_keys(stages, locs):
+    """Expand a guard snapshot into the (state, loc) key pairs to record:
+    None = untested = the runtime wildcard (-1 / \"\"). An else-branch's
+    [] never reaches here (snap() skips falsy lists)."""
+    sts = stages if stages is not None else [-1]
+    lxs = locs if locs is not None else [""]
+    return [(st, lx) for st in sts for lx in lxs]
+
+
+def build_msg_assigns(body):
+    """{var: [(pos, tag)]} for every GET_TEXT / literal binding in the body,
+    source order - the message arguments are locals, and the branch an
+    assignment sits in is the branch whose text it carries."""
+    out = {}
+    for m in MSG_ASSIGN.finditer(body):
+        tag = m.group(2) or m.group(3)
+        out.setdefault(m.group(1), []).append((m.start(), tag))
+    return out
+
+
+def resolve_message(msg_assigns, hit, lookup, consts=None):
+    """One QUEST_MESSAGE(_CALLBACK) site -> (rows, err): rows are
+    [(pos, st, suc, loc, title, text, cb)] in assignment order, err the
+    unresolved text token when nothing resolves (rows empty then).
+
+    The text variable's each preceding assignment is its own row - the
+    common shape
+        if success==1 then myMessage=WIN else myMessage=FAIL end;
+        QUEST_MESSAGE(...)
+    puts both branches' texts in front of one site, and only the
+    assignment records which side it came from (the site itself sits
+    after the chain closed).  A row's guard merges the assignment's
+    open-if context with the site's: stages/locs intersect (empty =
+    dead row, dropped), the success side prefers the assignment.
+    Literal / inline GET_TEXT arguments carry no assignment, so their
+    row takes the site context alone.  The third call argument
+    (idLocation / myLocation) is where the engine anchors the box, not
+    a condition - the open-if context already carries location truth."""
+    title_tok = hit.group(2).strip()
+    text_tok = hit.group(3).strip()
+    cb_tok = hit.group(6)
+    cb = ""
+    if cb_tok:
+        if cb_tok.startswith('"'):
+            cb = cb_tok[1:-1]
+        elif consts is not None:
+            cb = consts.get(cb_tok, "")
+    site_pos = hit.start()
+    site = lookup(site_pos) if lookup else (None, None, 'none')
+
+    def tags(tok, limit):
+        if tok.startswith('"'):
+            return [(tok[1:-1], None)]
+        if tok.startswith('GET_TEXT'):
+            m = re.search(r'"(\[[^"\n]*\])"', tok)
+            return [(m.group(1), None)] if m else []
+        return [(tag, apos) for apos, tag in msg_assigns.get(tok, [])
+                if apos < limit]
+
+    text_cands = tags(text_tok, site_pos)
+    if not text_cands:
+        return [], text_tok
+    title_cands = tags(title_tok, site_pos)
+
+    def title_for(tpos):
+        usable = [(tag, p) for tag, p in title_cands
+                  if p is None or (tpos is not None and p <= tpos)]
+        if not usable:
+            usable = [(tag, p) for tag, p in title_cands
+                      if p is None or p < site_pos]
+        if not usable:
+            return ""
+        # nearest assignment wins; a literal/inline tag has no position
+        # and stands in wherever it appears
+        return max(usable, key=lambda c: -1 if c[1] is None else c[1])[0]
+
+    rows = []
+    for ttag, tpos in text_cands:
+        a = lookup(tpos) if (lookup and tpos is not None) else site
+        # merge assignment + site context
+        stages = a[0] if a[0] is not None else site[0]
+        if site[0] is not None and a[0] is not None:
+            stages = [x for x in a[0] if x in site[0]]
+            if not stages:
+                continue
+        locs = site[1]
+        if a[1] is not None and site[1] is not None:
+            locs = [x for x in a[1] if x in site[1]]
+            if not locs:
+                continue
+        elif a[1] is not None:
+            locs = a[1]
+        side = a[2] if a[2] != 'none' else site[2]
+        suc = 1 if side == 'win' else (0 if side == 'fail' else -1)
+        for st in (stages if stages is not None else [-1]):
+            for lx in (locs if locs is not None else [""]):
+                rows.append((tpos if tpos is not None else site_pos,
+                             st, suc, lx, title_for(tpos), ttag, cb))
+    return rows, None
+
+
 
 def analyze_lua(src, qid, stats):
     """Returns reveal/reward fields extracted from one quest script."""
@@ -400,6 +646,11 @@ def analyze_lua(src, qid, stats):
         stats['raw'][kind] += len(rx.findall(nc))
     stats['raw']['battle_call'] += len(BATTLE_CALL.findall(nc))
 
+    # open-ended header tests (questState > N) expand to a finite set: the
+    # file's own highest state value plus one.
+    _sv = [int(x) for x in re.findall(r'questState\s*[^\dn]{0,3}(\d+)', src)]
+    s_max = max(_sv + [5]) + 1
+
     reveals = {'begin': [], 'end': []}
     ruins = []
     ruin_dones = {'end': [], 'battle': [], 'abandon': []}
@@ -409,11 +660,15 @@ def analyze_lua(src, qid, stats):
     stage_advances = {}
     stage_fails = {}
     enter_removes = []
-    conv_buckets = {'begin': [], 'execute': [], 'complete': [],
-                    'abandon': [], 'enter': []}
-    conv_enter = []
+    conv_buckets = {'begin': [], 'abandon': []}
     conv_callbacks = {}
     cb_events = {}
+    # location-action effect groups: event -> {guard key -> [(pos, eff)]}.
+    # enter/execute/end key on (state, loc), complete on (state, success,
+    # loc); positions order the group's effects in source order, groups
+    # themselves emit by first-effect position (Lua's evaluation order).
+    eff_groups = {'enter': {}, 'execute': {}, 'complete': {}, 'end': {}}
+    query_actions = []
 
     for hook, (start, end) in funcs.items():
         body = nc[start:end]
@@ -421,6 +676,29 @@ def analyze_lua(src, qid, stats):
         # Engine hooks fire from the quest lifecycle; everything else is a
         # conversation/message callback (or a helper only they call).
         is_callback = not hook.startswith('On')
+        lookup = make_guard_lookup(body_ns, body, consts, s_max)
+        msg_assigns = build_msg_assigns(body)
+        ev = ACTION_HOOKS.get(hook)
+
+        def add_group(evk, key, pos, eff):
+            eff_groups[evk].setdefault(key, []).append((pos, eff))
+
+        def keys_for(evk, pos, force_loc=None):
+            """Guard keys for an effect site: expand the open-if snapshot
+            at pos into the group's key form (complete keys carry the
+            success side; OnEnd effects are turn-in events, not
+            location-bound, so their loc guard collapses to wildcard)."""
+            stages, locs, side = lookup(pos)
+            if evk == 'end':
+                locs = None
+            if force_loc is not None:
+                locs = [force_loc]
+            suc = 1 if side == 'win' else (0 if side == 'fail' else -1)
+            out = []
+            for st, lx in guard_keys(stages, locs):
+                out.append((st, suc, lx) if evk == 'complete' else (st, lx))
+            return out
+
         m = CALL_PATTERNS['visibility'].finditer(body)
         for hit in m:
             stats['extracted']['visibility'] += 1
@@ -500,6 +778,10 @@ def analyze_lua(src, qid, stats):
             else:
                 companions.append(target)
         # QUEST_CONVERSATION: the hook that runs the call opens the tree.
+        # Begin/abandon fire unconditionally (flat lists); the four action
+        # events fold into the effect groups so one guard-matched fold
+        # fires conversations, messages, state writes and completes
+        # together under the branch Lua would have run.
         for hit in CALL_PATTERNS['conversation'].finditer(body):
             stats['extracted']['conversation'] += 1
             stats['hooks'][('conversation', hook)] += 1
@@ -508,57 +790,82 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             cid = conversation_id(tok)
-            if hook == 'OnEnterLocation':
-                # same nearest-guard attribution as enter_removes: the
-                # questState and idLocation the arrival is tested against.
-                # A site with no questState guard (idLocation-only, e.g.
-                # Q1Q0's "WBHE") fires on arrival at any stage - recorded as
-                # state -1, the runtime's wildcard. Guards on other Lua
-                # locals (doneConversation, ...) are unevaluated anywhere.
-                st = None
-                for g in STATE_EQ.finditer(body[:hit.start()]):
-                    st = int(g.group(1))
-                loc_tok = None
-                for g in IDLOC_EQ.finditer(body[:hit.start()]):
-                    loc_tok = g.group(1)
-                loc = resolve(loc_tok, consts) if loc_tok else None
-                if loc is None:
-                    stats['unresolved'].append((qid, hook, hit.group(1)))
-                    continue
-                conv_enter.append((st if st is not None else -1, loc, cid))
+            if hook in CONV_BUCKETS:
+                if cid not in conv_buckets[CONV_BUCKETS[hook]]:
+                    conv_buckets[CONV_BUCKETS[hook]].append(cid)
             elif is_callback:
                 lst = conv_callbacks.setdefault(hook, [])
                 if cid not in lst:
                     lst.append(cid)
                 cb_events.setdefault(hook, []).append(
                     (hit.start(), 'conversation', cid))
+            elif ev is not None:
+                for key in keys_for(ev, hit.start()):
+                    add_group(ev, key, hit.start(), ('conversation', cid))
             else:
-                bucket = CONV_BUCKETS.get(hook, 'execute')
-                if hook not in CONV_BUCKETS:
-                    stats['conv_other_hooks'].append((qid, hook, cid))
-                if cid not in conv_buckets[bucket]:
-                    conv_buckets[bucket].append(cid)
-        # QUEST_COMPLETE / QUEST_MESSAGE end the quest or pop a dialog from
-        # inside a callback; the hook sites count for reconciliation and the
-        # callback sites become effects (Message applies nothing - no UI).
+                # an engine hook outside the four events has no arrival
+                # event of its own: noted, and kept as a wildcard execute
+                # entry rather than dropped.
+                stats['conv_other_hooks'].append((qid, hook, cid))
+                add_group('execute', (-1, ""), hit.start(),
+                          ('conversation', cid))
+        # QUEST_COMPLETE / QUEST_MESSAGE: event hooks feed the groups,
+        # callback sites keep their effect rows; anything else (CompleteQ's
+        # body, OnCancelAction) is counted for reconciliation only.
         for hit in CALL_PATTERNS['complete'].finditer(body):
             stats['extracted']['complete'] += 1
             stats['hooks'][('complete', hook)] += 1
             if is_callback:
                 cb_events.setdefault(hook, []).append(
                     (hit.start(), 'complete', None))
+            elif ev is not None:
+                for key in keys_for(ev, hit.start()):
+                    add_group(ev, key, hit.start(), ('complete', None))
         for hit in CALL_PATTERNS['message'].finditer(body):
             stats['extracted']['message'] += 1
             stats['hooks'][('message', hook)] += 1
+            if hook == 'OnCancelAction':
+                continue  # dormant: no cancel event in the port yet
+            rows, err = resolve_message(msg_assigns, hit, lookup, consts)
+            if err is not None:
+                stats['unresolved'].append((qid, hook, err))
+                continue
             if is_callback:
+                pos, _st, _suc, _lx, title, text, cb = rows[0]
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'message', None))
-        # questState writes inside callbacks drive the state machine from the
-        # dialogue (first source-order value wins, like the reward fields).
+                    (pos, 'message', (title, text, cb)))
+            elif ev is not None:
+                for pos, st, suc, lx, title, text, cb in rows:
+                    key = (st, suc, lx) if ev == 'complete' else (st, lx)
+                    add_group(ev, key, pos, ('message', (title, text, cb)))
+        # OnQueryAction's menu label: the first branch Lua would show for
+        # the hero's current (state, location).  GET_TEXT returns in other
+        # functions (OnSave's step text) count for reconciliation but are
+        # not actionable.
+        if hook == 'OnQueryAction':
+            for hit in CALL_PATTERNS['query'].finditer(body):
+                stats['extracted']['query'] += 1
+                stats['hooks'][('query', hook)] += 1
+                for st, lx in keys_for('query', hit.start()):
+                    query_actions.append((st, lx, hit.group(1)))
+        else:
+            for _hit in CALL_PATTERNS['query'].finditer(body):
+                stats['extracted']['query'] += 1
+                stats['hooks'][('query', hook)] += 1
+        # questState writes: callbacks drive the state machine from the
+        # dialogue (first source-order value wins, like the reward fields);
+        # the action events record them as guarded SetQuestState effects.
+        # OnBegin / OnAbandon writes are outside this flow (unattributed
+        # there, as before).
         if is_callback:
             for hit in STATE_ASSIGN.finditer(body):
                 cb_events.setdefault(hook, []).append(
                     (hit.start(), 'state', int(hit.group(1))))
+        elif ev is not None:
+            for hit in STATE_ASSIGN.finditer(body):
+                for key in keys_for(ev, hit.start()):
+                    add_group(ev, key, hit.start(),
+                              ('state', int(hit.group(1))))
         # QUEST_REMOVE_COMPANION: the OnEnterLocation sites carry the whole
         # rule - the questState and idLocation guards in the surrounding if,
         # the companion id as the argument. The nearest preceding guard of
@@ -638,6 +945,19 @@ def analyze_lua(src, qid, stats):
             out.append((kind, val))
         return out
 
+    def finalize_groups(evk):
+        """[(guard key, effects)] for one event: dedup identical rows,
+        effects in source order, groups by first-effect position (Lua's
+        evaluation order - the runtime takes the first match)."""
+        d = eff_groups[evk]
+        rows = []
+        for key, members in d.items():
+            uniq = sorted(set(members), key=lambda t: t[0])
+            rows.append((min(p for p, _ in members), key,
+                         [eff for _, eff in uniq]))
+        rows.sort(key=lambda r: r[0])
+        return [(key, effs) for _first, key, effs in rows]
+
     return {
         'reveal_on_begin': dedup(reveals['begin']),
         'reveal_on_end': dedup(reveals['end']),
@@ -655,13 +975,15 @@ def analyze_lua(src, qid, stats):
         'battle_stage_fails': list(stage_fails.items()),
         'enter_removes': enter_removes,
         'conversations_begin': conv_buckets['begin'],
-        'conversations_execute': conv_buckets['execute'],
-        'conversations_complete': conv_buckets['complete'],
         'conversations_abandon': conv_buckets['abandon'],
-        'conversations_enter': conv_enter,
         'conversation_callbacks': [(cb, cs) for cb, cs in conv_callbacks.items()],
         'callback_effects': [(cb, finalize_cb(evts))
                              for cb, evts in sorted(cb_events.items())],
+        'query_actions': dedup(query_actions),
+        'enter_effects': finalize_groups('enter'),
+        'execute_effects': finalize_groups('execute'),
+        'complete_effects': finalize_groups('complete'),
+        'end_effects': finalize_groups('end'),
     }
 
 
@@ -713,10 +1035,11 @@ def parse_quest(xml_path, stats):
         'reward_awards': [], 'reward_companions': [],
         'battle_actions': [], 'battle_stage_advances': [],
         'battle_stage_fails': [], 'enter_removes': [],
-        'conversations_begin': [], 'conversations_execute': [],
-        'conversations_complete': [], 'conversations_abandon': [],
-        'conversations_enter': [], 'conversation_callbacks': [],
+        'conversations_begin': [], 'conversations_abandon': [],
+        'conversation_callbacks': [],
         'callback_effects': [],
+        'query_actions': [], 'enter_effects': [], 'execute_effects': [],
+        'complete_effects': [], 'end_effects': [],
     }
 
     return {
@@ -809,7 +1132,9 @@ def ocaml_effect(kind, val):
     if kind == 'xp':
         return f'GiveXp {val}'
     if kind == 'message':
-        return 'Message'
+        title, text, cb = val
+        return (f'ShowMessage ("{ocaml_str(title)}", '
+                f'"{ocaml_str(text)}", "{ocaml_str(cb)}")')
     ctor = {'item': 'GiveItem', 'award': 'GiveAward',
             'companion': 'GiveCompanion', 'conversation': 'Conversation'}[kind]
     return f'{ctor} "{ocaml_str(val)}"'
@@ -831,6 +1156,39 @@ def ocaml_callback_pairs(pairs):
         return "[]"
     parts = ['("%s", %s)' % (ocaml_str(cb), ocaml_list(convs))
              for cb, convs in pairs]
+    return "[" + "; ".join(parts) + "]"
+
+
+def ocaml_query_actions(rows):
+    """[(state, location, label tag)] - state -1 / loc "" = wildcard."""
+    if not rows:
+        return "[]"
+    return "[" + "; ".join(
+        '(%d, "%s", "%s")' % (st, ocaml_str(loc), ocaml_str(tag))
+        for st, loc, tag in rows) + "]"
+
+
+def ocaml_loc_groups(rows):
+    """[((state, loc), effects)] -> [(state, loc, effects)]; state -1 /
+    loc "" = wildcard."""
+    if not rows:
+        return "[]"
+    parts = ['(%d, "%s", [%s])'
+             % (st, ocaml_str(loc),
+                "; ".join(ocaml_effect(k, v) for k, v in effs))
+             for (st, loc), effs in rows]
+    return "[" + "; ".join(parts) + "]"
+
+
+def ocaml_complete_groups(rows):
+    """[((state, success, loc), effects)] -> [(state, success, loc,
+    effects)]; -1 fields = wildcard."""
+    if not rows:
+        return "[]"
+    parts = ['(%d, %d, "%s", [%s])'
+             % (st, suc, ocaml_str(loc),
+                "; ".join(ocaml_effect(k, v) for k, v in effs))
+             for (st, suc, loc), effs in rows]
     return "[" + "; ".join(parts) + "]"
 
 
@@ -887,18 +1245,32 @@ def main():
         for row in stats['remove_elsewhere']:
             print(f"  elsewhere: {row}")
         n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
-                  for b in ('begin', 'abandon', 'execute', 'complete')}
-        n_conv_enter = sum(len(q["conversations_enter"]) for q in quests)
+                  for b in ('begin', 'abandon')}
         n_conv_cb = sum(len(v) for q in quests for _, v in q["conversation_callbacks"])
         print(f"conversations: begin={n_conv['begin']} "
-              f"abandon={n_conv['abandon']} enter={n_conv_enter} "
-              f"callbacks={n_conv_cb} (dormant: execute={n_conv['execute']} "
-              f"complete={n_conv['complete']})")
+              f"abandon={n_conv['abandon']} callbacks={n_conv_cb}")
         if stats['conv_other_hooks']:
             print(f"conversation sites in other hooks -> execute "
                   f"({len(stats['conv_other_hooks'])}):")
             for row in stats['conv_other_hooks']:
                 print(f"  {row}")
+        print("action effect groups (enter/execute/complete/end):")
+        for evk, field in (('enter', 'enter_effects'),
+                           ('execute', 'execute_effects'),
+                           ('complete', 'complete_effects'),
+                           ('end', 'end_effects')):
+            groups = sum(len(q[field]) for q in quests)
+            kinds = Counter()
+            for q in quests:
+                for _k, effs in q[field]:
+                    for k, _v in effs:
+                        kinds[k] += 1
+            print(f"  {evk:8s}: {groups} groups, "
+                  + (", ".join(f"{k}={n}" for k, n in sorted(kinds.items()))
+                     or "none"))
+        n_query = sum(len(q["query_actions"]) for q in quests)
+        n_query_q = sum(1 for q in quests if q["query_actions"])
+        print(f"query actions: {n_query} rows across {n_query_q} quests")
         eff_kinds = Counter()
         n_eff = 0
         for q in quests:
@@ -950,15 +1322,23 @@ def main():
                       f"adv={q['battle_stage_advances']} fail={q['battle_stage_fails']}")
             if q['enter_removes']:
                 print(f"    enter_removes={q['enter_removes']}")
+            if q['query_actions']:
+                print(f"    query={q['query_actions']}")
             if (q['conversations_begin'] or q['conversations_abandon']
-                    or q['conversations_enter'] or q['conversation_callbacks']
-                    or q['callback_effects']):
+                    or q['enter_effects'] or q['execute_effects']
+                    or q['complete_effects'] or q['end_effects']
+                    or q['conversation_callbacks'] or q['callback_effects']):
                 print(f"    conv: begin={q['conversations_begin']} "
                       f"abandon={q['conversations_abandon']} "
-                      f"enter={q['conversations_enter']} "
                       f"cb={q['conversation_callbacks']}")
                 for cb, effs in q['callback_effects']:
                     print(f"    {cb}: {effs}")
+                for lbl, field in (('enter', 'enter_effects'),
+                                   ('exec', 'execute_effects'),
+                                   ('comp', 'complete_effects'),
+                                   ('end', 'end_effects')):
+                    for k, effs in q[field]:
+                        print(f"    {lbl} {k}: {effs}")
             if q['texts']:
                 for tag, txt in list(q['texts'].items())[:2]:
                     print(f"    {tag}: {txt[:60]}")
@@ -1018,8 +1398,9 @@ def main():
     # The non-battle half of a conversation/message callback body: what runs
     # when the dialogue fires that scriptcall (the battle half lives in
     # callback_battle). Renamed SetQuestState to stay clear of Campaign's
-    # quest_effect.SetState; Message records a QUEST_MESSAGE(_CALLBACK)
-    # site - counted, not applied, there is no message UI yet.
+    # quest_effect.SetState. ShowMessage queues a title/text message box
+    # (text tags) with an optional callback to fire when it is dismissed;
+    # the same effect carries the location-action hooks' message sites.
     lines.append("type callback_effect =")
     lines.append("  | SetQuestState of int")
     lines.append("  | Complete")
@@ -1029,7 +1410,7 @@ def main():
     lines.append("  | GiveAward of string")
     lines.append("  | GiveCompanion of string")
     lines.append("  | Conversation of string")
-    lines.append("  | Message")
+    lines.append("  | ShowMessage of string * string * string")
     lines.append("")
     lines.append("type quest = {")
     lines.append("  id: string;")
@@ -1079,12 +1460,15 @@ def main():
     lines.append("  reward_awards: string list;")
     lines.append("  reward_companions: string list;")
     lines.append("  conversations_begin: string list;")
-    lines.append("  conversations_execute: string list;")
-    lines.append("  conversations_complete: string list;")
     lines.append("  conversations_abandon: string list;")
-    lines.append("  conversations_enter: (int * string * string) list;")
     lines.append("  conversation_callbacks: (string * string list) list;")
     lines.append("  callback_effects: (string * callback_effect list) list;")
+    lines.append("  query_actions: (int * string * string) list;")
+    lines.append("  enter_effects: (int * string * callback_effect list) list;")
+    lines.append("  execute_effects: (int * string * callback_effect list) list;")
+    lines.append("  complete_effects:")
+    lines.append("    (int * int * string * callback_effect list) list;")
+    lines.append("  end_effects: (int * string * callback_effect list) list;")
     lines.append("}")
     lines.append("")
 
@@ -1141,12 +1525,14 @@ def main():
         lines.append(f'    reward_awards = {ocaml_list(q["reward_awards"])};')
         lines.append(f'    reward_companions = {ocaml_list(q["reward_companions"])};')
         lines.append(f'    conversations_begin = {ocaml_list(q["conversations_begin"])};')
-        lines.append(f'    conversations_execute = {ocaml_list(q["conversations_execute"])};')
-        lines.append(f'    conversations_complete = {ocaml_list(q["conversations_complete"])};')
         lines.append(f'    conversations_abandon = {ocaml_list(q["conversations_abandon"])};')
-        lines.append(f'    conversations_enter = {ocaml_state_triples(q["conversations_enter"])};')
         lines.append(f'    conversation_callbacks = {ocaml_callback_pairs(q["conversation_callbacks"])};')
         lines.append(f'    callback_effects = {ocaml_callback_effects(q["callback_effects"])};')
+        lines.append(f'    query_actions = {ocaml_query_actions(q["query_actions"])};')
+        lines.append(f'    enter_effects = {ocaml_loc_groups(q["enter_effects"])};')
+        lines.append(f'    execute_effects = {ocaml_loc_groups(q["execute_effects"])};')
+        lines.append(f'    complete_effects = {ocaml_complete_groups(q["complete_effects"])};')
+        lines.append(f'    end_effects = {ocaml_loc_groups(q["end_effects"])};')
         lines.append("  };")
     lines.append("]")
     lines.append("")

@@ -244,7 +244,7 @@ conversation triggers + per-callback effects), and the conversation UI now
 walks actions, renders portraits/backdrops, fires battle callbacks and
 applies each scriptcall's extracted body effects. Pick one:
 
-- **Location-action flow** — fire the 94 OnExecuteAction / 50
-  OnCompleteAction conversations behind a location-action UI, plus a popup
-  for the 18 `QUEST_MESSAGE` sites
-- **Companion equip** — equip slot + passive bonuses (phase 8)
+- **Map-gfx location actions** - a city action panel over `query_actions`
+  (the flow itself is landed: engine groups, the demo driver, the message
+  popup in the conversation window, `test_location_actions.ml`)
+- **Companion equip** - equip slot + passive bonuses (phase 8)

@@ -3668,3 +3668,29 @@ port_decisions:
       requirement list nothing recovered has, and equip already has its      own flow. ShopMenu's button geometry is drawn in the original and is      recoverable; how far right the clickable row ran is not, so 480 is      the span that holds a name and a price. The rumors have no per-city      mapping and the player keeps no book, so table order is the reading      that needs no invention. Opening on click-where-you-stand matches the      map window's own rule: one click means the thing you are already at.
     supersedes: null
     date: 2026-10-08
+
+  - id: port.location_action_flow
+    decision: >
+      The driver calls query_actions, execute_action, complete_action and
+      enter_location around dialogue and battles. Query is first-match in
+      source order (the elseif chain Lua showed); the other events apply
+      every matching group in source order, each guard re-reading the live
+      quest state, so a body that writes questState = 2 before a stage-2
+      CompleteQuest test finishes in one call. Group keys are the guarded
+      (questState, idLocation) pairs with -1/"" wildcards; complete groups
+      carry the success/failure bit. ShowMessage effects queue through
+      pending_messages; pq_conv_gfx pops them as a modal box whose OK click
+      fires the box's callback.
+    rationale: >
+      The Lua bodies are sequential if-blocks over a live questState
+      variable: an elseif chain exists only inside OnQueryAction, while
+      OnExecuteAction and OnCompleteAction blocks fall through, which is why
+      first-match would drop the stage advance and the turn-in that Q0Q0
+      and Q1G3 perform in a single event. The third message argument is the
+      display anchor (idLocation/myLocation), not a guard - forcing it as
+      one broke Q1E0's SUCCESS2/FAILURE2 boxes. A caller-driven
+      complete_action keeps the battle settle decoupled, matching the
+      quest_battle_complete separation, and campaign_demo walks Q0I2's
+      whole chain as the reference driver.
+    supersedes: null
+    date: 2026-10-09

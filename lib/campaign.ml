@@ -783,11 +783,10 @@ let apply_quest_effect p qeffect =
    intros, OnEnterLocation arrivals, OnAbandon epilogues (the shipped data
    has none, the field exists for completeness), and the nested
    QUEST_CONVERSATION sites inside conversation callbacks. The UI layer
-   drains them one at a time (campaign_demo prints them; pq_conv_gfx polls).
-   OnExecuteAction / OnCompleteAction sites are extracted too but nothing
-   fires them until the location-action flow has a UI. Stored as ids, not
-   records: resolving the id to conversation data stays with whoever
-   displays it. *)
+    drains them one at a time (campaign_demo prints them; pq_conv_gfx polls).
+    The location-action flow (execute/complete/enter effects) queues the same
+    way. Stored as ids, not records: resolving the id to conversation data
+    stays with whoever displays it. *)
 let pending_conversations : string list ref = ref []
 
 let queue_conversation (conv_id : string) : unit =
@@ -798,25 +797,38 @@ let take_pending_conversation () : string option =
   | [] -> None
   | conv :: rest -> pending_conversations := rest; Some conv
 
-(* A hero arrived at [location]: every active quest gets its OnEnterLocation
-   rules evaluated against the arrival, effects applying in active-quest
-   order so a later rule sees an earlier removal - the order the engine's
-   single hero would. Arrival conversations attributed to the same guard
-   (state -1 = any stage) queue alongside the rules. *)
-let enter_location (player: player) (location: string) : player =
-  List.fold_left
-    (fun p (qid, st) ->
-      let q = quest_by_id qid in
-      let qi = { quest = q; state = Active st;
-                 vars = quest_var_set [] "questState" (string_of_int st) } in
-      let _, effects = run_quest_on_enter_location qi location in
-      let p = List.fold_left (fun p' e -> apply_quest_effect p' e) p effects in
-      List.iter
-        (fun (st', loc', conv) ->
-          if (st' = -1 || st' = st) && loc' = location then queue_conversation conv)
-        q.conversations_enter;
-      p)
-    player player.active_quests
+(* A message box queued by an extracted ShowMessage effect - a
+   QUEST_MESSAGE(_CALLBACK) site in a callback body or in one of the
+   location-action hooks. Title and text are text tags (resolve with
+   Text_data.text), [pmsg_quest] the quest whose script posted it, and
+   [pmsg_callback] the callback to fire when the box is dismissed ("" when
+   the site carried none). Same drain discipline as conversations: the UI
+   pops one at a time, closing it with [take_pending_message] (and firing
+   the callback through [execute_callback] when there is one). *)
+type pending_message = {
+  pmsg_title : string;
+  pmsg_text : string;
+  pmsg_quest : string;
+  pmsg_callback : string;
+}
+
+let pending_messages : pending_message list ref = ref []
+
+let queue_message ~(qid : string) ?(callback : string = "") (title : string)
+    (text : string) : unit =
+  pending_messages :=
+    !pending_messages
+    @ [ { pmsg_title = title; pmsg_text = text; pmsg_quest = qid;
+          pmsg_callback = callback } ]
+
+let take_pending_message () : pending_message option =
+  match !pending_messages with
+  | [] -> None
+  | m :: rest -> pending_messages := rest; Some m
+
+(* [enter_location] lives at the end of this file with the rest of the
+   location-action flow: its enter_effects need apply_callback_effect (and
+   quest_turn_in for the few arrival Completes), both defined later. *)
 
 (* ------------------------------------------------------------------ *)
 (* Quest lifecycle (player level)                                     *)
@@ -962,14 +974,48 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into
-   completed_quests). No-op if the quest isn't active. *)
+   completed_quests) - plus the extracted end_effects: OnEnd's own
+   questState writes and turn-in message box. State-guarded (state -1 = any
+   stage); the state writes no-op once CompleteQuest has removed the quest,
+   the message queues regardless. No-op if the quest isn't active.
+
+   The effects apply inline rather than through apply_callback_effect, which
+   lives later in this file and calls back into quest_turn_in ([Complete]
+   behaves as a turn-in) - the two must not recurse. Only SetQuestState and
+   ShowMessage occur in end_effects (tools/extract_quests.py --check). *)
 let quest_turn_in (player: player) (qid: string) : player =
   if not (List.exists (fun (id, _) -> id = qid) player.active_quests) then player
   else
     let q = quest_by_id qid in
     let qi = { quest = q; state = Active 2; vars = quest_var_set [] "questState" "2" } in
+    (* end_effects first: their guards test the live stage, which CompleteQuest
+       (inside run_quest_on_end) would otherwise have removed. *)
+    let p =
+      List.fold_left
+        (fun acc (st, _loc, effs) ->
+          let cur =
+            match List.assoc_opt qid acc.active_quests with
+            | Some s -> s
+            | None -> -2
+          in
+          if st = -1 || st = cur then
+            List.fold_left
+              (fun a e ->
+                match e with
+                | SetQuestState n ->
+                  { a with active_quests =
+                             List.map (fun (id, s) ->
+                                 if id = qid then (id, n) else (id, s))
+                               a.active_quests }
+                | ShowMessage (title, text, cb) ->
+                  queue_message ~qid ~callback:cb title text; a
+                | _ -> a)
+              acc effs
+          else acc)
+        player q.end_effects
+    in
     let _qi, effects = run_quest_on_end qi in
-    List.fold_left apply_quest_effect player effects
+    List.fold_left apply_quest_effect p effects
 
 (* Abandon a quest: runs OnAbandon (ruin releases, state back to 0) and drops it
    from active_quests, which makes it available again. No-op if it is not active
@@ -1005,18 +1051,18 @@ let quest_abandon (player: player) (qid: string) : player =
    [callback_battles] below is that table - do not shadow it with a stub:
    a local [fun _ -> None] makes execute_callback silently return None. *)
 
-(* Apply one extracted callback effect (the [callback_effects] row for this
-   quest+callback). Rewards reuse [apply_quest_effect] so grants run through
-   the same inventory/cap/level-up path as turn-in. [SetQuestState] writes
-   the active quest's stage directly - apply_quest_effect's SetState is a
-   no-op, the lifecycle functions own the stage - and no-ops when the quest
-   is not active (the Lua write happened unconditionally, but a dialogue for
-   a quest the port dropped cannot advance anything). [Complete] ends the
-   quest from dialogue: QUEST_COMPLETE behaves as a turn-in, running OnEnd
-   (inferred: OnEnd is documented "called when a quest has ended", ships no
-   decompiled body, and quest_turn_in already no-ops when not active).
-   [Conversation] queues the next tree; [Message] is recorded data with no
-   message UI yet, so it applies nothing. *)
+(* Apply one extracted effect - from a callback's [callback_effects] row or
+   a location-action group. Rewards reuse [apply_quest_effect] so grants run
+   through the same inventory/cap/level-up path as turn-in. [SetQuestState]
+   writes the active quest's stage directly - apply_quest_effect's SetState
+   is a no-op, the lifecycle functions own the stage - and no-ops when the
+   quest is not active (the Lua write happened unconditionally, but a
+   dialogue for a quest the port dropped cannot advance anything). [Complete]
+   ends the quest from dialogue: QUEST_COMPLETE behaves as a turn-in, running
+   OnEnd (inferred: OnEnd is documented "called when a quest has ended", ships
+   no decompiled body, and quest_turn_in already no-ops when not active).
+   [Conversation] queues the next tree; [ShowMessage] queues a message box
+   with the callback to fire when it is dismissed. *)
 let apply_callback_effect (p : player) (qid : string) (e : callback_effect) : player =
   match e with
   | SetQuestState n ->
@@ -1033,7 +1079,8 @@ let apply_callback_effect (p : player) (qid : string) (e : callback_effect) : pl
   | GiveAward id -> apply_quest_effect p (RewardAward id)
   | GiveCompanion id -> apply_quest_effect p (RewardCompanion id)
   | Conversation conv -> queue_conversation conv; p
-  | Message -> p
+  | ShowMessage (title, text, cb) ->
+    queue_message ~qid ~callback:cb title text; p
 
 (* What a conversation/message callback did: the player with its body's
    effects applied, plus the battle when it triggered one. *)
@@ -1108,3 +1155,122 @@ let complete_encounter (player: player) (enc: encounter) : player =
   let battle = run_encounter_battle player enc in
   let new_player, _result = process_battle_result player enc battle in
   new_player
+
+(* ------------------------------------------------------------------ *)
+(* Location actions: query / execute / complete / enter              *)
+(* ------------------------------------------------------------------ *)
+
+(* Apply a quest's guarded effect groups for one event: every group whose
+   guard matches runs, in source order, and each later group's guard re-reads
+   the state as the fold sees it - OnCompleteAction bodies run sequential
+   if-blocks, and Q0Q0 writes questState = 2 at state 1 before a state-2
+   turn-in test in the same body. The pre-event stage is the fallback once a
+   group Completes the quest: Lua's questState variable outlives the
+   CompleteQuest bookkeeping, so later guards still see it. *)
+let apply_loc_groups (player : player) (qid : string)
+    (rows : (int * string * callback_effect list) list)
+    (matches : int -> string -> player -> bool) : player =
+  List.fold_left
+    (fun acc (st, loc, effs) ->
+      if matches st loc acc then
+        List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
+      else acc)
+    player rows
+
+let apply_complete_groups (player : player) (qid : string)
+    (rows : (int * int * string * callback_effect list) list)
+    (matches : int -> int -> string -> player -> bool) : player =
+  List.fold_left
+    (fun acc (st, suc, loc, effs) ->
+      if matches st suc loc acc then
+        List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
+      else acc)
+    player rows
+
+(* A hero arrived at [location]: every active quest gets its OnEnterLocation
+   rules evaluated against the arrival (effects applying in active-quest
+   order so a later rule sees an earlier removal - the order the engine's
+   single hero would), then the extracted enter_effects: arrival
+   conversations, messages, state writes and completes under their guard
+   (state -1 = any stage, loc "" = any node), live like the sequential
+   if-blocks of the Lua body. *)
+let enter_location (player: player) (location: string) : player =
+  List.fold_left
+    (fun p (qid, st) ->
+      let q = quest_by_id qid in
+      let qi = { quest = q; state = Active st;
+                 vars = quest_var_set [] "questState" (string_of_int st) } in
+      let _, effects = run_quest_on_enter_location qi location in
+      let p = List.fold_left (fun p' e -> apply_quest_effect p' e) p effects in
+      apply_loc_groups p qid q.enter_effects
+        (fun st' loc' p' ->
+          let cur =
+            match List.assoc_opt qid p'.active_quests with
+            | Some s -> s
+            | None -> st
+          in
+          (st' = -1 || st' = cur) && (loc' = "" || loc' = location)))
+    player player.active_quests
+
+(* What the hero can do at [location]: for each active quest, the first
+   OnQueryAction label whose (state, location) guard matches - source order,
+   the branch Lua would show (state -1 / loc "" = any). [(qid, text tag)];
+   quests with no matching branch are left out. *)
+let query_actions (player : player) (location : string) :
+    (string * string) list =
+  List.filter_map
+    (fun (qid, st) ->
+      let q = quest_by_id qid in
+      match List.find_opt
+              (fun (st', loc', _) ->
+                 (st' = -1 || st' = st) && (loc' = "" || loc' = location))
+              q.query_actions
+      with
+      | Some (_, _, tag) -> Some (qid, tag)
+      | None -> None)
+    player.active_quests
+
+(* Start [qid]'s action here: OnExecuteAction's matching groups run - the
+   action's conversation or message queues, its state write applies, and
+   some actions complete straight from execute (Q0I3 turns in at the
+   finish). No-op when the quest is not active or no group matches. The
+   caller then shows the queued dialogue/message and, when the action has a
+   battle, runs it and follows with [complete_action] - the engine fires
+   OnCompleteAction on the return to the map. *)
+let execute_action (player : player) (qid : string) (location : string) :
+    player =
+  match List.assoc_opt qid player.active_quests with
+  | None -> player
+  | Some st0 ->
+    let q = quest_by_id qid in
+    apply_loc_groups player qid q.execute_effects
+      (fun st loc p ->
+        let cur =
+          match List.assoc_opt qid p.active_quests with
+          | Some s -> s
+          | None -> st0
+        in
+        (st = -1 || st = cur) && (loc = "" || loc = location))
+
+(* [qid]'s action finished at [location]: OnCompleteAction's matching groups
+   run under the outcome - [success] is the battle result or the dialogue's
+   own conclusion, and a group keyed -1 matches either. Guards read the live
+   stage, so calling this after quest_battle_complete matches Lua (the stage
+   the return finds), while a group keyed to the pre-battle stage simply does
+   not match anymore. No-op when the quest is not active or no group matches. *)
+let complete_action ?(success = true) (player : player) (qid : string)
+    (location : string) : player =
+  match List.assoc_opt qid player.active_quests with
+  | None -> player
+  | Some st0 ->
+    let q = quest_by_id qid in
+    apply_complete_groups player qid q.complete_effects
+      (fun st suc loc p ->
+        let cur =
+          match List.assoc_opt qid p.active_quests with
+          | Some s -> s
+          | None -> st0
+        in
+        (st = -1 || st = cur)
+        && (suc = -1 || suc = (if success then 1 else 0))
+        && (loc = "" || loc = location))
