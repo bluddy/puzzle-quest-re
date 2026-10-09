@@ -10,6 +10,7 @@ from pathlib import Path
 BASE = Path("game/Assets/Assets/Conversations")
 TEXT_BASE = Path("game/Assets/English/Conversations")
 
+
 def parse_conv_text(xml_path):
     if not xml_path.exists():
         return {}
@@ -21,6 +22,7 @@ def parse_conv_text(xml_path):
         content = text_elem.text or ""
         texts[tag] = content
     return texts
+
 
 def parse_conversation(xml_path):
     tree = ET.parse(xml_path)
@@ -47,11 +49,15 @@ def parse_conversation(xml_path):
 
     acts = []
     for a in actions:
-        acts.append({
+        act = {
             "type": a.get("type"),
             "character": int(a.get("character")) if a.get("character") is not None else -1,
             "text": a.get("text", ""),
-        })
+        }
+        if a.get("type") == "scriptcall":
+            act["object"] = a.get("object", "")
+            act["function"] = a.get("function", "")
+        acts.append(act)
 
     return {
         "id": xml_path.stem,
@@ -62,6 +68,7 @@ def parse_conversation(xml_path):
         "characters": chars,
         "actions": acts,
     }
+
 
 def main():
     import argparse
@@ -95,6 +102,8 @@ def main():
     lines.append("  type_: string;")
     lines.append("  character: int;")
     lines.append("  text: string;")
+    lines.append("  scriptcall_object: string option;")
+    lines.append("  scriptcall_function: string option;")
     lines.append("}")
     lines.append("")
     lines.append("type conversation = {")
@@ -133,6 +142,12 @@ def main():
             lines.append(f'        type_ = "{a["type"]}";')
             lines.append(f'        character = {a["character"]};')
             lines.append(f'        text = "{a["text"]}";')
+            if a["type"] == "scriptcall":
+                lines.append(f'        scriptcall_object = Some "{a["object"]}";')
+                lines.append(f'        scriptcall_function = Some "{a["function"]}";')
+            else:
+                lines.append("        scriptcall_object = None;")
+                lines.append("        scriptcall_function = None;")
             lines.append("      };")
         lines.append("    ];")
         lines.append("  };")
@@ -142,8 +157,9 @@ def main():
     lines.append("let conversation_by_id id = List.find (fun c -> c.id = id) conversations")
     lines.append("")
 
-    Path(args.output).write_text("\n".join(lines))
+    Path(args.output).write_text("\n".join(lines), encoding="utf-8", newline="\n")
     print(f"Wrote {args.output}")
+
 
 if __name__ == "__main__":
     main()

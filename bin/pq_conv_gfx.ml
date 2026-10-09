@@ -14,6 +14,8 @@
 open Puzzle_quest_lib
 open Pq_gfx
 open Tsdl
+open Campaign
+open Battle
 module E = Tsdl.Sdl.Event
 
 let window_w = Layout.game_screen_w
@@ -30,11 +32,12 @@ type ui = {
   fonts : Pq_gfx.Font.t option;
   system : Font_layout.metrics option;
   small : Font_layout.metrics option;
-  mutable conversation : Conversation.t option;
-  mutable current_line : int;
+  mutable conversation : Campaign_conversations.conversation option;
+  mutable action_index : int;
   mutable scroll : int;
   mutable choices : (string * string) list option;  (* (text, target) for choices *)
   mutable selected_choice : int option;
+  mutable battle : (Campaign.player * Battle.battle) option;  (* Active battle from scriptcall *)
 }
 
 let portrait_names = [
@@ -125,7 +128,7 @@ let draw_portrait (rs : Gl.run list ref) (gl : Gl.context) (portrait : Gl.textur
 let draw_conversation (ui : ui) (rs : Gl.run list ref) (gl : Gl.context) : unit =
   match ui.conversation with
   | None -> ()
-| Some conv ->
+  | Some conv ->
       let sys = ui.system and f = ui.fonts in
       let measure s = match sys with Some m -> Font_layout.measure m s | None -> 8 * String.length s in
       let text (colour : Layout.colour) s x y =
@@ -136,21 +139,32 @@ let draw_conversation (ui : ui) (rs : Gl.run list ref) (gl : Gl.context) : unit 
       (* Background panel *)
       solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h } (Layout.rgba 0 0 0 180);
       (* Character portrait *)
-      let portrait_name = conv.Conversation.speaker_name in
-      let portrait = get_portrait ui conv.Conversation.speaker_name in
-      draw_portrait rs gl (get_portrait ui conv.Conversation.speaker_name);
+      let portrait_name = conv.Campaign_conversations.backdrop in
+      let portrait = get_portrait ui conv.Campaign_conversations.backdrop in
+      draw_portrait rs gl (get_portrait ui conv.Campaign_conversations.backdrop);
       (* Dialogue background *)
       solid rs gl dialogue_rect (Layout.rgb 20 20 20);
-      (* Speaker name *)
-      text name_colour conv.Conversation.speaker_name name_x name_y;
-      (* Dialogue text *)
-      let visible_lines = Conversation_layout.to_display_list conv in
-List.iteri (fun i (speaker, line_text) ->
-          if i < max_visible_lines then
-            text text_color speaker name_x (name_y + i * line_height);
-            text text_color line_text dialogue_rect.Layout.x (dialogue_rect.Layout.y + i * line_height)
-      ) (List.take max_visible_lines (List.drop 0 visible_lines));
-      (* No choices implemented yet - placeholder *)
+      (* Speaker name - use first character name *)
+      let speaker_name = 
+        match conv.Campaign_conversations.characters with
+        | [] -> ""
+        | (c :: _) -> c.Campaign_conversations.name in
+      text name_colour speaker_name name_x name_y;
+      (* Dialogue text - show current action text *)
+      let current_action = 
+        if ui.action_index < List.length conv.Campaign_conversations.actions then
+          Some (List.nth conv.Campaign_conversations.actions ui.action_index)
+        else None in
+      match current_action with
+      | Some action ->
+          let text_content = 
+            if action.Campaign_conversations.text = "" then
+              "..." 
+            else action.Campaign_conversations.text in
+          text text_color text_content name_x name_y;
+      | None -> 
+          text text_color "Conversation ended." name_x name_y;
+      (* Advance action on click - handled in handle_click *)
       ()
 
 let draw (ui : ui) : unit =
@@ -159,22 +173,65 @@ let draw (ui : ui) : unit =
   let rs = ref [] in
   (* Background: dimmed map *)
   solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h } (Layout.rgba 0 0 0 180);
-  match ui.conversation with
-  | Some conv -> draw_conversation ui rs gl
-  | None -> ();
+  match ui.battle with
+  | Some (_, battle) ->
+      (* Draw battle instead of conversation *)
+      (* TODO: integrate with battle renderer *)
+      draw_conversation ui rs gl
+  | None ->
+      match ui.conversation with
+      | Some _ -> draw_conversation ui rs gl
+      | None -> ();
   Gl.submit ui.gl !rs;
   Gl.present ui.gl
 
 let handle_click (ui : ui) (mx : int) (my : int) : unit =
   match ui.conversation with
   | None -> ()
-  | Some _ ->
-      (* TODO: handle choice selection *)
-      ()
+  | Some conv ->
+      if ui.action_index < List.length conv.Campaign_conversations.actions then
+        let action = List.nth conv.Campaign_conversations.actions ui.action_index in
+        if action.Campaign_conversations.type_ = "scriptcall" then
+          (* Execute scriptcall - will be handled in step *)
+          ()
+        else
+          ui.action_index <- ui.action_index + 1
 
 let step (ui : ui) (dt : float) : unit =
-  (* No automatic advancement - player controls pace *)
-  ()
+  match ui.conversation with
+  | Some conv ->
+      if ui.action_index < List.length conv.Campaign_conversations.actions then
+        let action = List.nth conv.Campaign_conversations.actions ui.action_index in
+        if action.Campaign_conversations.type_ = "scriptcall" then
+          (* Execute scriptcall *)
+          match action.Campaign_conversations.scriptcall_object, action.Campaign_conversations.scriptcall_function with
+          | Some obj, Some fn ->
+              let prof = Campaign_professions.profession_by_id "PWAR" in
+              let campaign_player = { 
+                name = "TestHero"; 
+                profession = prof; 
+                sex = 0; age = 0; level = 1; xp = 0; gold = 0; 
+                life = 100; max_life = 100; mana = 0; max_mana = 0; 
+                skills = prof.skills; 
+                equipment = default_equipment; 
+                inventory = []; known_spells = []; 
+                active_quests = []; completed_quests = []; 
+                companions = []; awards = []; 
+                current_city = Some "CBAR"; 
+                dungeon_built = true; 
+                monster_defeats = []; 
+                captives = []; 
+              } in
+              match execute_callback ~rng:Random.int campaign_player obj fn with
+              | Some (player, battle) ->
+                  ui.battle <- Some (player, battle);
+                  ui.action_index <- ui.action_index + 1;
+              | None ->
+                  ui.action_index <- ui.action_index + 1
+          | _ ->
+              ui.action_index <- ui.action_index + 1
+      else ui.action_index <- ui.action_index + 1
+  | None -> ()
 
 let () =
   Random.self_init ();
@@ -192,14 +249,14 @@ let () =
   | None ->
       Printf.printf "  no font atlases in %s - run tools/extract_gfx_assets.py (no labels)\n" (Pq_gfx.Font.face_dir ())
   | Some _ -> ());
-  let conversation = Conversation.find (Conversation.load_all ()) "Q0I2a" in
+  let conversation = Some (Campaign_conversations.conversation_by_id "Conv_Q0I2a") in
   let ui =
     { gl; portraits = load_portraits (); fonts; system = Font_layout.metrics_of_tag "font_system";
       small = Font_layout.metrics_of_tag "font_small";
-      conversation = conversation; current_line = 0; scroll = 0; choices = None; selected_choice = None }
+      conversation = conversation; action_index = 0; scroll = 0; choices = None; selected_choice = None; battle = None }
   in
   Printf.printf "renderer: %s\n  GL: %s\n  conversation: %s\n"
-    (Gl.renderer_name ()) (Gl.gl_version ()) (match conversation with Some c -> c.Conversation.id | None -> "none");
+    (Gl.renderer_name ()) (Gl.gl_version ()) (match conversation with Some c -> c.Campaign_conversations.id | None -> "none");
   flush stdout;
   let ev = Sdl.Event.create () in
   let last = ref (Sdl.get_ticks ()) in
