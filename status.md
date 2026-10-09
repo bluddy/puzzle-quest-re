@@ -176,11 +176,10 @@ source assets.
 | Priority | Area | Description |
 |----------|------|-------------|
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
-| **High** | **Campaign tests (rest)** | Landed: travel primitives, encounter appearance, income and level-up now tested (159 assertions in test_campaign); the travel journey step awaits the world map |
 | **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
-| **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
+| **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
 | **Medium** | **Companions / Mounts** | Companion equip slot + passive bonuses, mount speed/fly, banner effects (party list and battle hooks now exist) |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |
@@ -205,36 +204,14 @@ source assets.
 
 ## Known Gaps
 
-1. **Campaign tests (rest)** — `test_campaign.ml` covers prerequisites, the
-   quest lifecycle, the visibility rule, the ruin registry, the save
-   round-trip, companion removal and battle setup, and now travel
-   primitives, encounter appearance, income and level-up (400 assertions
-   across four campaign suites); the journey step is tested now too
-   (begin/walk/arrive, departure roll) - drawing it and its popup is the
-   world map UI
-2. **Companion edges** — arrival removal is extracted and run
-   (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival
-   event to run under, and no travel step calls enter_location yet); the rune's
-   `OnStartBattle` waits on the forge's rune state; equip slot and UI open
-3. **Fog of war / visible range** — visibility flags exist and save correctly, and the
-   map window now draws the hero's position (current node, or on the road); still
-   open is visible-*range* logic - recomputing what the hero can see from where
-   they stand - and fog painting
-4. **Spell targeting** — both halves wired: the player aims from the cast
-   question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks'
-   `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per
-   candidate); hover cursor and valid-target highlighting are cosmetic-open,
-   and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since
-   their hooks store no cell (`port.ai_aim_fallback`)
-5. **Monster spell rosters** — quest and road fights both load the monster's
-   registry `Spell` tags now; mana-aware dynamic selection and any weighting
-   of spell choice beyond each hook's own board reads remain open
-6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`)
-   not wired to dialogue UI
-7. **Conditional quest rewards** — if/else reward branches take the first source-order
-   value (recorded as `campaign.quest_rewards_conditional`)
-8. **Languages** — `text_data.ml` ships English only; French, German, Italian and
-   Spanish carry the same 2,638 entries and the extractor takes `--language`
+1. **Campaign → Battle Integration** — 36 guardless `QUEST_BATTLE` calls in conversation callbacks (Q3Q5, QU02, etc.) have no battle to run; the engine supports `run_quest_battle` but the callback wiring is missing.
+2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under, and no travel step calls enter_location yet); the rune's `OnStartBattle` waits on the forge's rune state; equip slot and UI open
+3. **Fog of war / visible range** — visibility flags exist and save correctly, and the map window now draws the hero's position (current node, or on the road); still open is visible-*range* logic - recomputing what the hero can see from where they stand - and fog painting
+4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover cursor and valid-target highlighting are cosmetic-open, and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
+5. **Monster spell rosters** — quest and road fights both load the monster's registry `Spell` tags now; mana-aware dynamic selection and any weighting of spell choice beyond each hook's own board reads remain open
+6. **Conversation branching** — `Action.type` variants (`talk_youngmale`, `wait`, `end`) not wired to dialogue UI
+7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)
+8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
 
 ---
 
