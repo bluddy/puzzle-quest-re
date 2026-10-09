@@ -186,6 +186,7 @@ let () =
   check "accepting an unavailable quest changes nothing"
     ((Campaign.quest_accept { p with Campaign.level = 1 } "Q0I1").Campaign.active_quests
      = p.Campaign.active_quests)
+;;
 
 (* ------------------------------------------------------------------ *)
 (* 2. Quest lifecycle: accept -> battle -> turn in                    *)
@@ -275,6 +276,7 @@ let () =
     check "OnEnd reveals the nodes the script asks for"
       (Campaign.node_visible "CDKO")
   end
+in ()
 
 (* ------------------------------------------------------------------ *)
 (* 3. Map visibility: the both-endpoints road rule                    *)
@@ -325,6 +327,7 @@ let () =
   check "an unknown node is inert, not an exception"
     (begin Campaign.set_location_visible "ZZZZ" true;
            not (Campaign.node_visible "ZZZZ") end)
+;;
 
 (* ------------------------------------------------------------------ *)
 (* 4. Save / load round-trip                                          *)
@@ -391,6 +394,7 @@ let () =
   restore initial;
   check "the snapshot restores the shipped visibility"
     (take_snapshot () = initial)
+;;
 
 (* ------------------------------------------------------------------ *)
 (* 5. Ruin registration: refcounts, releases, and the save round-trip  *)
@@ -559,6 +563,7 @@ let () =
      && Campaign.ruin_done_snapshot () = done0);
   check "the map is left as it was found"
     (take_snapshot () = initial)
+;;
 
 let () =
   (* QUEST_REMOVE_COMPANION: a companion leaves the party when the hero
@@ -614,6 +619,7 @@ let () =
   check "removing someone not in the party is a no-op"
     ((Campaign.apply_quest_effect active (Campaign.RemoveCompanion "NKHA"))
      .Campaign.companions = [ "NSER"; "NWIN" ])
+;;
 
 let () =
   (* Campaign fights stop running on hand-set defaults: the recovered hero/task
@@ -659,6 +665,7 @@ let () =
        b.Battle.enemy_spells);
   check "the whole roster lands, not just its first spell"
     (List.length b.Battle.enemy_spells = 3)
+;;
 
 (* ------------------------------------------------------------------ *)
 (* 6. Travel, encounter appearance, income, level-up                  *)
@@ -721,6 +728,7 @@ let () =
   check "a hero under its level is never stopped"
     (Campaign.road_encounter { walker with Campaign.level = 0 } "CGAL" "WRAR"
      = None)
+;;
 
 let () =
   (* Encounter appearance: the two extracted conditions from OnQueryAppearance
@@ -771,6 +779,7 @@ let () =
   check "the road's visible list eventually shows the goblin"
     (List.exists (fun (e : Campaign_encounters.encounter) -> e.Campaign_encounters.id = "EAGO")
        (roll 1000))
+;;
 
 let () =
   (* Income: standing in a city pays its registry value per visit; standing
@@ -784,6 +793,7 @@ let () =
   check_int "a second city pays its own rate"
     (Campaign.collect_income { p with Campaign.current_city = Some "CDRA" }).Campaign.gold
     (p.Campaign.gold + 150)
+;;
 
 let () =
   (* Level-up: the profession table decides the threshold, one call pays one
@@ -812,6 +822,7 @@ let () =
     ((Campaign.check_level_up
         (Campaign.check_level_up { p with Campaign.xp = 9999 })).Campaign.level
      = 3)
+;;
 
 let () =
   (* City transactions: the shop charges the registry's cost, takes the gold
@@ -843,7 +854,8 @@ let () =
     | (name, desc) :: _ ->
         name = Text_data.text "[RUMOR_U000_NAME]"
         && desc = Text_data.text "[RUMOR_U000_DESC]"
-    | [] -> false);
+    | [] -> false)
+;;
 
 let () =
   (* City transactions: the shop charges the registry's cost, takes the gold
@@ -875,7 +887,8 @@ let () =
       check "the first rumor is the library's first"
         (name = Text_data.text "[RUMOR_U000_NAME]"
          && desc = Text_data.text "[RUMOR_U000_DESC]")
-  | [] -> check "the first is the library's first" false);
+   | [] -> check "the first is the library's first" false)
+;;
 
 let () =
   (* Conversation system: the engine triggers conversations via
@@ -895,6 +908,7 @@ let () =
      | None -> false);
   check "a non-existent conversation returns None"
     (Conversation.find convs "NONEXISTENT" = None)
+;;
 
 let () =
   if !failures > 0 then begin
@@ -902,4 +916,5 @@ let () =
     exit 1
   end;
   print_endline "all campaign tests passed"
+;;
 
