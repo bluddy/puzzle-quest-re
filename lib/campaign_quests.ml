@@ -42260,3 +42260,53 @@ let quests_at_location loc = List.filter (fun q -> q.avail_location = loc) quest
 let quest_text q tag = try List.assoc tag q.texts with Not_found -> Text_data.text tag
 let quest_name q = quest_text q q.name_text
 let quest_desc q = quest_text q q.desc_text
+
+
+(* Conversation/message callbacks that trigger battles *)
+type callback_battle = {
+  cb_monster_id: string;
+  cb_battle_index: int;
+  cb_capture: bool;
+  cb_custom: bool;
+}
+
+let callback_battles_table = [
+  ("Q0I2", "CallbackGuardian"), { cb_monster_id = "MRAT"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q0Q0", "CallbackAmbush"), { cb_monster_id = "MTHF"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q0Q7", "CallbackAmbush"), { cb_monster_id = "MTHF"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q0T1", "CallbackConvA"), { cb_monster_id = "MTUT"; cb_battle_index = 0; cb_capture = true; cb_custom = true; };
+  ("Q0T2", "CallbackConvA"), { cb_monster_id = "MKNI"; cb_battle_index = 0; cb_capture = true; cb_custom = true; };
+  ("Q1E0", "OnExecuteAction"), { cb_monster_id = "MFEL"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q1Q4", "CallbackMsgA"), { cb_monster_id = "MWLF"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1Q4", "CallbackMsgB"), { cb_monster_id = "MWLF"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q1Q6", "CallbackConvB"), { cb_monster_id = "MSCO"; cb_battle_index = 1; cb_capture = false; cb_custom = false; };
+  ("Q1Q6", "CallbackMsgA"), { cb_monster_id = "MSCO"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1Q7", "CallbackMsgB"), { cb_monster_id = "MDSP"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1Q8", "CallbackMsgB"), { cb_monster_id = "MWYV"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1R0", "CallbackMsgA"), { cb_monster_id = "MFGI"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1R1", "CallbackMsgA"), { cb_monster_id = "MWYV"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1R2", "CallbackMsgA"), { cb_monster_id = "MMED"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1R3", "CallbackMsgA"), { cb_monster_id = "MMIN"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q1R3", "CallbackMsgE"), { cb_monster_id = "MMIN"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q2M0", "CallbackConvB"), { cb_monster_id = "MFEL"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q2Q9", "CallbackConvC"), { cb_monster_id = "MMGO"; cb_battle_index = 0; cb_capture = false; cb_custom = false; };
+  ("Q3D0", "CallbackMsg"), { cb_monster_id = "MARB"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3D1", "CallbackConvB"), { cb_monster_id = "MDRU"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3E0", "CallbackMsg"), { cb_monster_id = "MDRG"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3E1", "CallbackMsg"), { cb_monster_id = "MDRR"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3E2", "CallbackMsg"), { cb_monster_id = "MDRB"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3I3", "CallbackConvB"), { cb_monster_id = "MDOO"; cb_battle_index = 1; cb_capture = true; cb_custom = false; };
+  ("Q3Q5", "OnExecuteAction"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3Q5", "OnExecuteAction"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3Q5", "OnExecuteAction"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3Q5", "CallbackConvB"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3Q5", "CallbackConvC"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("Q3Q5", "CallbackConvD"), { cb_monster_id = "MNEC"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("QA01", "CallbackConvB"), { cb_monster_id = "MKNI"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("QA03", "CallbackConvB"), { cb_monster_id = "MLIA"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("QK06", "MsgCallbackA"), { cb_monster_id = "MDDW"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+  ("QS00", "CallbackConvB"), { cb_monster_id = "MIMG"; cb_battle_index = 0; cb_capture = true; cb_custom = false; };
+]
+
+let callback_battles (key: string * string) : callback_battle option =
+  try Some (List.assoc key callback_battles_table) with Not_found -> None

@@ -13,6 +13,7 @@
 
 open Puzzle_quest_lib
 open Pq_gfx
+open Tsdl
 module E = Tsdl.Sdl.Event
 
 let window_w = Layout.game_screen_w
@@ -23,33 +24,20 @@ let asset_dir () =
   | Some p when Sys.file_exists p && Sys.is_directory p -> p
   | _ -> "assets/gfx"
 
-let load_portraits () : (string * Gl.texture) list =
-  List.map (fun name ->
-      let path = Filename.concat (asset_dir ()) (Printf.sprintf "Portrait_%s.png" name) in
-      let tex =
-        if Sys.file_exists path then
-          let px, w, h = Assets.load_image path in
-          Some (Gl.texture_of_bigarray ~w ~h px)
-        else None
-      in
-      (name, tex))
-    (List.map fst (List.filter (fun (_, v) -> v <> None) portraits))
-
 type ui = {
   gl : Gl.context;
-  portraits : (string * Gl.texture) list;
-  fonts : Font.t option;
+  portraits : (string * Gl.texture option) list;
+  fonts : Pq_gfx.Font.t option;
   system : Font_layout.metrics option;
   small : Font_layout.metrics option;
   mutable conversation : Conversation.t option;
   mutable current_line : int;
   mutable scroll : int;
   mutable choices : (string * string) list option;  (* (text, target) for choices *)
-  mutable pending_choice : int option;  (* player's selection *)
+  mutable selected_choice : int option;
 }
 
-let load_portraits () : (string * Gl.texture option) list =
-  let portraits = [
+let portrait_names = [
     "NPC_Darkhunter"; "NPC_Drong"; "NPC_Drong_Large"; "NPC_NGrd";
     "NPC_Serephine"; "NPC_Nwin"; "NPC_Nkha"; "NPC_Nfli";
     "NPC_Nemy"; "NPC_Nemy_Large"; "NPC_Nemy_Small";
@@ -68,7 +56,9 @@ let load_portraits () : (string * Gl.texture option) list =
     "Q0I4e_Emperor"; "Q0I5a_Emperor"; "Q3Q5_Dhk"; "Q3Q5_Nkha";
     "Q3Q5_Nwin"; "Q3Q5_Nfli"; "Q3Q5_Neli"; "Q3S0_Nser"; "Q3S0_Nwin";
     "Q3S0_Nkha"; "Q3S0_Nfli"; "Q3S0_Neli"; "Q3W0_Nser";
-  ] in
+  ]
+
+let load_portraits () : (string * Gl.texture option) list =
   List.map (fun name ->
       let path = Filename.concat (asset_dir ()) (Printf.sprintf "Portrait_%s.png" name) in
       let tex =
@@ -78,12 +68,12 @@ let load_portraits () : (string * Gl.texture option) list =
         else None
       in
       (name, tex))
-    portraits
+    portrait_names
 
 type portrait_key = string
 
 let get_portrait (ui : ui) (name : string) : Gl.texture option =
-  List.find_opt (fun (n, _) -> n = name) ui.portraits
+  Option.bind (List.find_opt (fun (n, _) -> n = name) ui.portraits) (fun (_, tex_opt) -> tex_opt)
 
 let portrait_rect : Layout.rect =
   { Layout.x = 50; y = 150; w = 256; h = 384 }
@@ -97,9 +87,6 @@ let line_height = 24
 let name_x = 100
 let name_y = 100
 
-let line_height = 24
-let max_visible = 12
-
 let text_color = Layout.rgb 230 230 230
 let name_colour = Layout.rgb 255 215 0
 let choice_colour = Layout.rgb 200 200 100
@@ -110,28 +97,14 @@ type choice = {
   target: string;  (* next conversation node ID *)
 }
 
-type ui = {
-  gl : Gl.context;
-  portraits : (string * Gl.texture option) list;
-  fonts : Font.t option;
-  system : Font_layout.metrics option;
-  small : Font_layout.metrics option;
-  mutable conversation : Conversation.t option;
-  mutable current_line : int;
-  mutable choices : (string * string) list option;  (* (text, target) for choices *)
-  mutable selected_choice : int option;
-}
-
 let measure_text (m : Font_layout.metrics) (s : string) : int =
   Font_layout.measure m s
 
 let draw_text
-    (gl : Gl.context) (fonts : Font.t) (m : Font_layout.metrics)
-    ?(colour : Layout.colour)
-    (s : string) ~x:int ~y:int : Gl.run list =
-  match Font.draw gl fonts m ?colour ~x:0 ~y:0 with
-  | [] -> []
-  | runs -> List.map (fun r -> { r with Gl.x = x; y = y }) (Font.draw gl fonts m ~colour ~x ~y)
+    (gl : Gl.context) (fonts : Pq_gfx.Font.t) (m : Font_layout.metrics)
+    (colour : Layout.colour)
+    (s : string) (x : int) (y : int) : Gl.run list =
+  Pq_gfx.Font.draw gl fonts m ~colour:colour s ~x:x ~y:y
 
 let solid (rs : Gl.run list ref) (gl : Gl.context) (dst : Layout.rect)
     ?(rotate = 0.0) (col : Layout.colour) : unit =
@@ -146,36 +119,36 @@ let textured (rs : Gl.run list ref) (gl : Gl.context) (dst : Layout.rect)
 
 let draw_portrait (rs : Gl.run list ref) (gl : Gl.context) (portrait : Gl.texture option) : unit =
   match portrait with
-  | Some tex -> textured rs gl portrait_rect (Some tex) (Layout.rgb 255 255 255)
+  | Some tex -> textured rs gl portrait_rect tex (Layout.rgb 255 255 255)
   | None -> solid rs gl portrait_rect (Layout.rgb 80 80 80)
 
 let draw_conversation (ui : ui) (rs : Gl.run list ref) (gl : Gl.context) : unit =
   match ui.conversation with
   | None -> ()
-  | Some conv ->
+| Some conv ->
       let sys = ui.system and f = ui.fonts in
-      let measure s = match sys with Some m -> Font_layout.measure m | None -> 8 * String.length in
-      let text ?(colour = text_color) s x y =
+      let measure s = match sys with Some m -> Font_layout.measure m s | None -> 8 * String.length s in
+      let text (colour : Layout.colour) s x y =
         match (ui.fonts, ui.system) with
-        | Some ff, Some m -> rs := !rs @ Font.draw gl ff m s ~colour ~x ~y
+        | Some ff, Some m -> rs := !rs @ Pq_gfx.Font.draw gl ff m ~colour:colour s ~x:x ~y:y
         | _ -> ()
       in
       (* Background panel *)
       solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h } (Layout.rgba 0 0 0 180);
       (* Character portrait *)
-      let portrait_name = conversation.Conversation.speaker_name in
-      let portrait = get_portrait ui conversation.Conversation.speaker_name in
-      draw_portrait rs gl (get_portrait ui conversation.Conversation.speaker_name);
+      let portrait_name = conv.Conversation.speaker_name in
+      let portrait = get_portrait ui conv.Conversation.speaker_name in
+      draw_portrait rs gl (get_portrait ui conv.Conversation.speaker_name);
       (* Dialogue background *)
       solid rs gl dialogue_rect (Layout.rgb 20 20 20);
       (* Speaker name *)
-      text (conversation.Conversation.speaker_name) name_x name_y ~colour:name_colour;
+      text name_colour conv.Conversation.speaker_name name_x name_y;
       (* Dialogue text *)
-      let visible_lines = Conversation_layout.to_display_list conversation in
-      List.iteri (fun i (speaker, text) ->
+      let visible_lines = Conversation_layout.to_display_list conv in
+List.iteri (fun i (speaker, line_text) ->
           if i < max_visible_lines then
-            text ~colour:text_color speaker (speaker_x) (speaker_y + i * line_height);
-            text ~colour:text_color text (dialogue_x) (dialogue_y + i * line_height)
+            text text_color speaker name_x (name_y + i * line_height);
+            text text_color line_text dialogue_rect.Layout.x (dialogue_rect.Layout.y + i * line_height)
       ) (List.take max_visible_lines (List.drop 0 visible_lines));
       (* No choices implemented yet - placeholder *)
       ()
@@ -210,20 +183,20 @@ let () =
   let missing = List.length (List.filter (fun (_, t) -> t = None) segments) in
   if missing > 0 then
     Printf.printf "  %d of %d portrait textures missing from %s - run tools/extract_gfx_assets.py\n"
-      missing (List.length portraits) (asset_dir ());
+      missing (List.length portrait_names) (asset_dir ());
   let fonts =
-    Font.create ~styles:
+    Pq_gfx.Font.create ~styles:
       (List.filter_map Font_layout.metrics_of_tag [ "font_system"; "font_small" ])
   in
   (match fonts with
   | None ->
-      Printf.printf "  no font atlases in %s - run tools/extract_gfx_assets.py (no labels)\n" (Font.face_dir ())
+      Printf.printf "  no font atlases in %s - run tools/extract_gfx_assets.py (no labels)\n" (Pq_gfx.Font.face_dir ())
   | Some _ -> ());
-  let conversation = Some (Conversation.find (Conversation.load_all ()) "Q0I2a") in
+  let conversation = Conversation.find (Conversation.load_all ()) "Q0I2a" in
   let ui =
     { gl; portraits = load_portraits (); fonts; system = Font_layout.metrics_of_tag "font_system";
       small = Font_layout.metrics_of_tag "font_small";
-      conversation = conversation; current_line = 0; choices = None; selected_choice = None }
+      conversation = conversation; current_line = 0; scroll = 0; choices = None; selected_choice = None }
   in
   Printf.printf "renderer: %s\n  GL: %s\n  conversation: %s\n"
     (Gl.renderer_name ()) (Gl.gl_version ()) (match conversation with Some c -> c.Conversation.id | None -> "none");

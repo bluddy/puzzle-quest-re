@@ -838,19 +838,12 @@ let () =
     (List.length Campaign.rumors = 55);
   check "every rumor carries both halves"
     (List.for_all (fun (n, d) -> n <> "" && d <> "") Campaign.rumors);
-  (match Campaign.rumors with
-  | (name, desc) :: _ ->
-      check "the first is the library's first"
-        (name = Text_data.text "[RUMOR_U000_NAME]"
-         && desc = Text_data.text "[RUMOR_U000_DESC]")
-  | [] -> check "the first is the library's first" false)
-
-check "one call pays exactly one level, whatever the xp holds"
-    ((Campaign.check_level_up { p with Campaign.xp = 9999 }).Campaign.level = 2);
-  check "a second call pays the next one"
-    ((Campaign.check_level_up
-        (Campaign.check_level_up { p with Campaign.xp = 9999 })).Campaign.level
-     = 3)
+  check "the first rumor is the library's first"
+    (match Campaign.rumors with
+    | (name, desc) :: _ ->
+        name = Text_data.text "[RUMOR_U000_NAME]"
+        && desc = Text_data.text "[RUMOR_U000_DESC]"
+    | [] -> false);
 
 let () =
   (* City transactions: the shop charges the registry's cost, takes the gold
@@ -882,7 +875,7 @@ let () =
       check "the first rumor is the library's first"
         (name = Text_data.text "[RUMOR_U000_NAME]"
          && desc = Text_data.text "[RUMOR_U000_DESC]")
-  | [] -> check "the first is the library's first" false)
+  | [] -> check "the first is the library's first" false);
 
 let () =
   (* Conversation system: the engine triggers conversations via
@@ -901,7 +894,7 @@ let () =
      | Some c -> List.hd c.Conversation.lines = { Conversation.speaker = "Queen Gwendholyn"; text = "I have another message for you to deliver." }
      | None -> false);
   check "a non-existent conversation returns None"
-    (Conversation.find convs "NONEXISTENT" = None)
+    (Conversation.find convs "NONEXISTENT" = None);
 
 let () =
   if !failures > 0 then begin

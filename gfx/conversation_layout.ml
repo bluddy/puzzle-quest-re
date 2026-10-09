@@ -34,10 +34,10 @@ let dialogue_w = 660
 let dialogue_h = 300
 
 (** Maximum lines of text visible at once. *)
-let max_visible_lines = 12
+let _max_visible_lines = 12
 
 (** Line height for dialogue text. *)
-let line_height = 24
+let _line_height = 24
 
 (** The skip button (top right). *)
 let skip_btn : Layout.rect = { Layout.x = 884; y = 562; w = 128; h = 35 }
@@ -57,12 +57,6 @@ let gp_skip_h = 35
 (** Where the speaker name is drawn. *)
 let speaker_x = 100
 let speaker_y = 100
-
-(** Line height for dialogue text. *)
-let line_height = 24
-
-(** Maximum lines visible at once. *)
-let max_visible_lines = 12
 
 (** How close a click must be to a node to pick it, in screen pixels.
     At 3/8 scale that is 43 world pixels: generous next to the spacing of
@@ -98,12 +92,12 @@ let hit (mx : int) (my : int) =
 (** Build the visible segment of a conversation for display. *)
 let build_visible
     (conversation: Conversation.t)
-    (scroll: int)
+    (_scroll: int)
     : (string * string) list =
   let lines = conversation.Conversation.lines in
   let total = List.length lines in
-  let max_vis = 12 in
-  let start = max 0 (total - 12) in
+  let _max_vis = 12 in
+  let _start = max 0 (total - 12) in
   let visible =
     List.map (fun l -> (conversation.Conversation.speaker_name, l.Conversation.text))
       (List.take 12 (List.drop 0 lines))

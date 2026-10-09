@@ -176,7 +176,7 @@ source assets.
 | Priority | Area | Description |
 |----------|------|-------------|
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
-| **High** | **Campaign → Battle Integration** | Landed: encounter and quest fights both run through the real battle engine (`run_quest_battle` → settle → turn-in); the 36 guardless `QUEST_BATTLE` calls (conversation callbacks) still have no battle to run |
+| **High** | **Campaign → Battle Integration** | **Partially landed:** `execute_callback` in `campaign.ml` and `callback_battles` table in `campaign_quests.ml` wire 45 conversation callbacks to battles; 36 guardless `QUEST_BATTLE` calls from conversation callbacks (Q3Q5, QU02, etc.) now have engine support but callback wiring to conversation choices pending |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
@@ -204,7 +204,7 @@ source assets.
 
 ## Known Gaps
 
-1. **Campaign → Battle Integration** — 36 guardless `QUEST_BATTLE` calls in conversation callbacks (Q3Q5, QU02, etc.) have no battle to run; the engine supports `run_quest_battle` but the callback wiring is missing.
+1. **Campaign → Battle Integration** — `execute_callback` and `callback_battles` table land the engine support for 45 conversation callbacks; wiring conversation choice buttons to `execute_callback` is the remaining step for the 36 guardless `QUEST_BATTLE` calls (Q3Q5, QU02, etc.).
 2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under, and no travel step calls enter_location yet); the rune's `OnStartBattle` waits on the forge's rune state; equip slot and UI open
 3. **Fog of war / visible range** — visibility flags exist and save correctly, and the map window now draws the hero's position (current node, or on the road); still open is visible-*range* logic - recomputing what the hero can see from where they stand - and fog painting
 4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover cursor and valid-target highlighting are cosmetic-open, and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
@@ -237,10 +237,10 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe
 
 ```
 lib/
-  campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility
+  campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility, execute_callback
   campaign_map.ml          # 20 cities, 40 waypoints, 28 ruins, 93 roads
   campaign_encounters.ml   # 57 encounters (my_level, chance)
-  campaign_quests.ml       # 142 quests + per-quest text + extracted rewards/reveals
+  campaign_quests.ml       # 142 quests + per-quest text + extracted rewards/reveals + callback_battles table
   campaign_items.ml        # 160 items
   campaign_professions.ml  # 4 classes (skills, spells, XP)
   campaign_monsters.ml     # 60 monsters (capture grids)
@@ -253,7 +253,7 @@ lib/
 tools/
   extract_campaign_map.py
   extract_encounters.py
-  extract_quests.py        # XML + static Lua scan (QUEST_* calls, rewards, reveals)
+  extract_quests.py        # XML + static Lua scan (QUEST_* calls, rewards, reveals, callback battles)
   extract_items_professions_monsters.py
   extract_conversations.py
   extract_companions.py    # Companion XML + OnStartBattle flag
