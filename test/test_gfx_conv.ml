@@ -4,6 +4,7 @@
    tested at all. *)
 
 open Puzzle_quest_lib
+open Pq_gfx
 
 let failures = ref 0
 
@@ -34,11 +35,11 @@ let () =
     (Conversation_layout.dialogue_x = 330 && Conversation_layout.dialogue_y = 150
      && Conversation_layout.dialogue_w = 660 && Conversation_layout.dialogue_h = 300);
   check "name label above the dialogue"
-    (Conversation_layout.name_x = 100 && Conversation_layout.name_y = 100);
+    (Conversation_layout.speaker_x = 100 && Conversation_layout.speaker_y = 100);
   check "line height is 24px"
-    (Conversation_layout.line_height = 24);
+    (Conversation_layout._line_height = 24);
   check "max 12 lines visible"
-    (Conversation_layout.max_visible_lines = 12);
+    (Conversation_layout._max_visible_lines = 12);
   check "skip button in top right"
     (Conversation_layout.skip_btn.Layout.x = 884 && Conversation_layout.skip_btn.Layout.y = 562
      && Conversation_layout.skip_btn.Layout.w = 128 && Conversation_layout.skip_btn.Layout.h = 35);
@@ -47,7 +48,7 @@ let () =
   check "help text at bottom"
     (Conversation_layout.help_y = 540);
   check "hit radius is 16 pixels"
-    (Conversation_layout.hit_radius = 16);
+    (Conversation_layout.hit_radius = 16);;
 
 let () =
   (* Test hit testing for clickable areas *)
@@ -62,7 +63,7 @@ let () =
   check "click outside any interactive area is a miss"
     (Conversation_layout.hit 0 0 = `Miss);
   check "click on skip button is a skip"
-    (Conversation_layout.hit 900 570 = `Skip);
+    (Conversation_layout.hit 900 570 = `Skip)
 
 let () =
   if !failures = 0 then print_endline "all conversation layout tests passed"
