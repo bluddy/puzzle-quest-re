@@ -44,7 +44,8 @@ type player = {
   known_spells: string list; (* spell ids *)
   active_quests: (string * int) list; (* quest_id * state *)
   completed_quests: string list;
-  companions: string list;   (* companion monster ids *)
+  companions: string list;   (* the traveling party: companion ids, up to 8 *)
+  recruited_companions: string list; (* every companion ever granted; the party is the equipped subset *)
   awards: string list;       (* quest awards earned *)
   current_city: string option; (* for income collection *)
   dungeon_built: bool;       (* capture gate; chosen: true, see capture section *)
@@ -72,6 +73,7 @@ let create_player name prof_id sex age =
     active_quests = [];
     completed_quests = [];
     companions = [];
+    recruited_companions = [];
     awards = [];
     current_city = None;
     dungeon_built = true;
@@ -758,11 +760,20 @@ let apply_quest_effect p qeffect =
     (try { p with inventory = (item_by_id item_id) :: p.inventory } with Not_found -> p)
   | RewardAward award_id -> { p with awards = award_id :: p.awards }
   | RewardCompanion companion_id ->
-    (* [COMPANIONS_HELP]: "You can have up to 8 companions at a time." *)
+    (* [COMPANIONS_HELP]: "You can have up to 8 companions at a time."
+       The grant fills the roster unconditionally - [COMPANIONSTATUS_NEW0]
+       refuses the ninth only from the party, which is the equipped set. *)
+    let roster =
+      if List.mem companion_id p.recruited_companions then p.recruited_companions
+      else companion_id :: p.recruited_companions
+    in
     if List.mem companion_id p.companions || List.length p.companions >= 8
-    then p
-    else { p with companions = companion_id :: p.companions }
+    then { p with recruited_companions = roster }
+    else { p with recruited_companions = roster;
+                  companions = companion_id :: p.companions }
   | RemoveCompanion companion_id ->
+    (* Leaving the party, not the roster: [COMPANIONSTATUS_OUT0] still
+       knows where they live. *)
     { p with companions = List.filter (fun c -> c <> companion_id) p.companions }
   | RevealNode node_id -> set_location_visible node_id true; p
   | RegisterRuin id -> register_ruin id; p
@@ -774,6 +785,42 @@ let apply_quest_effect p qeffect =
           if List.mem qid p.completed_quests then p.completed_quests
           else qid :: p.completed_quests }
   | _ -> p
+
+(* ------------------------------------------------------------------ *)
+(* Companion equip: the party is the equipped subset of the roster.     *)
+(* [COMPANIONS_HELP]: "Most others can be left at a location and        *)
+(* picked up later" - [COMPANIONSTATUS_OUT1] gates the pickup on the    *)
+(* companion's home, which is the only location the registry carries.   *)
+(* ------------------------------------------------------------------ *)
+
+type companion_slot =
+  | Traveling                    (* in the party: its OnStartBattle hook fires *)
+  | At_home                      (* recruited, standing at home, party has room *)
+  | At_home_full                 (* recruited, at home, party full: [COMPANIONSTATUS_NEW0] *)
+  | Away of string               (* recruited, elsewhere: home id, [COMPANIONSTATUS_OUT0] *)
+  | Not_recruited                (* never granted *)
+
+let companion_home (cid: string) : string =
+  try (Campaign_companions.companion_by_id cid).home with Not_found -> ""
+
+let companion_slot (p: player) (cid: string) : companion_slot =
+  if List.mem cid p.companions then Traveling
+  else if not (List.mem cid p.recruited_companions) then Not_recruited
+  else if p.current_city = Some (companion_home cid) then
+    if List.length p.companions < 8 then At_home else At_home_full
+  else Away (companion_home cid)
+
+(* Equipping a companion: they join the party where they live, and only
+   there. Unequip is free - [COMPANIONS_HELP] lets you leave anyone at
+   wherever you stand. Both no-op on a refusal, so a driver that read
+   [companion_slot] cannot double-apply. *)
+let add_companion (p: player) (cid: string) : player =
+  match companion_slot p cid with
+  | At_home -> { p with companions = cid :: p.companions }
+  | _ -> p
+
+let remove_companion (p: player) (cid: string) : player =
+  { p with companions = List.filter (fun c -> c <> cid) p.companions }
 
 (* ------------------------------------------------------------------ *)
 (* Pending conversations                                                 *)

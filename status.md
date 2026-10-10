@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. The full location-event loop is playable in the map window: the city panel's Actions tab runs `query_actions`/`execute_action`, travel arrivals fire through `advance_travel_with_events` (`enter_location` on `AtNode`), and the shared `gfx/conv_window.ml` hosts queued dialogue, message boxes and callback battle banners over the map (`pq_conv_gfx` is a thin front over it); when the hosted dialog drains the driver follows with `complete_action`. Conversation trees open in the hosted window instead of printing. All 31 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Companion equip landed: the party is the equipped subset of a recruited roster (`recruited_companions` + `companions`), `add_companion` rejoins someone at their home (`[COMPANIONSTATUS_OUT1]`), `remove_companion` is free anywhere and keeps the roster, `companion_slot` reads the five states, the save carries the roster with an old-save default, and the map city panel gained a Companions tab whose rows a click leaves or picks up. The ten OnStartBattle hooks - the companion's whole recovered mechanic - already follow the party, so equipping gates the passive. All 32 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -76,6 +76,19 @@
   arrival rules (Q3S0 states 2-6 over five cities, QS00 at CENM) extracted
   into each quest's `enter_removes`; `Campaign.enter_location` runs them
   when the hero arrives and drops the companion through `RemoveCompanion`.
+- **Companion equip (NEW):** the party is the equipped subset of a recruited
+  roster - `recruited_companions` keeps everyone ever granted,
+  `RewardCompanion` fills both (the ninth is refused from the party only,
+  `[COMPANIONSTATUS_NEW0]`), `RemoveCompanion` leaves the roster intact;
+  `add_companion` rejoins them where they live (`companion_home`,
+  `[COMPANIONSTATUS_OUT1]`'s home gate) and `remove_companion` is free
+  anywhere (`[COMPANIONS_HELP]`); `companion_slot` reads
+  Traveling/At_home/At_home_full/Away/Not_recruited for a driver; the save
+  carries the roster separately (old saves default it to the party), and the
+  map city panel's Companions tab (`[COMPANIONS]`, `[COMPANIONS_DETAILS]`)
+  sorts the rows by status and a click leaves or picks up. The hooks follow
+  the party, so the equip act gates the passive - no separate skill fold
+  exists to invent, companions ship no skills of their own
   The two sites inside conversation callbacks (Q3Q5, QU02) count but have
   no arrival to run under.
 - **Rewards (NEW):** gold/XP/items/awards/companions read from the quest script by
@@ -98,8 +111,8 @@
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
 - **Tests:** `test/test_campaign.ml` (186), `test/test_capture.ml` (57),
-  `test/test_companion.ml` (110), `test/test_quest_battle.ml` (87) and
-  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 494
+  `test/test_companion.ml` (128), `test/test_quest_battle.ml` (87) and
+  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 512
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -115,11 +128,13 @@
   grants, completes, reattribution, effects-before-battle ordering), and the
   location-action flow (query first-match, execute/complete groups, live-state
   chains, arrivals, travel arrival through advance_travel_with_events, the
-  message queue and the OnEnd box).
+  message queue and the OnEnd box), and companion equip (roster vs party,
+  the four refusals, the home gate, the hook following the party, the save
+  keeping the roster separate).
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → a real quest battle through `run_quest_battle`
   (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
-  income → level-up → save → load. Verified green 2026-10-08.
+  income → level-up → companion equip (grant, leave, pick up at home) → save → load. Verified green 2026-10-10.
 
 ---
 
@@ -127,7 +142,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 84 | 10 (4 open) | 29 |
+| `docs/reverse/evidence.yml` | 85 | 10 (4 open) | 30 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
@@ -138,6 +153,7 @@ Key decisions recorded:
 - `port.city_services` — buying checks gold against cost only; ShopMenu's rows and buttons reused; rumors in tag order
 - `port.location_action_flow` - query is first match; execute/complete/enter apply every matching group live; the 3rd message arg is the display anchor
 - `port.full_loop_map_actions` - the map Actions tab + travel arrivals + shared Conv_window host the location-event loop; complete_action stays caller-driven
+- `campaign.companion_roster_equip` - equipping is party membership over a recruited roster; add at home, leave anywhere; the hooks are the passives
 - `port.conversation_ui` — portrait at (96,50), dialogue at y=170, choices at y=350; text wraps at 560px; `--conv --shot` pixel-checks
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
@@ -188,12 +204,12 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equipping still open |
+| **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equip landed (roster + party, home-gated pickup, the map Companions tab) |
 | **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, and the shared `Conv_window` that opens queued trees over the map. Still open: the two callback-site `QUEST_REMOVE_COMPANION` removals |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
-| **Medium** | **City UI** | Shop buy/sell, spell learning, companion management, tavern rumors (conversation panel done) |
-| **Medium** | **Companions / Mounts** | Companion equip slot + passive bonuses, mount speed/fly, banner effects (party list and battle hooks now exist) |
+| **Medium** | **City UI** | Shop buy/sell, spell learning, tavern rumors, and the Companions tab (leave/pick up); a dedicated hero screen and captive teaching remain open |
+| **Medium** | **Companions / Mounts** | Companion equip landed (roster/party + the ten hooks as the passives); mount speed/fly and banner effects remain open |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |
 | **Low** | **Polish** | Key remap, color-blind palettes, UI scale, tooltips, settings menu |
@@ -218,7 +234,7 @@ source assets.
 ## Known Gaps
 
 1. **Campaign → Battle Integration** — landed: `pq_conv_gfx` walks the actions and hands each `scriptcall` to `execute_callback`, which applies the body's extracted effects first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then runs the 33-row table's fight behind an outcome banner; quest state queues conversations (`pending_conversations`: OnBegin intros, guarded arrivals, nested trees — printed by the demo). The location-action flow and the message popup are landed (`query_actions`/`execute_action`/`complete_action`/`enter_location` with live-state groups, `pending_messages`, the conv-gfx modal box, `test_location_actions.ml`); the map window's Actions tab, travel arrivals through `advance_travel_with_events`, and the shared `Conv_window` that opens queued trees over the map are landed (`start_conversation` as a direct API remains unused).
-2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under; travel arrival now runs `enter_location` through `advance_travel_with_events`); the rune's `OnStartBattle` waits on the forge's rune state; equip slot and UI open
+2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under; travel arrival now runs `enter_location` through `advance_travel_with_events`); the rune's `OnStartBattle` waits on the forge's rune state; companion equip landed (roster + party, home-gated pickup, map Companions tab)
 3. **Fog of war / visible range** — visibility flags exist and save correctly, and the map window now draws the hero's position (current node, or on the road); still open is visible-*range* logic - recomputing what the hero can see from where they stand - and fog painting
 4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover cursor and valid-target highlighting are cosmetic-open, and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
 5. **Monster spell rosters** — quest and road fights both load the monster's registry `Spell` tags now; mana-aware dynamic selection and any weighting of spell choice beyond each hook's own board reads remain open
@@ -253,7 +269,8 @@ lib/
   campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility, execute_callback,
                              # pending conversation/message queues, location-action flow
                              # (query/execute/complete/enter + end at turn-in), per-callback effects,
-                             # travel arrivals (advance_travel_with_events)
+                             # travel arrivals (advance_travel_with_events), companion equip
+                             # (recruited roster + traveling party, home-gated pickup)
   campaign_map.ml          # 20 cities, 40 waypoints, 28 ruins, 93 roads
   campaign_encounters.ml   # 57 encounters (my_level, chance)
   campaign_quests.ml       # 142 quests + per-quest text + extracted rewards/reveals + conversations

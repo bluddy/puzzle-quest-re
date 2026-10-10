@@ -2875,6 +2875,46 @@ claims:
 
 # ------------------------------------------------------------ open questions ----
 
+  # ---------------------------------------------------------- companions ----
+
+  - id: campaign.companion_roster
+    title: Companions are a recruited roster and a traveling party of eight
+    area: campaign
+    verdict: mechanic
+    status: inferred
+    confidence: medium
+    source_pass: companions
+    summary: >
+      A grant fills both the roster and the party; the ninth is refused from
+      the party only ([COMPANIONSTATUS_NEW0]). Leaving the party keeps the
+      roster, and a companion is picked up again at their home
+      ([COMPANIONSTATUS_OUT1]'s "at this location", gated on the registry's
+      home field). [COMPANIONSTATUS_OUT0]'s %s is that same home. The
+      OnStartBattle hook fires for the traveling party only, so equipping a
+      companion is what gates its passive.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Companions/NDKH.xml
+        note: the companion file carries home= and no other location data
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: COMPANIONSTATUS_IN/NEW0/OUT0/OUT1/OUT2, COMPANIONS_HELP, COMPANIONS_DETAILS
+      - kind: code
+        ref: lib/campaign_companions.ml
+        note: the home field per companion
+      - kind: code
+        ref: lib/campaign.ml
+        fn: add_companion
+      - kind: code
+        ref: test/test_companion.ml
+    affects: [lib/campaign.ml, lib/campaign_save.ml, bin/campaign_demo.ml, bin/pq_map_gfx.ml]
+    notes: >
+      Quest-side removals (Q3S0's five sword points) left someone at the
+      quest location, which the registry does not carry; home is the only
+      recovered pickup point, and modelling the leave-behind location would
+      need a per-removal scan the extractor does not do. The equipment
+      record's companion field stays the panel's item slot it always was.
+
 open_questions:
 
   - id: quest.base_value_from_level
@@ -3718,5 +3758,30 @@ port_decisions:
       matching the road fight's interruptive role. The map city panel
       covers cities only (waypoints are not browsed), and quest-stage
       battles (run_quest_battle) are not yet wired to action rows.
+    supersedes: null
+    date: 2026-10-10
+
+  - id: campaign.companion_roster_equip
+    decision: >
+      Equipping a companion is party membership: recruited_companions is the
+      roster of everyone ever granted, the party is the equipped subset of
+      at most eight, add_companion joins only at the companion's home, and
+      remove_companion is free anywhere and keeps the roster.
+      companion_slot reads the five states a driver needs (Traveling,
+      At_home, At_home_full, Away, Not_recruited), and the save carries the
+      roster separately, defaulting to the party for saves written before it
+      existed. The OnStartBattle hooks - the companion's whole recovered
+      mechanic - fire for the party, so the equip act gates the passive.
+    rationale: >
+      COMPANIONSTATUS_IN/OUT0/OUT1/OUT2 are one status screen over two
+      lists: traveling, or located at a home the registry already carries,
+      with OUT1's "you may add them at this location" as the pickup gate and
+      NEW0 refusing only the party. Companions ship no skill data of their
+      own - the ten hooks are the passives - so no separate stat fold
+      exists to invent, and the hook following the party needs no change.
+      Both equip calls no-op on a refusal so a driver that read
+      companion_slot cannot double-apply. The map Companions tab sorts the
+      registry by status so the visible rows carry the party and the
+      at-home companions first; paging past seven is cosmetic-open.
     supersedes: null
     date: 2026-10-10

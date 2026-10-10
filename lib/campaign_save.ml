@@ -37,6 +37,7 @@ type save_player = {
   active_quests: (string * int) list;
   completed_quests: string list;
   companions: string list;
+  recruited_companions: string list;
   awards: string list;
   current_city: string option;
   dungeon_built: bool;
@@ -105,6 +106,7 @@ let save_player_to_json (p: save_player) =
     "active_quests", `List (List.map (fun (qid, state) -> `Assoc [("quest_id", `String qid); ("state", `Int state)]) p.active_quests);
     "completed_quests", `List (List.map (fun s -> `String s) p.completed_quests);
     "companions", `List (List.map (fun s -> `String s) p.companions);
+    "recruited_companions", `List (List.map (fun s -> `String s) p.recruited_companions);
     "awards", `List (List.map (fun s -> `String s) p.awards);
     "current_city", (match p.current_city with Some s -> `String s | None -> `Null);
     "dungeon_built", `Bool p.dungeon_built;
@@ -171,6 +173,10 @@ let save_player_of_json json =
     active_quests = (json |> member "active_quests" |> to_list) |> List.map (fun v -> (v |> member "quest_id" |> to_string, v |> member "state" |> to_int));
     completed_quests = (json |> member "completed_quests" |> to_list) |> List.map to_string;
     companions = (json |> member "companions" |> to_list) |> List.map to_string;
+    (* saves written before the roster existed load the party as the roster *)
+    recruited_companions = (match json |> member "recruited_companions" with
+      | `Null -> (json |> member "companions" |> to_list) |> List.map to_string
+      | j -> j |> to_list |> List.map to_string);
     awards = (json |> member "awards" |> to_list) |> List.map to_string;
     current_city = (match json |> member "current_city" with `Null -> None | `String s -> Some s | _ -> None);
     (* saves written before the capture state existed load as the defaults *)
@@ -258,6 +264,7 @@ module SaveConvert = struct
       inventory = List.map (fun (i: Campaign_items.item) -> i.id) p.inventory;
       known_spells = p.known_spells; active_quests = p.active_quests;
       completed_quests = p.completed_quests; companions = p.companions;
+      recruited_companions = p.recruited_companions;
       awards = p.awards;
       current_city = p.current_city;
       dungeon_built = p.dungeon_built;
@@ -289,6 +296,7 @@ module SaveConvert = struct
       inventory = List.map (fun id -> Campaign_items.item_by_id id) s.inventory;
       known_spells = s.known_spells; active_quests = s.active_quests;
       completed_quests = s.completed_quests; companions = s.companions;
+      recruited_companions = s.recruited_companions;
       awards = s.awards;
       current_city = s.current_city;
       dungeon_built = s.dungeon_built;

@@ -59,7 +59,7 @@ let load_segments () : ((int * int) * Gl.texture option) list =
              in
              ((r, c), tex))))
 
-type city_tab = Shop | Spells | Tavern | Actions
+type city_tab = Shop | Spells | Tavern | Actions | Companions
 
 type city_view = {
   cid : string;
@@ -138,7 +138,8 @@ let next_tab (t : city_tab) : city_tab =
   | Shop -> Spells
   | Spells -> Tavern
   | Tavern -> Actions
-  | Actions -> Shop
+  | Actions -> Companions
+  | Companions -> Shop
 
 let tab_label (t : city_tab) : string =
   match t with
@@ -146,6 +147,7 @@ let tab_label (t : city_tab) : string =
   | Spells -> Text_data.text "[SELECTSPELLMENU_HEADING]"
   | Tavern -> Text_data.text "[RUMORS]"
   | Actions -> "Actions"
+  | Companions -> Text_data.text "[COMPANIONS]"
 
 let open_city (ui : ui) (cid : string) : unit =
   ui.city <- Some { cid; tab = Shop; rumor = 0 };
@@ -168,6 +170,33 @@ let advance_rumor (cv : city_view) : unit =
     cv.rumor <- (cv.rumor + 1) mod n;
     show_rumor cv
   end
+
+(** The companion rows: registry order, but the traveling party first, so     the seven visible rows carry the companions that matter here. *)
+let companion_rows (p : Campaign.player) : string list =
+  let rank cid =
+    match Campaign.companion_slot p cid with
+    | Campaign.Traveling -> 0
+    | Campaign.At_home -> 1
+    | Campaign.At_home_full -> 2
+    | Campaign.Away _ -> 3
+    | Campaign.Not_recruited -> 4
+  in
+  List.sort
+    (fun a b -> compare (rank a) (rank b))
+    (List.map (fun c -> c.Campaign_companions.id) Campaign_companions.companions)
+
+(** Where a companion lives, as a name when the node is a city and the raw     id otherwise (the waypoints some call home ship no name tag here). *)
+let node_label (id : string) : string =
+  try Text_data.text (Campaign_map.city_by_id id).Campaign_map.name_text
+  with Not_found -> id
+
+(** Fill a recovered %s in a runtime string - Printf.sprintf will not take     a tag that only becomes a format after Text_data resolves it. *)
+let fill1 (pat : string) (arg : string) : string =
+  match String.index_opt pat '%' with
+  | Some i when i + 1 < String.length pat && pat.[i + 1] = 's' ->
+      String.sub pat 0 i ^ arg
+      ^ String.sub pat (i + 2) (String.length pat - i - 2)
+  | _ -> pat
 
 (** A click inside the city panel: Done leaves, the mode button tabs, rows     buy (shop) or advance the rumor (tavern), and the body advances it too. *)
 let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
@@ -215,11 +244,37 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
               Printf.printf "  action: %s - %s\n" qid (Text_data.text tag);
               flush stdout;
               ui.player <- Campaign.execute_action ui.player qid cv.cid;
-              ui.pending <- Some (qid, cv.cid)))
+              ui.pending <- Some (qid, cv.cid))
+      | Companions -> (
+          match List.nth_opt (companion_rows ui.player) i with
+          | None -> ()
+          | Some cid -> (
+              let name =
+                Text_data.text (Campaign_companions.companion_by_id cid).Campaign_companions.name_text
+              in
+              match Campaign.companion_slot ui.player cid with
+              | Campaign.Traveling ->
+                  ui.player <- Campaign.remove_companion ui.player cid;
+                  Printf.printf "  left %s behind\n" name;
+                  flush stdout
+              | Campaign.At_home ->
+                  ui.player <- Campaign.add_companion ui.player cid;
+                  Printf.printf "  %s joined the party\n" name;
+                  flush stdout
+              | Campaign.At_home_full ->
+                  Printf.printf "  %s: %s\n" name
+                    (Text_data.text "[COMPANIONSTATUS_NEW0]");
+                  flush stdout
+              | Campaign.Away h ->
+                  Printf.printf "  %s: %s\n" name
+                    (fill1 (Text_data.text "[COMPANIONSTATUS_OUT0]")
+                       (node_label h));
+                  flush stdout
+              | Campaign.Not_recruited -> ())))
   | City_layout.Elsewhere -> (
       match cv.tab with
       | Tavern -> advance_rumor cv
-      | Shop | Spells | Actions -> ())
+      | Shop | Spells | Actions | Companions -> ())
 
 (** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
 let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
@@ -311,7 +366,37 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
               (qname ^ " - " ^ Text_data.text tag)
               (City_layout.row_x + 30) (row_y i + 3)
           end)
-        (Campaign.query_actions ui.player cv.cid));
+        (Campaign.query_actions ui.player cv.cid)
+  | Companions ->
+      List.iteri
+        (fun i cid ->
+          if i < City_layout.max_rows then begin
+            let c = Campaign_companions.companion_by_id cid in
+            let slot = Campaign.companion_slot ui.player cid in
+            let col, status =
+              match slot with
+              | Campaign.Traveling -> (Layout.rgb 240 210 90, "with you")
+              | Campaign.At_home -> (Layout.rgb 230 230 230, "here")
+              | Campaign.At_home_full ->
+                  (Layout.rgb 230 180 90, "party full")
+              | Campaign.Away h -> (Layout.rgb 150 150 160, node_label h)
+              | Campaign.Not_recruited -> (Layout.rgb 100 100 110, "")
+            in
+            text ~colour:col
+              (Text_data.text c.Campaign_companions.name_text)
+              (City_layout.row_x + 30) (row_y i + 3);
+            if status <> "" then begin
+              let w = measure status in
+              text ~colour:col status
+                (City_layout.row_x + City_layout.row_w - w - 8) (row_y i + 3)
+            end
+          end)
+        (companion_rows ui.player);
+      text ~colour:(Layout.rgb 150 150 160)
+        (fill1 (Text_data.text "[COMPANIONS_DETAILS]")
+           (string_of_int (List.length ui.player.Campaign.companions)))
+        City_layout.row_x
+        (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8));
   solid rs gl City_layout.mode_btn (Layout.rgb 44 48 60);
   solid rs gl City_layout.done_btn (Layout.rgb 44 48 60);
   (match (f, sys) with

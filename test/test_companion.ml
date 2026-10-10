@@ -290,6 +290,105 @@ let () =
      | [] -> false)
 
 (* ------------------------------------------------------------------ *)
+(* 9. Equip: the party is the equipped subset of the roster            *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  let p0 = fresh () in
+  check "a fresh player has an empty roster"
+    (p0.Campaign.recruited_companions = []);
+
+  let p1 = Campaign.apply_quest_effect p0 (Campaign.RewardCompanion "NDKH") in
+  check "a grant lands in the roster and the party"
+    (List.mem "NDKH" p1.Campaign.recruited_companions
+     && List.mem "NDKH" p1.Campaign.companions);
+
+  let ids =
+    [ "NDKH"; "NDRO"; "NELI"; "NFLI"; "NKHA"; "NSER"; "NSUN"; "NSUS"; "NWIN" ]
+  in
+  let p9 =
+    List.fold_left
+      (fun p id -> Campaign.apply_quest_effect p (Campaign.RewardCompanion id))
+      p0 ids
+  in
+  check "the ninth grant grows the roster and not the party"
+    (List.length p9.Campaign.recruited_companions = 9
+     && List.length p9.Campaign.companions = 8
+     && not (List.mem "NWIN" p9.Campaign.companions));
+
+  let p10 =
+    Campaign.apply_quest_effect p9 (Campaign.RemoveCompanion "NDKH")
+  in
+  check "leaving the party keeps the roster"
+    (not (List.mem "NDKH" p10.Campaign.companions)
+     && List.mem "NDKH" p10.Campaign.recruited_companions
+     && List.length p10.Campaign.companions = 7);
+
+  check "a traveler reads Traveling"
+    (Campaign.companion_slot p9 "NDKH" = Campaign.Traveling);
+  check "an ungranted companion reads Not_recruited"
+    (Campaign.companion_slot p0 "NDKH" = Campaign.Not_recruited);
+  check "a left-behind companion reads Away with their home"
+    (Campaign.companion_slot p10 "NDKH" = Campaign.Away "CGAL");
+  let home_p = { p10 with Campaign.current_city = Some "CGAL" } in
+  check "standing at home with a free slot reads At_home"
+    (Campaign.companion_slot home_p "NDKH" = Campaign.At_home);
+  let full_no_ndkh =
+    Campaign.apply_quest_effect p10 (Campaign.RewardCompanion "NWIN")
+  in
+  check "standing at home with a full party reads At_home_full"
+    (List.length full_no_ndkh.Campaign.companions = 8
+     && Campaign.companion_slot
+          { full_no_ndkh with Campaign.current_city = Some "CGAL" } "NDKH"
+          = Campaign.At_home_full);
+
+  check "adding at home joins the party"
+    (let p = Campaign.add_companion home_p "NDKH" in
+     List.mem "NDKH" p.Campaign.companions
+     && List.length p.Campaign.companions = 8);
+  check "adding elsewhere no-ops"
+    (let p = Campaign.add_companion p10 "NDKH" in
+     p.Campaign.companions = p10.Campaign.companions);
+  check "adding with a full party no-ops"
+    (let p = Campaign.add_companion { p9 with Campaign.current_city = Some "CGAL" } "NDKH" in
+     p.Campaign.companions = p9.Campaign.companions);
+  check "adding a stranger no-ops"
+    (let p = Campaign.add_companion home_p "MARB" in
+     p.Campaign.companions = home_p.Campaign.companions);
+  check "removing is free anywhere"
+    (let p = Campaign.remove_companion p9 "NDKH" in
+     not (List.mem "NDKH" p.Campaign.companions)
+     && List.mem "NDKH" p.Campaign.recruited_companions);
+
+  (* Equipping gates the passive: the hook follows the party, not the
+     roster. NDKH alone travels in one run; nobody travels in the other. *)
+  let enc_undead = Campaign_encounters.encounter_by_id "EETL" in
+  let mark =
+    Campaign_monsters.monster_by_sprite enc_undead.Campaign_encounters.sprite
+  in
+  let only_ndkh = { home_p with Campaign.companions = [ "NDKH" ] } in
+  let b_on = Campaign.run_encounter_battle only_ndkh enc_undead in
+  check "the equipped companion's hook fires in the road battle"
+    (match Battle.log_of b_on with
+     | Battle.Damage (n, 10) :: _ -> n = mark.Campaign_monsters.name_text
+     | _ -> false);
+  let alone = { p10 with Campaign.companions = [] } in
+  let b_off = Campaign.run_encounter_battle alone enc_undead in
+  check "the left-behind companion's hook does not"
+    (match Battle.log_of b_off with
+     | Battle.Damage _ :: _ -> false
+     | ev :: _ -> (match ev with Battle.TurnStart _ -> true | _ -> false)
+     | [] -> false);
+
+  let s = Campaign_save.SaveConvert.player_to_save p10 in
+  let back = Campaign_save.SaveConvert.player_from_save s in
+  check "the save keeps the roster and the party distinct"
+    (back.Campaign.recruited_companions = p10.Campaign.recruited_companions
+     && back.Campaign.companions = p10.Campaign.companions
+     && List.mem "NDKH" back.Campaign.recruited_companions
+     && not (List.mem "NDKH" back.Campaign.companions))
+
+(* ------------------------------------------------------------------ *)
 
 let () =
   if !failures > 0 then begin

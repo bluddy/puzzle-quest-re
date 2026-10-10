@@ -304,6 +304,44 @@ let () =
   drain_messages "  arrival messages";
   print_endline "";
 
+  (* Companions: a grant fills the roster and the party; leaving one      behind keeps them in the roster, and they join again where they live
+     (COMPANIONSTATUS_OUT1's home gate). Their OnStartBattle hook fires
+     for the traveling party only - proven in test_companion; here the
+     equip act itself. *)
+  print_endline "=== Companion equip ===";
+  let slot_text p cid =
+    match Campaign.companion_slot p cid with
+    | Campaign.Traveling -> "traveling with you"
+    | Campaign.At_home -> "at home, ready to join"
+    | Campaign.At_home_full -> "at home, but the party is full"
+    | Campaign.Away h -> "away at " ^ h
+    | Campaign.Not_recruited -> "not recruited"
+  in
+  let show_party tag p =
+    print_endline
+      (tag ^ " party: "
+       ^ (if p.Campaign.companions = [] then "(empty)"
+          else String.concat ", " p.Campaign.companions)
+       ^ "  roster: "
+       ^ String.concat ", " p.Campaign.recruited_companions)
+  in
+  let camp0 =
+    List.fold_left
+      (fun p id -> Campaign.apply_quest_effect p (Campaign.RewardCompanion id))
+      player5 [ "NDKH"; "NDRO"; "NSUN" ]
+  in
+  show_party "granted three:" camp0;
+  print_endline ("  NDKH is " ^ slot_text camp0 "NDKH");
+  let camp1 = Campaign.remove_companion camp0 "NDKH" in
+  show_party "NDKH left behind:" camp1;
+  print_endline ("  NDKH is now " ^ slot_text camp1 "NDKH");
+  let home = Campaign.companion_home "NDKH" in
+  let camp2 = { camp1 with Campaign.current_city = Some home } in
+  print_endline ("  standing at " ^ home ^ ":");
+  let camp3 = Campaign.add_companion camp2 "NDKH" in
+  show_party "picked up again:" camp3;
+  print_endline "";
+
   (* Test save/load *)
   print_endline "=== Testing Save/Load ===";
   let save_file = "pq_save_test.json" in

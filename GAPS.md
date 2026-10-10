@@ -54,7 +54,7 @@
 | ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
 | ~~Ruin mini-game~~ | ✅ `lib/capture.ml`: grid parse, no-refill settle, win/lose, auto-play; gates, captives and save in `campaign.ml` |
 | ~~Quest battle capture flag~~ | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; the stage's own primitive now decides capture (primitive over the Lua string check), so a quest kill of a non-capturable variant no longer counts |
-| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); `QUEST_REMOVE_COMPANION` arrival rules run through `enter_location` (six: Q3S0 x5, QS00 x1); companion equipping and the two callback-site removals (Q3Q5, QU02) still open; the rune's start hook waits on the forge |
+| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); `QUEST_REMOVE_COMPANION` arrival rules run through `enter_location` (six: Q3S0 x5, QS00 x1); companion equip landed (roster + party, home-gated pickup); the two callback-site removals (Q3Q5, QU02) still open; the rune's start hook waits on the forge |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
 ### 3. Map Progression & Visibility
@@ -97,7 +97,7 @@
 |-----|---------|
 | Shop buy/sell | ✓ buy: gold checked against the registry cost, deducted, item to inventory (tested); no sell, no equip-on-buy (the OFFERTOEQUIP prompt) |
 | Spell learning | Premise corrected from the assets: spells come from captives (LEARNTALLSPELLS), not gold - the panel shows the city's list with the research help line; captive teaching and the SARC research mini-game remain open |
-| Companion management | No party screen, no equip/unequip companion |
+| Companion management | ✅ the map city panel's Companions tab: sorted roster/party rows with status, click to leave (anywhere) or pick up (at home); no dedicated hero screen |
 | Tavern rumors | ✓ the window shows and cycles all 55 TextLibrary pairs; no per-city mapping, no "rumors known" book (INV_RUMORS) |
 
 ### 9. Equipment & Inventory
@@ -110,7 +110,7 @@
 ### 10. Companion / Mount System
 | Gap | Details |
 |-----|---------|
-| Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` dedups, ninth refused); `RemoveCompanion` drops by id and the arrival rules run through `Campaign.enter_location` (no travel step calls it yet); no swap/remove UI |
+| Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` fills the roster and the party, ninth refused from the party only); `RemoveCompanion` drops by id from the party and keeps the roster, the arrival rules run through `Campaign.enter_location` (travel arrival calls it via `advance_travel_with_events`), and the map Companions tab swaps and removes |
 | Mount | `mount` equipment slot exists; no speed/fly logic, no banner effects |
 | Capture flow | Engine side done (eligibility, begin/finish, captives, save); no encounter UI wiring a battle win to the capture menu |
 
@@ -173,7 +173,7 @@
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
 4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (159 assertions)
 5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (57 assertions); success adds the captive
-6. **Companion equip** — add `companion` slot to equipment, apply monster skills as passive bonuses
+6. ~~**Companion equip**~~ — roster + party (`recruited_companions` / `companions`); add at home, leave anywhere; the ten OnStartBattle hooks are the passives and follow the party (companions ship no separate skill data)
 7. **Mount speed** — `mount` slot → modify travel time between nodes
 8. **Grid spell cell selection** — mouse hover → highlight valid cells; click → pass cell to `Std_GridSpellEffect`
 
@@ -240,8 +240,9 @@ bin/
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters,
-conversation triggers + per-callback effects), and the conversation UI now
-walks actions, renders portraits/backdrops, fires battle callbacks and
-applies each scriptcall's extracted body effects. Pick one:
+conversation triggers + per-callback effects, companion equip), and the
+conversation UI now walks actions, renders portraits/backdrops, fires battle
+callbacks and applies each scriptcall's extracted body effects. Pick one:
 
-- **Companion equip** - equip slot + passive bonuses (phase 8)
+- **Grid spell cell selection** - hover highlight + click-to-aim (quick win 8)
+- **Mount speed** - the mount slot modifies travel time (quick win 7)
