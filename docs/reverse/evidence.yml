@@ -2877,6 +2877,47 @@ claims:
 
   # ---------------------------------------------------------- companions ----
 
+  - id: campaign.mount_combat_bonuses
+    title: Each mount grants a level-stepped skill bonus and one extra combat spell
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      MOUNTS_HELP names the two combat purposes - "they increase your
+      skills, they provide an extra spell for you in combat" - and the
+      per-monster capture strings state the formula piecewise: MDSP
+      "increases your Fire Mastery by +2 (+1 more per 2 levels)" maps onto
+      <Mount addstat="2" stat="1" addperlevel="1" addlevel="2" spell="SBRF">,
+      so addstat is the printed +N, addperlevel the "+M more", addlevel the
+      "per K levels", and stat names the skill - 0 Earth, 1 Fire, 2 Air,
+      3 Water, 4 Battle, 5 Cunning, the engine's 0-based SKILL_ index that
+      skill_of_index already reads, and the same names all eight capture
+      strings give. Every rideable mount also carries exactly one spell -
+      Breathe Fire, Death Dive, Web, Rabid Bite, Hide, Swallow Whole, Howl,
+      Rend - all ported with effects and AI hooks.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[MOUNTS_HELP] and the eight per-monster CAPT strings"
+      - kind: xml
+        ref: game/Assets.zip!Assets/Monsters/MDSP.xml
+        note: 'Mount addstat="2" stat="1" addperlevel="1" addlevel="2" spell="SBRF"'
+      - kind: code
+        ref: lib/campaign_monsters.ml
+      - kind: code
+        ref: lib/combat.ml
+        fn: skill_of_index
+      - kind: code
+        ref: lib/campaign.ml
+        fn: mount_skill_bonus
+      - kind: code
+        ref: test/test_campaign.ml
+    affects: [lib/campaign.ml]
+    notes: >
+      The step reading (level - 1) / addlevel is a port choice
+      (port.mount_skill_formula). Fly, mount training levels and the
+      encounter avoidance they buy stay open.
   - id: campaign.mount_speed
     title: Mounts are captured rideables whose speed tier is slow, average or fast
     area: campaign
@@ -2892,8 +2933,10 @@ claims:
       speed you move on the World Map" as one of a mount's three purposes,
       and INV_MOUNTS_TEXT / YOURCITY_PETS_TEXT say mounts are captured beasts
       chosen from your captives. The port reads mount_speed as a travel-time
-      divisor (port.mount_travel_speed); the skills, extra spell and fly
-      effects are named but unwired.
+      divisor (port.mount_travel_speed) and has since wired the skills and
+      the spell (campaign.mount_combat_bonuses, port.mount_skill_formula);
+      fly stays unwired - and the strings tie encounter avoidance to
+      training levels, not to the fly flag.
     evidence:
       - kind: xml
         ref: game/Assets.zip!Assets/Monsters/MWLF.xml
@@ -3863,9 +3906,38 @@ port_decisions:
       for mount_speed 0, 1, 2 - and the rumor "a mount moves you faster"
       makes even the slow tier beat walking, which fixes the three values as
       evenly spaced multipliers rather than a guess at the original's
-      arithmetic. Fly, the mount spell and the skill bonuses (MOUNTS_HELP's
-      other two purposes) grant nothing here; they stay open gaps. This
-      extends port.travel_model, which measured the road at one unit per tick
-      with no modifier when nothing was choosable.
+      arithmetic. Fly grants nothing here; the skill and spell bonuses
+      (MOUNTS_HELP's other two purposes) landed separately in
+      port.mount_skill_formula. This extends port.travel_model, which
+      measured the road at one unit per tick with no modifier when nothing
+      was choosable.
+    supersedes: null
+    date: 2026-10-10
+
+  - id: port.mount_skill_formula
+    decision: >
+      The ridden mount's combat bonuses read straight off the registry at
+      battle setup: the skill delta is mount_addstat + ((level - 1) /
+      mount_addlevel) * mount_addperlevel in the skill mount_stat names
+      (Combat.skill_of_index, 0-based), added to the combatant's skills and
+      never written to player.skills, and mount_spell is prepended to the
+      hero's spell ids - road, quest and callback fights alike - for
+      spells_of_ids to dedup against the learned list.
+    rationale: >
+      The capture strings are the formula's only statement ("+2 (+1 more
+      per 2 levels)"): reading the step as (level - 1) / addlevel makes
+      level 1 show exactly the printed +N, and both that and a plain level /
+      addlevel fit every string, so the port picks the reading that pins
+      level 1 to the verbatim text. mount_stat matches the engine's SKILL_
+      numbering already ported as skill_of_index - all eight mounts name the
+      same skill their string does, MSCO/MSWO Earth at index 0 - so no new
+      mapping is invented. Nothing recovered stages a bonus outside a fight;
+      player.skills is the profession base that level-up and the save carry,
+      and a stored bonus would double on re-mount, so the delta rides the
+      combatant the way the companion SkillBonus payoffs already do. The
+      extra spell follows the quest path's own shape (fight spell ids in
+      front of known_spells). Fly and training-based encounter avoidance
+      stay open: YOURCITY_MOUNTS_TEXT ties avoidance to training levels,
+      which the port has no system for.
     supersedes: null
     date: 2026-10-10

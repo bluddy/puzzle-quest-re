@@ -668,7 +668,28 @@ let () =
     (List.exists (fun (s : Spell.spell) -> s.Spell.id = "SWMG")
        b.Battle.enemy_spells);
   check "the whole roster lands, not just its first spell"
-    (List.length b.Battle.enemy_spells = 3)
+    (List.length b.Battle.enemy_spells = 3);
+
+  (* The ridden mount rides into the fight: its skill bonus reaches the
+     combatant without rewriting player.skills, and its own spell lands in
+     the hero's list (MOUNTS_HELP's other two purposes). *)
+  let mounted_rider =
+    Campaign.set_mount
+      { (fresh ()) with Campaign.captives = [ "MWLF" ] }
+      (Some "MWLF")
+  in
+  let mh = Campaign.player_to_combatant mounted_rider in
+  check "the mount's skill bonus rides the combatant"
+    (mh.Combat.skills.water
+     = mounted_rider.Campaign.skills.water + 1
+    && mh.Combat.skills.battle = mounted_rider.Campaign.skills.battle);
+  check "the bonus never rewrites the player's own skills"
+    (mounted_rider.Campaign.skills.water
+     = (fresh ()).Campaign.skills.water);
+  let bm = Campaign.run_encounter_battle mounted_rider road in
+  check "the mounted hero walks in with the wolf's Howl"
+    (List.exists (fun (s : Spell.spell) -> s.Spell.id = "SHWL")
+       bm.Battle.hero_spells)
 ;;
 
 (* ------------------------------------------------------------------ *)
@@ -766,7 +787,39 @@ let () =
     (match Campaign.begin_travel chosen "CBAR" "WTHR" with
      | Some (Campaign.Traveling t) ->
          abs_float (t.total_time -. d /. 2.5) < 1e-9
-     | _ -> false)
+     | _ -> false);
+
+  (* Mount combat bonuses: the capture strings are the formula - "+N (+M
+     more per K levels)" - and mount_stat is the engine's 0-based skill
+     index. The delta alone is asserted here; the combatant and the spell
+     are checked on the road fight above. *)
+  let at mid lvl =
+    Campaign.set_mount
+      { (fresh ()) with Campaign.level = lvl; Campaign.captives = [ mid ] }
+      (Some mid)
+  in
+  let bonus p =
+    Campaign.to_combat_skills (Campaign.mount_skill_bonus p)
+  in
+  check "the spider grants Fire Mastery +2 at level 1, as its string says"
+    (let s = bonus (at "MDSP" 1) in
+     s.Combat.fire = 2 && s.Combat.earth = 0 && s.Combat.battle = 0);
+  check "the wolf's water bonus steps +1 every 3 levels"
+    (let s1 = bonus (at "MWLF" 1) in
+     let s4 = bonus (at "MWLF" 4) in
+     let s7 = bonus (at "MWLF" 7) in
+     s1.Combat.water = 1 && s4.Combat.water = 2 && s7.Combat.water = 3);
+  check "the scorpion reads mount_stat 0 as Earth, its string's Earth Mastery"
+    ((bonus (at "MSCO" 1)).Combat.earth = 1);
+  check "on foot there is no mount bonus"
+    (let s = bonus (fresh ()) in
+     s.Combat.fire = 0 && s.Combat.water = 0 && s.Combat.earth = 0);
+  check "a hand-built mount on a non-rideable monster grants nothing"
+    (let s = bonus { (fresh ()) with Campaign.mount = Some "MBAT" } in
+     s.Combat.fire = 0 && s.Combat.battle = 0);
+  check "the ridden mount's spell rides along"
+    (Campaign.mount_spell_ids (at "MWLF" 1) = [ "SHWL" ]
+     && Campaign.mount_spell_ids (fresh ()) = [])
 ;;
 
 let () =

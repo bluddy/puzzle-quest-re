@@ -361,6 +361,11 @@ let () =
                  ^ string_of_bool
                      ((Campaign.set_mount stabled (Some "MGRI")).Campaign.mount
                      = None));
+  let bs = Campaign.to_combat_skills (Campaign.mount_skill_bonus fast) in
+  print_endline ("  MWLF in combat: water +"
+                 ^ string_of_int bs.Combat.water
+                 ^ ", spell "
+                 ^ String.concat ", " (Campaign.mount_spell_ids fast));
   print_endline "";
 
   (* Test save/load *)

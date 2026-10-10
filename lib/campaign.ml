@@ -224,8 +224,10 @@ let encounters_on_road_visible (player: player) (start: string) (end_: string) :
    extends port.travel_model). The tiers are the registry's mount_speed -
    the capture strings call them slow, average and fast - and the rumor
    "[a] mount moves you faster" holds for every tier, so even a slow mount
-   beats walking. What else a mount grants - skills, its own spell, flying,
-   encounter avoidance - is separate and stays a GAPS gap. The encounter
+   beats walking. What a mount grants beyond speed - its skill bonus, its
+   own spell - rides into every battle (port.mount_skill_formula); flying
+   and the training-based encounter avoidance, and banner effects, stay
+   GAPS gaps. The encounter
    scripts say when appearance is asked - OnQueryAppearance is "called when
    a hero moves to a new location" - but not how often a road is polled
    while it is being crossed, so the port asks once, at departure. Both
@@ -257,6 +259,63 @@ let set_mount (player: player) (mid: string option) : player =
          { player with mount = Some id }
        else player
      with Not_found -> player)
+
+let add_skill_affinities (a: skill_affinities) (b: skill_affinities)
+    : skill_affinities =
+  { earth = a.earth + b.earth; fire = a.fire + b.fire;
+    air = a.air + b.air; water = a.water + b.water;
+    battle = a.battle + b.battle; cunning = a.cunning + b.cunning;
+    morale = a.morale + b.morale }
+
+(* The ridden mount's skill delta at the rider's level. The capture strings
+   are the only statement of the formula - MDSP "increases your Fire Mastery
+   by +2 (+1 more per 2 levels)" - and the fields line up piecewise:
+   mount_addstat the printed +N, mount_addperlevel the "+M more",
+   mount_addlevel the "per K levels". The port reads the step as
+   (level - 1) / addlevel: level 1 shows exactly the printed +N, and every
+   K levels gained adds another M. mount_stat is the engine's 0-based
+   SKILL_ index (skill_of_index), which is why MSCO/MSWO read Earth and
+   MRAT Cunning - the same names their strings give. The delta is computed,
+   never stored: player.skills stays the profession base and the bonus
+   rides the combatant, like a companion's SkillBonus. A hand-built mount
+   field on a non-rideable monster grants nothing. (port.mount_skill_formula) *)
+let mount_skill_bonus (player: player) : skill_affinities =
+  let zero : skill_affinities =
+    { earth = 0; fire = 0; air = 0; water = 0; battle = 0;
+      cunning = 0; morale = 0 }
+  in
+  match player.mount with
+  | None -> zero
+  | Some mid ->
+    (try
+       let m = Campaign_monsters.monster_by_id mid in
+       if m.mount <> 1 then zero
+       else
+         let steps = (player.level - 1) / max 1 m.mount_addlevel in
+         let n = m.mount_addstat + (steps * m.mount_addperlevel) in
+         if n = 0 then zero
+         else
+           (match skill_of_index m.mount_stat with
+            | SEarth -> { zero with earth = n }
+            | SFire -> { zero with fire = n }
+            | SAir -> { zero with air = n }
+            | SWater -> { zero with water = n }
+            | SBattle -> { zero with battle = n }
+            | SMorale -> { zero with morale = n }
+            | SCunning -> { zero with cunning = n })
+     with Not_found -> zero)
+
+(* [MOUNTS_HELP]: "they provide an extra spell for you in combat." The id
+   rides ahead of the learned list the way a quest fight's spell does;
+   spells_of_ids dedups it against known_spells and drops unknown ids. *)
+let mount_spell_ids (player: player) : string list =
+  match player.mount with
+  | None -> []
+  | Some mid ->
+    (try
+       let m = Campaign_monsters.monster_by_id mid in
+       if m.mount = 1 && m.mount_spell <> "" then [ m.mount_spell ] else []
+     with Not_found -> [])
 
 let travel_time (player: player) (from_: string) (to_: string) : float =
   node_distance from_ to_ /. mounted_speed player
@@ -609,9 +668,13 @@ let to_combat_skills (s: skill_affinities) : skills =
     battle = s.battle; morale = s.morale; cunning = s.cunning }
 
 let player_to_combatant (p: player) : combatant =
+  (* The ridden mount's skill bonus rides the combatant only - mounting and
+     dismounting never rewrite player.skills, the profession base
+     (port.mount_skill_formula). *)
+  let sk = add_skill_affinities p.skills (mount_skill_bonus p) in
   make_combatant
-    ~cunning:p.skills.cunning
-    ~skills:(to_combat_skills p.skills)
+    ~cunning:sk.cunning
+    ~skills:(to_combat_skills sk)
     ~max_life:p.max_life
     ~life:p.life
     0 p.name  (* distinct positive ID *)
@@ -742,7 +805,8 @@ let run_encounter_battle (player: player) (enc: encounter) : battle =
   let battle = open_battle
       ~rules:(rules_for_battle ~player ~task_level:enc.my_level)
       ~hero ~enemy
-      ~hero_spells:(spells_of_ids player.known_spells)
+      ~hero_spells:(spells_of_ids
+        (mount_spell_ids player @ player.known_spells))
       ~enemy_spells:(spells_of_ids monster.spells)
       ~hero_items:(loadout_of_equipment player.equipment)
       ~enemy_tags:(monster_type_tags monster)
@@ -1046,7 +1110,8 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
               (open_battle ~rng
                  ~rules:(rules_for_battle ~player ~task_level:monster.level_base)
                  ~hero_spells:(spells_of_ids
-                   (hero_spell_ids @ player.known_spells))
+                   (hero_spell_ids @ mount_spell_ids player
+                    @ player.known_spells))
                  ~enemy_spells:(spells_of_ids monster.spells)
                  ~hero_items:(loadout_of_equipment player.equipment)
                  ~hero ~enemy
@@ -1212,7 +1277,7 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
         let hero_spells =
           (match List.nth_opt battles cb.cb_battle_index with
            | Some (_, spells) -> spells
-           | None -> []) @ p.known_spells
+           | None -> []) @ mount_spell_ids p @ p.known_spells
         in
         let battle =
           Battle.run
