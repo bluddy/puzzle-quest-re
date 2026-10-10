@@ -105,10 +105,16 @@ let hook_edis = set_start_turn no_hooks (fun ctx _turn ->
     ```
 
     The guard matters at the end of a fight: a character on 0 life does not go
-    to -1, so a defeated monster's poison cannot tick it further negative. *)
+    to -1, so a defeated monster's poison cannot tick it further negative. The
+    tick that reaches 0 is a death like any other: [Battle.run] reads life 0
+    as the victory and every win check in the campaign reads [is_dead], so
+    the flag has to land here too. *)
 let hook_epoi = set_start_turn no_hooks (fun ctx _turn ->
     let c = ctx.ef_caster in
-    if life c > 0 then c.life <- life c - 1)
+    if life c > 0 then begin
+      c.life <- life c - 1;
+      if c.life = 0 then c.is_dead <- true
+    end)
 
 (** Paladin's Aura: two of each pool, per turn.
 
@@ -138,7 +144,11 @@ let hook_epau = set_start_turn no_hooks (fun ctx _turn ->
     reason the context carries it. *)
 let hook_efbo = set_start_turn no_hooks (fun ctx _turn ->
     if Combat.mana ctx.ef_caster Fire >= 12 then
-      List.iter (fun e -> e.life <- max 0 (life e - 5)) ctx.ef_enemies)
+      List.iter
+        (fun e ->
+          e.life <- max 0 (life e - 5);
+          if e.life = 0 then e.is_dead <- true)
+        ctx.ef_enemies)
 
 (* ------------------------------------------------------------------ *)
 (* OnExtraTurn - one script                                             *)
@@ -159,7 +169,11 @@ let hook_efbo = set_start_turn no_hooks (fun ctx _turn ->
     [Combat.run_extra_turn_effects] is called once per banked extra turn, which
     is where the "+4 damage to your enemies" in the header comes from. *)
 let hook_ehas = set_extra_turn no_hooks (fun ctx ->
-    List.iter (fun e -> e.life <- max 0 (life e - 4)) ctx.ef_enemies)
+    List.iter
+      (fun e ->
+        e.life <- max 0 (life e - 4);
+        if e.life = 0 then e.is_dead <- true)
+      ctx.ef_enemies)
 
 (* ------------------------------------------------------------------ *)
 (* OnGiveDamage - four scripts                                          *)

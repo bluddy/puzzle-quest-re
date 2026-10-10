@@ -799,6 +799,13 @@ let take_turn (b : battle) : unit =
     ignore (advance_turn b.tm)
   end
 
+(** The outcome as the rest of the game asks for it: did the hero win?
+    Reading [is_dead] after [run] cannot answer - [sweep_deaths] clears the
+    flag on every pass (faithful to FUN_00464870, pinned by test_combat), so
+    the life-based [winner] the run derives is the battle's own verdict.
+    Stalemate and draws are not wins. *)
+let hero_won (b : battle) : bool = b.winner = Some HeroVictory
+
 (** Runs to completion. The winner lands in [winner], the trace in [log_of]. *)
 let run (b : battle) : battle =
   while b.winner = None && b.turns_elapsed < b.rules.max_turns do

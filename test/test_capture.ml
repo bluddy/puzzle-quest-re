@@ -168,6 +168,10 @@ let () =
     (Text_data.text "[CAPTURE_LISTHELP1]" = "* Built a Dungeon");
   check "the defeat-count prerequisite ships"
     (Text_data.text "[CAPTURE_LISTHELP2]" = "* Defeated that enemy 3+ times");
+  check "the pets panel heading ships"
+    (Text_data.text "[PETS]" = "Captives");
+  check "the pets count line ships"
+    (Text_data.text "[PETS_DETAILS]" = "%d of %d Enemies captured");
   check "the failure message ships"
     (Text_data.text "[CAPTURE_FAIL]"
      = "You have failed to capture this enemy, but you may try again later.")
@@ -229,11 +233,15 @@ let () =
   let enemy = Combat.make_combatant ~cunning:5 ~max_life:10 ~life:10 2 "Enemy" in
   let b = Battle.create (Board.create_board []) hero enemy in
   let base = fresh () in
+  (* The campaign reads the battle's own verdict (Battle.hero_won) - the
+     sweep clears [is_dead] every pass, so a hand-built battle states its
+     outcome through [winner]. *)
+  b.Battle.winner <- Some Battle.EnemyVictory;
   let p_loss, r_loss = Campaign.process_battle_result base road_enc b in
   check "a lost road battle records no defeat"
     (not r_loss.Campaign.player_won
-     && Campaign.monster_defeats p_loss road_mid = 0);
-  enemy.Combat.is_dead <- true;
+    && Campaign.monster_defeats p_loss road_mid = 0);
+  b.Battle.winner <- Some Battle.HeroVictory;
   let p_win, r_win = Campaign.process_battle_result base road_enc b in
   check "a won road battle records one defeat"
     (r_win.Campaign.player_won
@@ -264,6 +272,120 @@ let () =
     (Campaign.capture_offer three
        { road_enc with Campaign_encounters.sprite = "" }
     = None);
+
+  (* The id form and the candidates list: the shared core the callback
+     banner and the city Pets tab walk (port.capture_surfaces). *)
+  check "the id form answers with the monster id"
+    (Campaign.capture_offer_id three road_mid = Some road_mid);
+  check "the id form refuses an id the registry does not know"
+    (Campaign.capture_offer_id three "ZZZZ" = None);
+  check "the id form refuses the empty id"
+    (Campaign.capture_offer_id three "" = None);
+  check "the id form keeps the dungeon gate"
+    (Campaign.capture_offer_id
+       { three with Campaign.dungeon_built = false }
+       road_mid
+    = None);
+  check "the id form refuses an enemy already held"
+    (Campaign.capture_offer_id
+       { three with Campaign.captives = [ road_mid ] }
+       road_mid
+    = None);
+  check "a fresh player has no capture candidates"
+    (Campaign.capture_candidates (fresh ()) = []);
+  check "the candidates list carries an enemy down three times"
+    (Campaign.capture_candidates three = [ road_mid ]);
+  check "candidates drop an enemy already held"
+    (Campaign.capture_candidates
+       { three with Campaign.captives = [ road_mid ] }
+    = []);
+  check "candidates keep the dungeon gate"
+    (Campaign.capture_candidates
+       { three with Campaign.dungeon_built = false }
+    = []);
+
+  (* The callback offer: execute_callback computes it where the monster id
+     and the stage's capture flag live. An offer needs a won fight, so the
+     tests search for a seed that lands one - the players are immutable, so
+     every attempt is independent and the winning seed replays. *)
+  let rng_state = ref 0 in
+  let rng n =
+    rng_state := (!rng_state * 75 + 74) mod 65537;
+    if n <= 0 then 0 else !rng_state mod n
+  in
+  let run p k qid cb =
+    rng_state := k * 977;
+    Campaign.execute_callback ~rng:rng p qid cb
+  in
+  let won (res : Campaign.callback_result) =
+    match res.Campaign.cb_battle with
+    | Some b -> Battle.hero_won b
+    | None -> false
+  in
+  let find p qid cb =
+    let rec go k =
+      if k > 200 then None
+      else
+        match run p k qid cb with
+        | Some res when won res -> Some (k, res)
+        | _ -> go (k + 1)
+    in
+    go 1
+  in
+  let rec drain () =
+    match Campaign.take_pending_message () with
+    | Some _ -> drain ()
+    | None -> (
+        match Campaign.take_pending_conversation () with
+        | Some _ -> drain ()
+        | None -> ())
+  in
+  drain ();
+  (* The auto-AI loses most fights at the heroes the data hands it (the
+     quest tests settle wins by hand for that reason), so the offer tests
+     give the hero the life and the skills to finish a fight - the battle
+     still runs its own course. *)
+  let stacked qid =
+    { (fresh ()) with Campaign.active_quests = [ (qid, 1) ];
+                       Campaign.life = 99999; Campaign.max_life = 99999;
+                       Campaign.skills =
+                         { earth = 99; fire = 99; air = 99; water = 99;
+                           battle = 99; cunning = 99; morale = 99 } }
+  in
+  let gbase = stacked "Q0I2" in
+  let gthree =
+    List.fold_left (fun p _ -> Campaign.record_defeat p "MRAT") gbase [ 1; 2; 3 ]
+  in
+  (match find gthree "Q0I2" "CallbackGuardian" with
+  | Some (k, res) ->
+      check "a won callback fight offers the capture"
+        (res.Campaign.cb_capture_offer = Some "MRAT");
+      (match run gbase k "Q0I2" "CallbackGuardian" with
+      | Some res0 ->
+          check "the callback offer keeps both gates"
+            (res0.Campaign.cb_capture_offer = None
+            && Campaign.monster_defeats res0.Campaign.cb_player "MRAT" = 1)
+      | None -> check "the callback offer keeps both gates" false)
+  | None -> check "a won callback fight offers the capture" false);
+  let nbase = stacked "Q1Q6" in
+  let nthree =
+    List.fold_left (fun p _ -> Campaign.record_defeat p "MGUU") nbase [ 1; 2; 3 ]
+  in
+  check "the NOCAPTURE stage blocks the offer even when the gates hold"
+    (Campaign.callback_capture_offer ~won:true ~capture:false nthree "MGUU"
+    = None);
+  check "the same gates with capture allowed offer the capture"
+    (Campaign.callback_capture_offer ~won:true ~capture:true nthree "MGUU"
+    = Some "MGUU");
+  check "a lost callback fight offers nothing"
+    (Campaign.callback_capture_offer ~won:false ~capture:true gthree "MRAT"
+    = None);
+  (match run gbase 7 "Q0I2" "CallbackConvB" with
+  | Some res ->
+      check "a callback without a battle carries no offer"
+        (res.Campaign.cb_battle = None && res.Campaign.cb_capture_offer = None)
+  | None -> check "a callback without a battle carries no offer" false);
+  drain ();
 
   (* Begin and finish: an all-empty shipped grid is already cleared, a
      populated one starts in play, and only a win adds the captive. *)

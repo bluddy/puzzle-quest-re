@@ -112,7 +112,7 @@
 |-----|---------|
 | Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` fills the roster and the party, ninth refused from the party only); `RemoveCompanion` drops by id from the party and keeps the roster, the arrival rules run through `Campaign.enter_location` (travel arrival calls it via `advance_travel_with_events`), and the map Companions tab swaps and removes |
 | Mount | Landed: `player.mount` (a chosen captive, registry `mount = 1`) divides `travel_time` by its tier - 1.5 / 2.0 / 2.5 (`port.mount_travel_speed`) - and rides into every battle: the skill bonus (`addstat + ((level - 1) / addlevel) * addperlevel`, `mount_stat` via `skill_of_index`) on the combatant plus the mount spell prepended to the hero list (`port.mount_skill_formula`); `equipment.mount` stays an item slot. Training/fly (encounter avoidance) and banner effects remain open |
-| Capture flow | Landed: `capture_offer` gates the road win and `pq_map_gfx` opens the minigame (pad_grid drawn flat, two-click swap, [CANCEL], a terminal click runs `capture_finish`); callback/quest wins and the city Pets list stay unwired |
+| Capture flow | Landed on every surface: road wins open the minigame (`port.capture_ui`); callback wins (the quest fights play has) park `cb_capture_offer` behind the banner and the map opens it on dismiss; the city's Pets tab lists the gated candidates (`port.capture_surfaces`). Win reads go through `Battle.hero_won` - `sweep_deaths` clears `is_dead` every pass |
 
 ### 11. Character Creation
 | Gap | Details |
@@ -172,7 +172,7 @@
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
 4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (178 assertions)
-5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (64 assertions); success adds the captive
+5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (84 assertions); success adds the captive
 6. ~~**Companion equip**~~ — roster + party (`recruited_companions` / `companions`); add at home, leave anywhere; the ten OnStartBattle hooks are the passives and follow the party (companions ship no separate skill data)
 7. ~~**Mount speed**~~ — the chosen captive divides the road (`set_mount` gates on a captured, rideable monster); tiers 1.5 slow / 2.0 average / 2.5 fast from `mount_speed`, and `begin_travel` takes the player to time the crossing
 8. ~~**Grid spell cell selection**~~ — hover lights the shape the spell reads (`Layout.aim_cells`: column/row/cell) with the HUD prompt; every cell stays a valid target; click-to-aim was already wired
@@ -183,7 +183,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`, `campaign.city_services`, `port.city_services`, campaign.capture_offer, port.capture_ui; still to add: monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`, `campaign.city_services`, `port.city_services`, campaign.capture_offer, port.capture_ui, campaign.capture_list, port.capture_surfaces; still to add: monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -241,10 +241,10 @@ Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters,
 conversation triggers + per-callback effects, companion equip, grid-spell
-aim hover, mount speed, mount combat bonuses, capture UI), and the
-conversation UI now walks actions, renders portraits/backdrops, fires
-battle callbacks and applies each scriptcall's extracted body effects.
-Pick one:
+aim hover, mount speed, mount combat bonuses, capture UI, capture
+surfaces), and the conversation UI now walks actions, renders
+portraits/backdrops, fires battle callbacks and applies each
+scriptcall's extracted body effects. Pick one:
 
-- **Capture surfaces** - callback/quest wins and the city Pets list (the road win is wired)
+- **Banner effects** - the equipped banner's battle effects (player.banner rides the panel but does nothing yet)
 - **Mount training** - the Stable's timed battles; mount levels buy map encounter avoidance (YOURCITY_MOUNTS_TEXT)

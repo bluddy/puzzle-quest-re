@@ -661,18 +661,46 @@ let capture_finish (p: player) (monster_id: string) (attempt: Capture.t) : playe
 (* The capture a won fight raises, if any: the encounter's monster when both
    [CAPTURE_LISTHELP] gates hold - dungeon built, that enemy down three times
    - and the hero does not hold it yet ([PETS_DETAILS] counts enemies
-   captured, one apiece). Quest and callback wins reach the same gates
-   through record_defeat; the map front opens the minigame from the road
-   popup first (port.capture_ui). *)
+   captured, one apiece). The id form is the shared core: callback battles
+   carry a monster id rather than an encounter (cb_monster_id), and the city
+   Pets tab walks the whole registry through [capture_candidates]
+   (port.capture_surfaces). *)
+let capture_offer_id (player: player) (monster_id: string) : string option =
+  if monster_id = "" then None
+  else
+    (try
+       ignore (Campaign_monsters.monster_by_id monster_id);
+       if capture_eligible player monster_id
+          && not (List.mem monster_id player.captives)
+       then Some monster_id
+       else None
+     with Not_found -> None)
+
 let capture_offer (player: player) (enc: encounter) : string option =
   if enc.sprite = "" then None
   else
     (try
-       let m = Campaign_monsters.monster_by_sprite enc.sprite in
-       if capture_eligible player m.id && not (List.mem m.id player.captives)
-       then Some m.id
-       else None
+       capture_offer_id player (Campaign_monsters.monster_by_sprite enc.sprite).id
      with Not_found -> None)
+
+(* Every enemy the [CAPTURE_LISTHELP] gates hold for and the hero does not
+   hold yet, in registry order - the rows the city Pets tab offers. *)
+let capture_candidates (player: player) : string list =
+  List.map
+    (fun (m : Campaign_monsters.monster) -> m.id)
+    (List.filter
+       (fun (m : Campaign_monsters.monster) ->
+          capture_eligible player m.id && not (List.mem m.id player.captives))
+       Campaign_monsters.monsters)
+
+(* The callback's own gate: a fight the stage allows captured (cb_capture -
+   QUEST_BATTLE_NOCAPTURE rows say no), won, with both [CAPTURE_LISTHELP]
+   gates holding after the settle recorded this defeat. Split from
+   execute_callback so the NOCAPTURE rule is testable without winning a
+   140-life fight under the auto-AI. *)
+let callback_capture_offer (player: player) ~(won: bool) ~(capture: bool)
+    (monster_id: string) : string option =
+  if won && capture then capture_offer_id player monster_id else None
 
 (* ------------------------------------------------------------------ *)
 (* Battle Integration *)
@@ -840,8 +868,7 @@ type battle_result = {
 
 let process_battle_result (player: player) (enc: encounter) (battle: battle) : player * battle_result =
   let hero = battle.hero in
-  let enemy = battle.enemy in
-  let player_won = enemy.is_dead && not hero.is_dead in
+  let player_won = Battle.hero_won battle in
   let gold_gained = battle.gold in
   let xp_gained = battle.xp in
   let new_player = {
@@ -1134,7 +1161,7 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
                  ~enemy_tags:(monster_type_tags monster)
                  ~companions:player.companions ())
           in
-          let won = battle.enemy.is_dead && not battle.hero.is_dead in
+          let won = Battle.hero_won battle in
           Some (quest_battle_settle player qid won battle, battle)
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
@@ -1248,10 +1275,14 @@ let apply_callback_effect (p : player) (qid : string) (e : callback_effect) : pl
     queue_message ~qid ~callback:cb title text; p
 
 (* What a conversation/message callback did: the player with its body's
-   effects applied, plus the battle when it triggered one. *)
+   effects applied, the battle when it triggered one, and the capture the
+   won fight just made available (cb_capture offered, both gates holding,
+   enemy not already held) - the surface's offer, computed where the monster
+   id and the stage's capture flag live. *)
 type callback_result = {
   cb_player : player;
   cb_battle : battle option;
+  cb_capture_offer : string option;
 }
 
 (* Execute a conversation/message callback by name. The extracted body
@@ -1281,11 +1312,11 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
         List.fold_left (fun acc e -> apply_callback_effect acc qid e) player effs
     in
     match cbrow with
-    | None -> Some { cb_player = p; cb_battle = None }
+    | None -> Some { cb_player = p; cb_battle = None; cb_capture_offer = None }
     | Some cb ->
       match (try Some (Campaign_monsters.monster_by_id cb.cb_monster_id)
              with Not_found -> None) with
-      | None -> Some { cb_player = p; cb_battle = None }
+      | None -> Some { cb_player = p; cb_battle = None; cb_capture_offer = None }
       | Some monster ->
         let battles = match q_opt with Some q -> q.battles | None -> [] in
         let hero = player_to_combatant p in
@@ -1306,7 +1337,7 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
                ~enemy_tags:(monster_type_tags monster)
                ~companions:p.companions ())
         in
-        let won = battle.enemy.is_dead && not battle.hero.is_dead in
+        let won = Battle.hero_won battle in
         (* The defeat record is the callback's own primitive: cb_capture says
            whether this site captures (Q1Q6/CallbackConvB does not) and
            cb_monster_id the monster the callback called - the stage's
@@ -1314,7 +1345,13 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
         let p = quest_battle_settle
             ~capture:cb.cb_capture ~monster:cb.cb_monster_id
             p qid won battle in
-        Some { cb_player = p; cb_battle = Some battle }
+        (* The offer: a won fight the stage allows captured, both gates now
+           holding after the settle recorded this defeat. *)
+        let offer =
+          callback_capture_offer ~won ~capture:cb.cb_capture p cb.cb_monster_id
+        in
+        Some { cb_player = p; cb_battle = Some battle;
+               cb_capture_offer = offer }
 
 let complete_encounter (player: player) (enc: encounter) : player =
   let battle = run_encounter_battle player enc in

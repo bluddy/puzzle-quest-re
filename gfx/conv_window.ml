@@ -42,6 +42,11 @@ type state = {
   mutable player : Campaign.player;
   mutable battle : (Campaign.player * Battle.battle) option;
   mutable message : Campaign.pending_message option;
+  mutable capture_offer : string option;
+      (** A won callback fight's [cb_capture_offer], waiting for its banner to
+          be dismissed; the map front takes it through
+          [take_capture_offer] and opens the minigame (port.capture_surfaces).
+          The conversation front has no capture window and leaves it. *)
 }
 
 (* Conversation images are referenced by the conversation XML as paths rooted
@@ -252,7 +257,7 @@ let draw_battle_banner (ui : state) (rs : Gl.run list ref) (gl : Gl.context) : u
   match ui.battle with
   | None -> ()
   | Some (p, b) ->
-    let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+    let won = Battle.hero_won b in
     let measure = measure_of ui in
     let box = { Layout.x = 262; y = 284; w = 500; h = 200 } in
     solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h } (Layout.rgba 0 0 0 200);
@@ -334,6 +339,14 @@ let open_conv (ui : state) (conv_id : string) : unit =
 let busy (ui : state) : bool =
   ui.battle <> None || ui.message <> None || ui.conversation <> None
 
+(* The capture a dismissed battle banner left waiting, taken once. The map
+   front calls this right after handing a click to this window: a banner
+   click is what frees the offer. *)
+let take_capture_offer (ui : state) : string option =
+  let o = ui.capture_offer in
+  ui.capture_offer <- None;
+  o
+
 let player_of (ui : state) : Campaign.player = ui.player
 
 let sync_player (ui : state) (p : Campaign.player) : unit = ui.player <- p
@@ -355,7 +368,9 @@ let dismiss_message (ui : state) (m : Campaign.pending_message) : unit =
      | Some res ->
        ui.player <- res.cb_player;
        (match res.cb_battle with
-        | Some b -> ui.battle <- Some (res.cb_player, b)
+        | Some b ->
+          ui.battle <- Some (res.cb_player, b);
+          ui.capture_offer <- res.Campaign.cb_capture_offer
         | None -> ())
      | None -> ())
   end
@@ -401,11 +416,9 @@ let step_scriptcall (ui : state) (conv : Campaign_conversations.conversation) : 
           ui.player <- res.cb_player;
           (match res.cb_battle with
            | Some battle ->
-             let won =
-               battle.Battle.enemy.is_dead
-               && not battle.Battle.hero.is_dead
-             in
+             let won = Battle.hero_won battle in
              ui.battle <- Some (res.cb_player, battle);
+             ui.capture_offer <- res.Campaign.cb_capture_offer;
              Printf.printf "  %s: %s in %d turns (life %d, +%d gold, +%d xp) [%s/%s]\n"
                (Text_data.text battle.Battle.enemy.name)
                (if won then "won" else "lost")
@@ -471,4 +484,4 @@ let create ~(gl : Gl.context) ~(fonts : Font.t option)
       missing (List.length (conv_image_paths ())) (game_root ());
   { gl; images; fonts; system;
     conversation = None; action_index = 0; player;
-    battle = None; message = None }
+    battle = None; message = None; capture_offer = None }

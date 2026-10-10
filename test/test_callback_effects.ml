@@ -280,8 +280,8 @@ check "Q3D1/CallbackConvB applies state 5 before its battle settles"
      (match r.Campaign.cb_battle with
       | None -> false
       | Some b ->
-        let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
-        state_of r.Campaign.cb_player "Q3D1" = (if won then Some 6 else Some 5)));
+         let won = Battle.hero_won b in
+         state_of r.Campaign.cb_player "Q3D1" = (if won then Some 6 else Some 5)));
 
 (* ---------------------------------------------------------------- *)
 (* Global state cleanup                                              *)

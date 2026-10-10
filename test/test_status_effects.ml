@@ -142,6 +142,26 @@ let () =
   check_eq "and stops at zero rather than going negative" (`Int c.life) (`Int 0)
 
 let () =
+  (* The tick that reaches zero is a death: Battle.run reads life 0 as the
+     victory and every win check in the campaign reads [is_dead], so a kill
+     by poison - or by either enemy-dealing hook - has to land the flag. *)
+  let c = hero ~life:1 () in
+  apply_effect (live "EPOI") c;
+  start_turn c 1;
+  check_eq "a poison kill reaches zero" (`Int c.life) (`Int 0);
+  check "and marks the combatant dead" c.is_dead;
+  let caster = hero ~mana:{ zero_mana with fire = 12 } () in
+  let f = foe ~life:3 () in
+  apply_effect (live "EFBO") caster;
+  start_turn ~enemies:[ f ] caster 1;
+  check "a Fire Bombed kill marks the foe dead" (f.life = 0 && f.is_dead);
+  let h = hero () in
+  let f2 = foe ~life:2 () in
+  apply_effect (live "EHAS") h;
+  extra_turn ~enemies:[ f2 ] h;
+  check "a Hasted kill marks the foe dead" (f2.life = 0 && f2.is_dead)
+
+let () =
   (* Paladin's Aura: two of each pool a turn. *)
   let c = hero () in
   apply_effect (live "EPAU") c;

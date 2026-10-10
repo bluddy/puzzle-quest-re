@@ -63,7 +63,7 @@ let load_segments () : ((int * int) * Gl.texture option) list =
              in
              ((r, c), tex))))
 
-type city_tab = Shop | Spells | Tavern | Actions | Companions
+type city_tab = Shop | Spells | Tavern | Actions | Companions | Pets
 
 type city_view = {
   cid : string;
@@ -145,7 +145,8 @@ let next_tab (t : city_tab) : city_tab =
   | Spells -> Tavern
   | Tavern -> Actions
   | Actions -> Companions
-  | Companions -> Shop
+  | Companions -> Pets
+  | Pets -> Shop
 
 let tab_label (t : city_tab) : string =
   match t with
@@ -154,6 +155,7 @@ let tab_label (t : city_tab) : string =
   | Tavern -> Text_data.text "[RUMORS]"
   | Actions -> "Actions"
   | Companions -> Text_data.text "[COMPANIONS]"
+  | Pets -> Text_data.text "[PETS]"
 
 let open_city (ui : ui) (cid : string) : unit =
   ui.city <- Some { cid; tab = Shop; rumor = 0 };
@@ -196,12 +198,42 @@ let node_label (id : string) : string =
   try Text_data.text (Campaign_map.city_by_id id).Campaign_map.name_text
   with Not_found -> id
 
+(** The Pets tab's rows: every enemy the [CAPTURE_LISTHELP] gates hold for
+    and the hero does not hold yet (a click opens the minigame), then the
+    captives already held (display - [PETS_HELP]). *)
+let pet_rows (p : Campaign.player) : [ `Ready of string | `Held of string ] list
+    =
+  List.map (fun id -> `Ready id) (Campaign.capture_candidates p)
+  @ List.map (fun id -> `Held id) p.Campaign.captives
+
+(** A monster's display name - save data can name an id the registry
+    dropped, and the row still has to draw. *)
+let monster_name (id : string) : string =
+  try
+    Text_data.text (Campaign_monsters.monster_by_id id).Campaign_monsters.name_text
+  with Not_found -> id
+
 (** Fill a recovered %s in a runtime string - Printf.sprintf will not take     a tag that only becomes a format after Text_data resolves it. *)
 let fill1 (pat : string) (arg : string) : string =
   match String.index_opt pat '%' with
   | Some i when i + 1 < String.length pat && pat.[i + 1] = 's' ->
       String.sub pat 0 i ^ arg
       ^ String.sub pat (i + 2) (String.length pat - i - 2)
+  | _ -> pat
+
+(** Fill two runtime ints in a shipped string: [PETS_DETAILS] carries "%d of
+    %d" and Printf.sprintf will not take a tag that only becomes a format
+    after Text_data resolves it. *)
+let fill2 (pat : string) (a : string) (b : string) : string =
+  match String.index_opt pat '%' with
+  | Some i when i + 1 < String.length pat && pat.[i + 1] = 'd' ->
+      let head = String.sub pat 0 i in
+      let rest = String.sub pat (i + 2) (String.length pat - i - 2) in
+      (match String.index_opt rest '%' with
+      | Some j when j + 1 < String.length rest && rest.[j + 1] = 'd' ->
+          head ^ a ^ String.sub rest 0 j ^ b
+          ^ String.sub rest (j + 2) (String.length rest - j - 2)
+      | _ -> head ^ a ^ rest)
   | _ -> pat
 
 (** A click inside the city panel: Done leaves, the mode button tabs, rows     buy (shop) or advance the rumor (tavern), and the body advances it too. *)
@@ -215,7 +247,11 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
       cv.tab <- next_tab cv.tab;
       Printf.printf "  %s\n" (tab_label cv.tab);
       flush stdout;
-      if cv.tab = Tavern then show_rumor cv
+      if cv.tab = Tavern then show_rumor cv;
+      if cv.tab = Pets then begin
+        Printf.printf "  %s\n" (Text_data.text "[YOURCITY_PETS_TEXT]");
+        flush stdout
+      end
   | City_layout.Row i -> (
       match cv.tab with
       | Shop -> (
@@ -276,11 +312,26 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
                     (fill1 (Text_data.text "[COMPANIONSTATUS_OUT0]")
                        (node_label h));
                   flush stdout
-              | Campaign.Not_recruited -> ())))
+              | Campaign.Not_recruited -> ()))
+      | Pets -> (
+          match List.nth_opt (pet_rows ui.player) i with
+          | None -> ()
+          | Some (`Ready mid) ->
+              (* The city's capture entry: the minigame opens over the
+                 panel, [CANCEL] comes back to it. *)
+              ui.capture <- Some (mid, Campaign.capture_begin mid);
+              ui.capture_sel <- None;
+              Printf.printf "  capturing %s - swap two gems, or Cancel\n"
+                (monster_name mid);
+              flush stdout
+          | Some (`Held mid) ->
+              Printf.printf "  %s: %s\n" (monster_name mid)
+                (Text_data.text "[PETS_HELP]");
+              flush stdout))
   | City_layout.Elsewhere -> (
       match cv.tab with
       | Tavern -> advance_rumor cv
-      | Shop | Spells | Actions | Companions -> ())
+      | Shop | Spells | Actions | Companions | Pets -> ())
 
 (** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
 let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
@@ -401,6 +452,29 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
       text ~colour:(Layout.rgb 150 150 160)
         (fill1 (Text_data.text "[COMPANIONS_DETAILS]")
            (string_of_int (List.length ui.player.Campaign.companions)))
+        City_layout.row_x
+        (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8)
+  | Pets ->
+      List.iteri
+        (fun i row ->
+          if i < City_layout.max_rows then begin
+            let name, status, col =
+              match row with
+              | `Ready mid ->
+                  (monster_name mid, "ready", Layout.rgb 240 210 90)
+              | `Held mid ->
+                  (monster_name mid, "captured", Layout.rgb 150 150 160)
+            in
+            text ~colour:col name (City_layout.row_x + 30) (row_y i + 3);
+            let w = measure status in
+            text ~colour:col status
+              (City_layout.row_x + City_layout.row_w - w - 8) (row_y i + 3)
+          end)
+        (pet_rows ui.player);
+      text ~colour:(Layout.rgb 150 150 160)
+        (fill2 (Text_data.text "[PETS_DETAILS]")
+           (string_of_int (List.length ui.player.Campaign.captives))
+           (string_of_int (List.length Campaign_monsters.monsters)))
         City_layout.row_x
         (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8));
   solid rs gl City_layout.mode_btn (Layout.rgb 44 48 60);
@@ -678,7 +752,20 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
             flush stdout
         | None -> ())
   | None ->
-      if Conv_window.busy ui.conv then Conv_window.handle_click ui.conv mx my
+      if Conv_window.busy ui.conv then begin
+        Conv_window.handle_click ui.conv mx my;
+        (* The click may have dismissed a battle banner whose won fight
+           left a capture waiting - open it over whatever the conversation
+           still holds (port.capture_surfaces). *)
+        (match Conv_window.take_capture_offer ui.conv with
+        | Some mid ->
+            ui.capture <- Some (mid, Campaign.capture_begin mid);
+            ui.capture_sel <- None;
+            Printf.printf "  capture available: %s - swap two gems, or Cancel\n"
+              (monster_name mid);
+            flush stdout
+        | None -> ())
+      end
       else (
       match ui.city with
       | Some cv -> handle_city_click ui cv mx my
@@ -723,9 +810,13 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
     which through [advance_travel_with_events] fires the arrival moment. *)
 let step (ui : ui) (dt : float) : unit =
   Conv_window.sync_player ui.conv ui.player;
-  Conv_window.step ui.conv dt;
-  ui.player <- Conv_window.player_of ui.conv;
-  if Conv_window.busy ui.conv then ()
+  (* The minigame holds the hosted dialogue where it is too: no scriptcall
+     fires a battle behind the grid. *)
+  if ui.capture = None then begin
+    Conv_window.step ui.conv dt;
+    ui.player <- Conv_window.player_of ui.conv
+  end;
+  if Conv_window.busy ui.conv || ui.capture <> None then ()
   else begin
     (match ui.pending with
     | Some (qid, loc) ->

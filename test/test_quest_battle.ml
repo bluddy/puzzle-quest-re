@@ -314,10 +314,19 @@ let caravan = { (active "Q0Q7" 2) with Campaign.companions = [ "NDKH" ] } in
       | _ -> false);
    check "the Wight's roster is on the enemy side"
      (spell_ids bw.Battle.enemy_spells = [ "SSPF"; "SCTO" ]);
-   check "the caravan fight runs to a finish" (Battle.log_of bw <> []);
+    check "the caravan fight runs to a finish" (Battle.log_of bw <> []);
+    (* The seeded caravan fight is winnable and wins: the settle inside
+       run_quest_battle follows Battle.hero_won, so stage 2 advances and
+       the Wight's defeat is on record. *)
+    check "winning at stage 2 advances (extracted advance) and records"
+      (state_of q2 "Q0Q7" = Some 3
+       && Campaign.monster_defeats q2 "MWIG" = 1);
+    (* The loss branch: stage 2 has no fail entry, so a loss keeps it -
+       settle the same battle by hand, the way both outcomes are driven. *)
+    let q2l = Campaign.quest_battle_settle caravan "Q0Q7" false bw in
     check "losing at stage 2, which has no fail entry, keeps the stage"
-      (state_of q2 "Q0Q7" = Some 2
-       && Campaign.monster_defeats q2 "MWIG" = 0);
+      (state_of q2l "Q0Q7" = Some 2
+       && Campaign.monster_defeats q2l "MWIG" = 0);
    let q3p = Campaign.quest_battle_settle caravan "Q0Q7" true bw in
    check "capturing the caravan counts the Wight's defeat"
      (Campaign.monster_defeats q3p "MWIG" = 1);
@@ -469,7 +478,7 @@ let guardian = active "Q0I2" 1 in
       check "the guardian fight runs to a finish" (Battle.log_of b <> []);
       check "the settle ran: life follows the fight"
         (p.Campaign.life = b.Battle.hero.life);
-      let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+      let won = Battle.hero_won b in
       check "spoils follow the outcome"
         (p.Campaign.gold = guardian.Campaign.gold + (if won then b.Battle.gold else 0)
          && p.Campaign.xp = guardian.Campaign.xp + (if won then b.Battle.xp else 0));
@@ -489,7 +498,7 @@ let ambush = active "Q1Q6" 1 in
       check "the NOCAPTURE site records no defeat either way"
         (Campaign.monster_defeats p "MGUU" = 0
          && Campaign.monster_defeats p "MSCO" = 0);
-      let won = b.Battle.enemy.is_dead && not b.Battle.hero.is_dead in
+      let won = Battle.hero_won b in
       check "and OnCompleteAction advances the stage only on a win"
         (state_of p "Q1Q6" = (if won then Some 2 else Some 1))));
 

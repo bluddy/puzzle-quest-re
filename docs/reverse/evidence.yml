@@ -2413,6 +2413,54 @@ claims:
       treats unresolved data as no capture, matching the engine's silent
       sprite lookup.
 
+  - id: campaign.capture_list
+    title: The game's capture list is a captives panel plus per-enemy gates
+    area: ui
+    verdict: mechanic
+    status: recovered
+    confidence: medium
+    summary: >
+      Two shipped texts describe the list side of capture. [PETS_HELP] -
+      "This shows all the enemies you have captured. If you have built a
+      Mage Tower in your Citadel, you may learn spells from these captives"
+      - and [PETS_DETAILS] "%d of %d Enemies captured" belong to a Captives
+      panel, headed [PETS] ("Captives"); [YOURCITY_PETS_TEXT] addresses it
+      from the city: "Now that you have a Dungeon, you may capture any
+      enemy you have defeated 3 or more times by completing a puzzle
+      mini-game. Captives can be used as either mounts or to teach you
+      spells." [CAPTURE_LISTHELP0..2] states the entry gates verbatim
+      (dungeon built, that enemy down 3+ times). The pre-battle dialog
+      MonsterInfoMenu carries Fight / Avoid / Capture / Cancel buttons and
+      ChooseOpponentMenu a [CAPTURE] button, so the original reaches the
+      grid from more than one place; where the exe lists eligible enemies
+      is not in any screen XML or Lua, only the strings and buttons are.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[PETS], [PETS_DETAILS], [PETS_HELP], [YOURCITY_PETS_TEXT], [CAPTURE_LISTHELP0..2]"
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/MonsterInfoMenu.xml
+        note: butt_capture (id 2) beside Fight/Avoid/Cancel
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/ChooseOpponentMenu.xml
+        note: butt_capture between Fight and Cancel
+      - kind: code
+        ref: lib/campaign.ml
+        fn: capture_candidates
+      - kind: code
+        ref: bin/pq_map_gfx.ml
+        note: the city Pets tab (pet_rows, fill2 over [PETS_DETAILS])
+      - kind: code
+        ref: test/test_capture.ml
+    affects: [lib/campaign.ml, bin/pq_map_gfx.ml]
+    notes: >
+      The port puts the list where its city panel can host one - a Pets tab
+      cycling with Shop/Spells/Tavern/Actions/Companions - because no
+      screen XML carries an eligible-enemy list to copy. The pre-battle
+      [CAPTURE] button on MonsterInfoMenu is the original's other entry
+      (fight first, or capture from the dialog) and stays unwired;
+      port.capture_surfaces records the choice.
+
   - id: campaign.companion_start_battle
     title: Party companions fire OnStartBattle once when the battle opens
     area: campaign
@@ -4009,5 +4057,46 @@ port_decisions:
       defeats, so the next eligible win simply offers again. The minigame
       freezes travel while it is up, like the road popup does, so a
       journey cannot run past the window.
+    supersedes: null
+    date: 2026-10-10
+
+  - id: port.capture_surfaces
+    decision: >
+      Capture is offered on every battle surface the interactive game has.
+      Callback fights (the conversation battles that carry the quest
+      fights) settle cb_capture_offer inside execute_callback - won,
+      cb_capture allowed, both gates holding after the defeat is recorded -
+      conv_window parks it beside the Victory banner, and the map front
+      takes it through take_capture_offer on the banner's dismiss and
+      opens the minigame over the conversation. The city panel gains a Pets
+      tab: capture_candidates rows (registry order, gates holding, not yet
+      held) click straight into capture_begin, held captives display under
+      them with the [PETS_DETAILS] count, and entering the tab prints
+      [YOURCITY_PETS_TEXT]. run_quest_battle has no interactive screen, so
+      quest wins arrive through these callbacks; road wins already open the
+      minigame post-win (port.capture_ui), and the original's pre-battle
+      MonsterInfoMenu [CAPTURE] button stays unwired.
+    rationale: >
+      The offer helper is id-based because that is what every surface can
+      provide: encounters carry a sprite, callback rows carry
+      cb_monster_id, and the list walks the registry - one gate function
+      (capture_offer_id) under all three, with the won/capture-flag part
+      split into callback_capture_offer so the NOCAPTURE rule is testable
+      without winning a 140-life fight under the auto-AI. Opening on the
+      banner's dismiss keeps the port's established rule that a win is
+      followed by the attempt (the player backs out through [CANCEL])
+      rather than adding a prompt the shipped banners do not have; the
+      conversation keeps talking afterwards because the capture-first
+      click routing and the frozen conv step hold it. The Pets tab rather
+      than a new window: [PETS] is a panel of the city's own furniture
+      family, the city panel already cycles tabs, and no shipped screen
+      XML carries an eligible-enemy list to reproduce. This milestone also
+      fixed the reads underneath every surface: sweep_deaths clears
+      is_dead on every pass (faithful to FUN_00464870, pinned by
+      test_combat), so player_won/won/banner reads through is_dead were
+      always false and every real fight registered as a loss - all of them
+      go through Battle.hero_won now, and the status-effect hooks that
+      could zero life (poison, Fire Bombed, Hasted) land is_dead at the
+      tick like the damage path does.
     supersedes: null
     date: 2026-10-10

@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Capture UI landed (the last unwired engine hand-off): a won road battle whose monster passes `Campaign.capture_offer` - dungeon built, 3+ wins over that monster, not already held, the encounter's sprite resolves to a monster - opens the minigame in `pq_map_gfx` the moment the popup closes (`port.capture_ui`). The shipped CaptureMenu window is `gfx/capture_layout.ml` geometry over the engine's own `Capture.t`: pad_grid drawn as flat gem colours with the shipped letters, a two-click orthogonal swap through `Capture.play`, the [CANCEL] button giving the attempt up, and one more click on a terminal state running `capture_finish` (collect the captive, or [CAPTURE_FAIL]); travel freezes while it is up. Callback/quest wins and the city Pets list remain open surfaces. All 33 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Capture surfaces landed - the offer now reaches every front the game has (`port.capture_surfaces`). A won callback fight (the conversation battles that are the game's quest fights) carries `cb_capture_offer`: `execute_callback` computes it where the monster id and the stage's capture flag live (`callback_capture_offer` - won, capture allowed, both gates), `conv_window` parks it behind the Victory banner, and the map front takes it on the banner's dismiss through `take_capture_offer` and opens the minigame. The city panel grew a **Pets** tab (`[PETS]` - Captives): `capture_candidates` rows readied by the [CAPTURE_LISTHELP] gates click straight into the grid, held captives display under them, and the panel heads with `[YOURCITY_PETS_TEXT]`. Underneath this, two real bugs fell: status-effect kills (poison, Fire Bombed, Hasted) never set `is_dead`, and every post-run win read in the game was therefore always false because `Battle.run`'s faithful `sweep_deaths` clears that flag each pass - so real road/callback/quest fights all registered as losses, the banner always said Defeat, and captures never offered in play. Wins now read `Battle.hero_won` (the run's own life-based verdict) everywhere. All 33 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -66,6 +66,17 @@
   `capture_begin` - `gfx/capture_layout.ml` places the 8x8 pad_grid, the
   [CAPTURE]/help lines and the give-up button; a terminal state takes one
   more click to run `capture_finish` (`port.capture_ui`).
+  The other two surfaces follow (`port.capture_surfaces`): a won callback
+  battle whose stage allows capture raises `cb_capture_offer` through
+  `callback_capture_offer`, the conversation banner parks it, and the map
+  takes it on dismiss (`Conv_window.take_capture_offer`) - quest fights in
+  play are these callbacks, so they are covered without a quest-battle
+  screen; and the city's Pets tab (`[PETS]` - Captives) lists
+  `capture_candidates` (gates holding, not yet held) as click-to-play rows
+  over the held captives. Win reads everywhere went to `Battle.hero_won`:
+  `sweep_deaths` clears `is_dead` every pass, so the flag read as a loss
+  for every real fight, and status-effect kills (poison, Fire Bombed,
+  Hasted) now land it too.
 - **Companions (NEW):** `lib/campaign_companion_hooks.ml` ports the ten
   `OnStartBattle` bodies from `Assets/Companions/*.lua` into one rule table -
   CHECK_TYPE guards over the monster's type tags, NPAT's percentile roll plus
@@ -116,9 +127,9 @@
   companion pass; `loadout_of_equipment` folds the nine-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (64),
-  `test/test_companion.ml` (128), `test/test_quest_battle.ml` (87) and
-  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 542
+- **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (84),
+  `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101) and
+  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 521
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -148,7 +159,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 88 | 10 (4 open) | 34 |
+| `docs/reverse/evidence.yml` | 89 | 10 (4 open) | 35 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
