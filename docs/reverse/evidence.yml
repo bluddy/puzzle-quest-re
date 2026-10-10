@@ -3785,3 +3785,26 @@ port_decisions:
       at-home companions first; paging past seven is cosmetic-open.
     supersedes: null
     date: 2026-10-10
+
+  - id: port.aim_hover_highlight
+    decision: >
+      While an aim question is open, the play front tracks the mouse and
+      lights the shape the spell reads - the whole column for input_type 1,
+      the whole row for 2, the one cell for 3 - under the cursor, with the
+      same selection glow a pending swap uses; a faint ring marks the cell
+      under the mouse at all times, and the HUD prompt says aim. Every cell
+      stays a valid target, so the shape is the highlight and there is no
+      filter to apply.
+    rationale: >
+      Nothing recovered says which cells the original rejects as targets, so
+      port.human_aim_click already accepts all 64; "valid-target
+      highlighting" can therefore only mean the shape, keyed off the
+      input_type the front end already has when it opens the question. Hover
+      is presentation only and lives entirely in the front end: the battle
+      is parked inside choose_spell, so the front end is the only code
+      running, and a mouse_motion repaint (the repo's first) is what keeps
+      the highlight live while the battle clocks idle. The column/row shapes
+      come from Layout.aim_cells so the geometry is testable without a
+      window.
+    supersedes: null
+    date: 2026-10-10

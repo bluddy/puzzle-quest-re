@@ -68,7 +68,7 @@
 | Gap | Details |
 |-----|---------|
 | Nine input spells | ✓ six grid (SCON, SFBA, SFOD, SPRO, SSPA, STHR), two column (SCLI, SLIS), one row (SCHG); the aim reaches the body through `choose_aim` -> `fx_input`, and each reader no-ops on `None` |
-| UI | ✓ cell selection landed (`Input.in_target_prompt`: aim, bar-cancel, miss; the console asks for `b3`-style cells); hover cursor and valid-target highlighting still open (cosmetic) |
+| UI | ✓ cell selection landed (`Input.in_target_prompt`: aim, bar-cancel, miss; the console asks for `b3`-style cells); hover and shape highlighting landed (`Layout.aim_cells`, the play front's first `mouse_motion` handler, the HUD aim prompt); every cell stays a valid target (`port.human_aim_click`) |
 | AI | ✓ the six hooks' `SET_INPUT_DATA` picks are ported (`ctx_aim`, cleared per candidate, read into `fx_input`); SFOD/SSPA/SPRO store nothing and so aim at nothing (`port.ai_aim_fallback`) |
 
 ### 5. Monster AI & Spell Rosters
@@ -175,7 +175,7 @@
 5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (57 assertions); success adds the captive
 6. ~~**Companion equip**~~ — roster + party (`recruited_companions` / `companions`); add at home, leave anywhere; the ten OnStartBattle hooks are the passives and follow the party (companions ship no separate skill data)
 7. **Mount speed** — `mount` slot → modify travel time between nodes
-8. **Grid spell cell selection** — mouse hover → highlight valid cells; click → pass cell to `Std_GridSpellEffect`
+8. ~~**Grid spell cell selection**~~ — hover lights the shape the spell reads (`Layout.aim_cells`: column/row/cell) with the HUD prompt; every cell stays a valid target; click-to-aim was already wired
 
 ---
 
@@ -240,9 +240,9 @@ bin/
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters,
-conversation triggers + per-callback effects, companion equip), and the
-conversation UI now walks actions, renders portraits/backdrops, fires battle
-callbacks and applies each scriptcall's extracted body effects. Pick one:
+conversation triggers + per-callback effects, companion equip, grid-spell
+aim hover), and the conversation UI now walks actions, renders
+portraits/backdrops, fires battle callbacks and applies each scriptcall's
+extracted body effects. Pick one:
 
-- **Grid spell cell selection** - hover highlight + click-to-aim (quick win 8)
 - **Mount speed** - the mount slot modifies travel time (quick win 7)

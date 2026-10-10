@@ -78,6 +78,21 @@ let board_rect (t : t) : rect =
 let in_bounds (t : t) (x : int) (y : int) : bool =
   x >= 0 && x < t.cols && y >= 0 && y < t.rows
 
+(** Every cell an aim question lights up for one hover position, in row order.
+
+    The shape follows the spell's input type: 1 is a column (every row at that
+    x), 2 a row (every column at that y), 3 the one cell, and 0 or anything else
+    nothing at all. Nothing recovered rejects any cell as a target, so there is
+    no filter to apply - the shape is all there is to draw. *)
+let aim_cells (t : t) ~(shape : int) ((x, y) : int * int) : (int * int) list =
+  if not (in_bounds t x y) then []
+  else
+    match shape with
+    | 1 -> List.init t.rows (fun r -> (x, r))
+    | 2 -> List.init t.cols (fun c -> (c, y))
+    | 3 -> [ (x, y) ]
+    | _ -> []
+
 (** Which cell a window position falls in, or [None] if it misses the board.
 
     Negative input is not clamped: a click to the left of the board is a miss,

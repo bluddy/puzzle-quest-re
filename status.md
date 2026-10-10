@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Companion equip landed: the party is the equipped subset of a recruited roster (`recruited_companions` + `companions`), `add_companion` rejoins someone at their home (`[COMPANIONSTATUS_OUT1]`), `remove_companion` is free anywhere and keeps the roster, `companion_slot` reads the five states, the save carries the roster with an old-save default, and the map city panel gained a Companions tab whose rows a click leaves or picks up. The ten OnStartBattle hooks - the companion's whole recovered mechanic - already follow the party, so equipping gates the passive. All 32 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Grid-spell aim hover landed (quick win 8): the play front tracks the mouse (the repo's first `mouse_motion` handler) and, while an aim question is open, lights the shape the spell reads - the whole column, the whole row, or the one cell - under the cursor via the new pure `Layout.aim_cells`, with the same selection glow a pending swap uses; a faint ring marks the cell under the mouse at all times and the HUD prompt says "aim". Every cell stays a valid target (`port.human_aim_click`), so the shape is the highlight and there is no filter. Click-to-aim was already wired (`choose_aim` -> `fx_input`). All 32 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -142,7 +142,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 85 | 10 (4 open) | 30 |
+| `docs/reverse/evidence.yml` | 85 | 10 (4 open) | 31 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
@@ -154,6 +154,7 @@ Key decisions recorded:
 - `port.location_action_flow` - query is first match; execute/complete/enter apply every matching group live; the 3rd message arg is the display anchor
 - `port.full_loop_map_actions` - the map Actions tab + travel arrivals + shared Conv_window host the location-event loop; complete_action stays caller-driven
 - `campaign.companion_roster_equip` - equipping is party membership over a recruited roster; add at home, leave anywhere; the hooks are the passives
+- `port.aim_hover_highlight` - hover lights the shape the spell reads (column/row/cell); all 64 cells stay valid, no filter
 - `port.conversation_ui` — portrait at (96,50), dialogue at y=170, choices at y=350; text wraps at 560px; `--conv --shot` pixel-checks
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
@@ -207,7 +208,7 @@ source assets.
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equip landed (roster + party, home-gated pickup, the map Companions tab) |
 | **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, and the shared `Conv_window` that opens queued trees over the map. Still open: the two callback-site `QUEST_REMOVE_COMPANION` removals |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
-| **Medium** | **Grid Spell Targeting** | Cell selection UI for the 11 grid spells; `fx.ml` currently drops `target = Grid` effects |
+| **Medium** | **Grid Spell Targeting** | Landed: hover lights the shape the spell reads (column/row/cell via `Layout.aim_cells`), the HUD prompt says aim, click-to-aim was already wired; `fx.ml`'s `play_for_fx` still skips `target = Grid` calls - their cells arrive through `on_grid_fx`, by design (`port.grid_effects_are_an_observer_not_an_event`) |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, tavern rumors, and the Companions tab (leave/pick up); a dedicated hero screen and captive teaching remain open |
 | **Medium** | **Companions / Mounts** | Companion equip landed (roster/party + the ten hooks as the passives); mount speed/fly and banner effects remain open |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
@@ -236,7 +237,7 @@ source assets.
 1. **Campaign → Battle Integration** — landed: `pq_conv_gfx` walks the actions and hands each `scriptcall` to `execute_callback`, which applies the body's extracted effects first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then runs the 33-row table's fight behind an outcome banner; quest state queues conversations (`pending_conversations`: OnBegin intros, guarded arrivals, nested trees — printed by the demo). The location-action flow and the message popup are landed (`query_actions`/`execute_action`/`complete_action`/`enter_location` with live-state groups, `pending_messages`, the conv-gfx modal box, `test_location_actions.ml`); the map window's Actions tab, travel arrivals through `advance_travel_with_events`, and the shared `Conv_window` that opens queued trees over the map are landed (`start_conversation` as a direct API remains unused).
 2. **Companion edges** — arrival removal is extracted and run (`enter_location`, six rules; the Q3Q5/QU02 callback sites have no arrival event to run under; travel arrival now runs `enter_location` through `advance_travel_with_events`); the rune's `OnStartBattle` waits on the forge's rune state; companion equip landed (roster + party, home-gated pickup, map Companions tab)
 3. **Fog of war / visible range** — visibility flags exist and save correctly, and the map window now draws the hero's position (current node, or on the road); still open is visible-*range* logic - recomputing what the hero can see from where they stand - and fog painting
-4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover cursor and valid-target highlighting are cosmetic-open, and SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
+4. **Spell targeting** — both halves wired: the player aims from the cast question (click / `b3`, `choose_aim` -> `fx_input`) and the six hooks' `SET_INPUT_DATA` picks land for machines too (`ctx_aim`, cleared per candidate); hover and the shape highlight landed (`Layout.aim_cells`, the play front's first `mouse_motion` handler, the HUD aim prompt); SFOD/SSPA/SPRO aim at nothing when the machine casts them, since their hooks store no cell (`port.ai_aim_fallback`)
 5. **Monster spell rosters** — quest and road fights both load the monster's registry `Spell` tags now; mana-aware dynamic selection and any weighting of spell choice beyond each hook's own board reads remain open
 6. **Conversation branching** — wired: `pq_conv_gfx` walks the `talk_*/wait/end/scriptcall` actions with the speaking character's portrait and name (the data ships no choice nodes, so there is nothing to branch on), and quest state now queues trees (`pending_conversations`: intros, arrivals, nested callback trees); the map window's shared `Conv_window` now opens those queued trees over the map, and the Actions tab drives the location-action flow
 7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)

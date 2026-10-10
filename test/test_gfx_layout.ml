@@ -203,6 +203,22 @@ let () =
      with Invalid_argument _ -> true)
 
 let () =
+  (* The aim question lights a shape, not a filter: every cell the board owns     is a valid target (port.human_aim_click), so the shape is the whole story. *)
+  let cells shape xy = Layout.aim_cells lay ~shape xy in
+  check "shape 3 is the one cell"
+    (cells 3 (3, 4) = [ (3, 4) ]);
+  check "shape 1 is the whole column, top to bottom"
+    (cells 1 (3, 4)
+     = [ (3, 0); (3, 1); (3, 2); (3, 3); (3, 4); (3, 5); (3, 6); (3, 7) ]);
+  check "shape 2 is the whole row, left to right"
+    (cells 2 (3, 4)
+     = [ (0, 4); (1, 4); (2, 4); (3, 4); (4, 4); (5, 4); (6, 4); (7, 4) ]);
+  check "shape 0 lights nothing" (cells 0 (3, 4) = []);
+  check "an unknown shape lights nothing" (cells 9 (3, 4) = []);
+  check "an off-board hover lights nothing"
+    (cells 3 (8, 0) = [] && cells 1 (3, 8) = [] && cells 2 (-1, 4) = [])
+
+let () =
   if !failures = 0 then print_endline "all gfx layout tests passed"
   else begin
     Printf.printf "%d gfx layout test(s) failed\n" !failures;

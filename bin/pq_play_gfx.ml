@@ -62,6 +62,8 @@ type ui = {
   (* Fixed: the window is not resizable, so the board geometry never moves. *)
   layout : Layout.t;
   mutable first_cell : (int * int) option;  (** first half of a pending swap *)
+  mutable hover : (int * int) option;  (** the cell the mouse is over *)
+  mutable aim_shape : int;  (** 0 = no aim question open; else the spell's input_type *)
   (* None when no font atlas could be loaded, which is a supported state: the
      battle is still playable, it just has no labels. *)
   fonts : Font.t option;
@@ -335,9 +337,14 @@ let draw_hud (gl : Gl.context) (spells : Spell.spell list) : Gl.run list =
   (match u.small with
   | Some m ->
       let prompt =
-        match u.first_cell with
-        | Some _ -> "click an adjacent gem to swap"
-        | None -> "click a gem, then an adjacent one  -  or a button to cast"
+        if u.aim_shape <> 0 then
+          match u.hover with
+          | Some _ -> "aim - click the board to cast, or a button to cancel"
+          | None -> "aim - hover the board, then click to cast"
+        else
+          match u.first_cell with
+          | Some _ -> "click an adjacent gem to swap"
+          | None -> "click a gem, then an adjacent one  -  or a button to cast"
       in
       let board = Layout.board_rect lay in
       centred m prompt ~cx:(window_w / 2) ~y:(board.Layout.y + board.Layout.h + 8)
@@ -532,6 +539,32 @@ let draw ?(present = true) () =
           { Layout.x = r.Layout.x + 4; y = r.Layout.y + 4; w = r.Layout.w - 8;
             h = r.Layout.h - 8 }
           (Layout.rgba 255 255 255 80));
+  (* The cell under the mouse, faintly, whenever the mouse is on the board. *)
+  (match (ui ()).hover with
+  | None -> ()
+  | Some (hx, hy) ->
+      let r = Layout.cell_rect lay hx hy in
+      emit
+        { Layout.x = r.Layout.x + 2; y = r.Layout.y + 2; w = r.Layout.w - 4;
+          h = r.Layout.h - 4 }
+        (Layout.rgba 240 210 90 36));
+  (* The open aim question lights the shape the spell reads - the whole column,
+     the whole row, or the one cell - under the mouse. Every cell is a valid
+     target (port.human_aim_click), so the shape is the highlight and there is
+     nothing to filter; the same glow the pending swap uses. *)
+  if (ui ()).aim_shape <> 0 then
+    (match (ui ()).hover with
+    | None -> ()
+    | Some (hx, hy) ->
+        List.iter
+          (fun (x, y) ->
+            let r = Layout.cell_rect lay x y in
+            if not (Skin.draw (ui ()).skin runs frame_selection ~place:r) then
+              emit
+                { Layout.x = r.Layout.x + 4; y = r.Layout.y + 4;
+                  w = r.Layout.w - 8; h = r.Layout.h - 8 }
+                (Layout.rgba 255 255 255 80))
+          (Layout.aim_cells lay ~shape:(ui ()).aim_shape (hx, hy)));
   List.iteri
     (fun i (s : Spell.spell) ->
       let affordable = Spell.can_cast b.Battle.hero s in
@@ -601,6 +634,21 @@ let rec wait_click () =
       draw ();
       (E.get ev E.mouse_button_x, E.get ev E.mouse_button_y)
     end
+    else if t = E.mouse_motion then begin
+      (* Hover is presentation only: the cell under the mouse drives the aim
+         highlight and the faint ring, and a change repaints even when the battle
+         clocks are idle - the battle is paused inside a question, so nothing else
+         would. *)
+      let cell =
+        Layout.hit (ui ()).layout (E.get ev E.mouse_motion_x)
+          (E.get ev E.mouse_motion_y)
+      in
+      if cell <> (ui ()).hover then begin
+        (ui ()).hover <- cell;
+        draw ()
+      end;
+      wait_click ()
+    end
     else wait_click ()
   end
   else begin
@@ -661,15 +709,19 @@ let choose_spell spells : Spell.spell option =
             "  cast %s - click a %s (or the spell bar to cancel)\n" s.Spell.id
             what;
           flush stdout;
+          (* The highlight is live for exactly as long as the question is open. *)
+          (ui ()).aim_shape <- s.Spell.input_type;
           let rec target () =
             let mx, my = wait_click () in
             match Input.in_target_prompt bg (layout ()) mx my with
             | Input.Aim (x, y) ->
+                (ui ()).aim_shape <- 0;
                 cast_aim := Some { Board.x = x; y = y };
                 Printf.printf "  cast %s at (%d,%d)\n" s.Spell.id x y;
                 flush stdout;
                 Some s
             | Input.Cancel ->
+                (ui ()).aim_shape <- 0;
                 Printf.printf "  cast cancelled\n";
                 flush stdout;
                 ask ()
@@ -983,6 +1035,8 @@ let () =
         b = None;
         layout = lay;
         first_cell = None;
+        hover = None;
+        aim_shape = 0;
         fonts;
         system = Font_layout.metrics_of_tag "font_system";
         small = Font_layout.metrics_of_tag "font_small";
