@@ -51,6 +51,7 @@ type player = {
   monster_defeats: (string * int) list; (* monster id * wins toward capture *)
   captives: string list;     (* monster ids captured *)
   mount: string option;      (* the chosen ride: a captured, rideable monster id *)
+  runes: string list;        (* collected rune ids - forge ingredients *)
 }
 
 let default_equipment = {
@@ -80,6 +81,10 @@ let create_player name prof_id sex age =
     monster_defeats = [];
     captives = [];
     mount = None;
+    (* [RUNESANDITEMS_HELP]: "To begin, you have been given the 3 most
+       common Runes" - the three with no guard and no map location, which
+       cannot be claimed anywhere else. *)
+    runes = [ "UDAG"; "UCRA"; "UFIR" ];
   }
 
 (* ------------------------------------------------------------------ *)
@@ -699,6 +704,90 @@ let capture_candidates (player: player) : string list =
 let callback_capture_offer (player: player) ~(won: bool) ~(capture: bool)
     (monster_id: string) : string option =
   if won && capture then capture_offer_id player monster_id else None
+
+(* ------------------------------------------------------------------ *)
+(* Runes and the forge                                                 *)
+(* ------------------------------------------------------------------ *)
+
+(* [RUNE_HELP]: "You must defeat this guardian to claim the Rune." The
+   guardian fight surface is not wired yet (GAPS), so the gate is what the
+   table states and the port can already hold: the rune exists, it is a
+   world drop (location <> "" - the three gifted runes sit nowhere), the
+   hero stands at that node, and does not hold it. The guard-monster check
+   rides along with the fight when that surface lands. *)
+let rune_claimable (p: player) (rune_id: string) : bool =
+  match Campaign_runes.rune_by_id rune_id with
+  | None -> false
+  | Some k ->
+    let loc = Campaign_runes.rune_location k in
+    loc <> "" && p.current_city = Some loc
+    && not (List.mem rune_id p.runes)
+
+let claim_rune (p: player) (rune_id: string) : player option =
+  if rune_claimable p rune_id then
+    Some { p with runes = rune_id :: p.runes }
+  else None
+
+(* What the forge builds from three held runes. The (base, modifier) pair
+   picks the item's name and icon from the shipped 150-row table, the base
+   its slot (position), and the modifier edits both data values exactly as
+   its own description states - UMAS "Adds +2 to Base Rune ability",
+   UCHA "Adds -1 to Base Rune ability and adds +150% to Power Rune
+   ability" - so base' = base.data * data_mult + data_add and power'
+   likewise with the power fields. The difficulty stacks both diff fields
+   scaled by the modifier's multiplier; the ten [FORGEITEMS_TARGET*]
+   bands that read it arrive with the forge UI (port.rune_forge_formula
+   records the stack and the rounding). *)
+type forge_spec = {
+  name_text: string;
+  icon: int;
+  position: string;
+  base_data: int;
+  power_data: int;
+  difficulty: int;
+}
+
+let forge_rune (p: player) ~(base: string) ~(modifier: string)
+    ~(power: string) : forge_spec option =
+  if
+    List.mem base p.runes && List.mem modifier p.runes
+    && List.mem power p.runes
+  then
+    match
+      ( (try Some (Campaign_runes.base_by_id base) with Not_found -> None),
+        (try Some (Campaign_runes.modifier_by_id modifier)
+             with Not_found -> None),
+        (try Some (Campaign_runes.power_by_id power) with Not_found -> None),
+        Campaign_runes.forged_name_of base modifier )
+    with
+    | Some b, Some m, Some pw, Some n ->
+      let base_data =
+        int_of_float (float_of_int b.Campaign_runes.data
+                      *. m.Campaign_runes.data_mult)
+        + m.Campaign_runes.data_add
+      in
+      let power_data =
+        int_of_float
+          (Float.round (float_of_int pw.Campaign_runes.data
+                        *. m.Campaign_runes.power_mult))
+        + m.Campaign_runes.power_add
+      in
+      let difficulty =
+        int_of_float
+          (Float.round
+             (float_of_int
+                (b.Campaign_runes.diff_add + m.Campaign_runes.diff_add)
+              *. m.Campaign_runes.diff_mult))
+      in
+      Some
+        { name_text = n.Campaign_runes.name_text;
+          icon = n.Campaign_runes.icon;
+          position = b.Campaign_runes.position;
+          base_data;
+          power_data;
+          difficulty }
+    | _ -> None
+  else None
 
 (* ------------------------------------------------------------------ *)
 (* Battle Integration *)

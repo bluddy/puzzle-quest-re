@@ -368,6 +368,39 @@ let () =
                  ^ String.concat ", " (Campaign.mount_spell_ids fast));
   print_endline "";
 
+  (* Runes: the three gifted runes ride with a fresh hero, a world rune
+     claims at its node, and the forge arithmetic is each modifier's own
+     description - UMAS +2 base, UCHA -1 base and +150% power. *)
+  print_endline "=== Runes and the forge ===";
+  print_endline ("  gifted: " ^ String.concat ", " player5.Campaign.runes);
+  let rune_hero = { player5 with Campaign.current_city = Some "WSGK" } in
+  (match Campaign.claim_rune rune_hero "USWO" with
+  | Some p' ->
+      print_endline
+        ("  claimed at WSGK: " ^ String.concat ", " p'.Campaign.runes)
+  | None -> print_endline "  USWO not claimable here");
+  (match
+     Campaign.forge_rune player5 ~base:"UDAG" ~modifier:"UCRA" ~power:"UFIR"
+   with
+  | Some s ->
+      print_endline
+        (Printf.sprintf
+           "  forged %s (icon %d, %s): base +%d, power +%d, difficulty %d"
+           (Text_data.text s.Campaign.name_text) s.Campaign.icon
+           s.Campaign.position s.Campaign.base_data s.Campaign.power_data
+           s.Campaign.difficulty)
+  | None -> print_endline "  forge failed");
+  let rich = { player5 with Campaign.runes = [ "UDAG"; "UCHA"; "UGRE" ] } in
+  (match
+     Campaign.forge_rune rich ~base:"UDAG" ~modifier:"UCHA" ~power:"UGRE"
+   with
+  | Some s ->
+      print_endline
+        (Printf.sprintf "  UCHA edit: base +%d, power +%d, difficulty %d"
+           s.Campaign.base_data s.Campaign.power_data s.Campaign.difficulty)
+  | None -> print_endline "  forge failed");
+  print_endline "";
+
   (* Test save/load *)
   print_endline "=== Testing Save/Load ===";
   let save_file = "pq_save_test.json" in

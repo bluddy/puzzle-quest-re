@@ -33,6 +33,7 @@
   campaign_items
   campaign_professions
   campaign_monsters
+  campaign_runes
    campaign_conversations
    campaign_companions
    campaign_companion_hooks

@@ -2461,6 +2461,59 @@ claims:
       (fight first, or capture from the dialog) and stays unwired;
       port.capture_surfaces records the choice.
 
+  - id: campaign.rune_forge
+    title: Three runes - base, modifier, power - forge one magic item
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Runes.xml ships the whole system: 15 Base runes (each with a slot
+      position, a JXXX switch code, a guarding monster and a map node), 10
+      Modifier runes carrying the forge arithmetic as plain fields, 13
+      Power runes carrying the item effect, and a 150-row (base, modifier)
+      name table - UAXE+UMAS is the "Hatchet". Forging takes one of each,
+      all three held: the name and icon come from the pair, the slot from
+      the base, and the modifier edits both data values the way its own
+      description says - UMAS "+2 to Base Rune ability", UCHA "Adds -1 to
+      Base Rune ability and adds +150% to Power Rune ability" - while the
+      difficulty stacks both diff fields. Every forged item runs the one
+      shared script, Assets/Runes/JXXX.lua, whose hooks read the current
+      rune through GET_CURRENT_RUNE_CODE/BASEDATA/POWERDATA: mana or life
+      at battle start (powers 0-4), resistances (5-8), poison or disease
+      chance (9-A), gold and xp on victory (B-C), skills and damage from
+      the base (OnQuerySkill, OnGiveDamage, OnReceiveDamage reflect).
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Runes/Runes.xml
+        note: the Base/Modifier/Power elements and the BaseModifier name table
+      - kind: lua
+        ref: game/Assets.zip!Assets/Runes/JXXX.lua
+        note: the shared forged-item script, keyed on the rune codes
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[FORGEITEMS*], [RUNESANDITEMS_HELP], [RUNE_HELP], [MAXRUNEITEM*], per-rune NAME/DESC"
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/SelectRuneMenu.xml
+        note: the forge picker (three runes, [FORGEITEMS_TARGET*] difficulty line)
+      - kind: code
+        ref: tools/extract_runes.py
+      - kind: code
+        ref: lib/campaign_runes.ml
+      - kind: code
+        ref: lib/campaign.ml
+        fn: forge_rune
+      - kind: code
+        ref: test/test_runes.ml
+    affects: [lib/campaign.ml, lib/campaign_runes.ml, lib/campaign_save.ml]
+    notes: >
+      The arithmetic is pinned by the modifier descriptions verbatim
+      (port.rune_forge_formula records the rounding and the difficulty
+      stack). Not yet wired: minting the spec into an inventory item,
+      JXXX's hooks in battle, the SelectRuneMenu UI with its ten
+      difficulty bands, the runekeeper fight that claims world runes, and
+      the [MAXRUNEITEM] cap.
+
   - id: campaign.companion_start_battle
     title: Party companions fire OnStartBattle once when the battle opens
     area: campaign
@@ -4125,5 +4178,38 @@ port_decisions:
       reader only asks for keys it knows - and test_capture pins that
       with a banner-keyed file. The Victory banner in conv_window is
       unrelated UI and unaffected.
+    supersedes: null
+    date: 2026-10-10
+
+  - id: port.rune_forge_formula
+    decision: >
+      The forge spec computes base' = base.data * modifier.data_mult +
+      modifier.data_add and power' = power.data * modifier.power_mult +
+      modifier.power_add, the power rounded to nearest; the difficulty
+      stacks both diff fields - (base.diff_add + modifier.diff_add) *
+      modifier.diff_mult - also rounded to nearest. The three gifted runes
+      ride with a fresh hero, and a world rune is claimable while the hero
+      stands at its node (the guardian fight surface is still open).
+    rationale: >
+      Each modifier's description states its own arithmetic verbatim - UMAS
+      "Adds +2 to Base Rune ability", UCHA "-1 base and +150% to power"
+      (data_add -1, power_mult 2.5), GIA "-50% to power" (power_mult 0.5)
+      - so the formula is read from the data rather than guessed, and
+      test_runes pins it against those strings. The shipped data_mults are
+      all 1 and power_adds all 0, so only the roundings need a choice: a
+      1.75 multiplier over a 2 is 3.5 and rounds to nearest (4); floor
+      would contradict the "+75%" reading of an item that says it adds
+      something. The difficulty stack (b+m)xmm rather than b x mm + m is
+      the reading under which every shipped combination stays integral
+      (diff_add 100..200 x diff_mult 1.0..3.0, plus UGOD's +50); the ten
+      [FORGEITEMS_TARGET*] bands that bucket the result arrive with the
+      forge UI. The gifted three are the only runes with no guard and no
+      location - unclaimable anywhere - which is what
+      [RUNESANDITEMS_HELP]'s "you have been given the 3 most common
+      Runes" describes; they ride with create_player rather than granted
+      on load, the way starting spells do. The claim gate is standing at
+      the node because that is all the port can hold until the runekeeper
+      fight surface exists (RUNE_HELP: "You must defeat this guardian to
+      claim the Rune").
     supersedes: null
     date: 2026-10-10

@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Banner effects resolved - as a negative (`port.banner_slot_removed`): the shipped game carries no banner mechanic, so the port's day-one speculative `equipment.banner` field is gone. All 160 item XMLs declare one of four locations (weapon/head/body/misc), GameText carries no `[BANNER]` tag (only Q2Q6's war-banner prose and the UWAR+UMAS rune word), the Lua native surface has no banner call, no screen XML names a banner widget, and the exe holds no banner string - mount keeps its panel slot because [ITMLOC5] "--- Mounts ---" and MOUNTS_HELP ground it, banner had no anchor at all. The save reader ignores the dropped key older files may carry (test-pinned), the equipment record and the loadout fold lost the field, and the tracked demo save regenerated without it. All 33 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Runes & the forge landed engine-side (`campaign.rune_forge`): the three registries and the 150-name table extracted from `Assets/Runes/Runes.xml` into `lib/campaign_runes.ml` (15 bases with slot+code+ability, 10 modifiers carrying the forge arithmetic, 13 powers carrying the effect, UAXE+UMAS = the Hatchet), the collection on the player (fresh heroes start with UDAG/UCRA/UFIR per [RUNESANDITEMS_HELP]), claim gates for world runes at their nodes, and `forge_rune` computing each item's spec exactly as the modifier's own description states - UMAS "+2 to Base Rune ability", UCHA "-1 base and +150% power" - with difficulty stacking both diff fields (`port.rune_forge_formula`; fractional powers round to nearest). What remains: the forged item in inventory and battle (every forged item runs the shared JXXX script, which reads the rune through GET_CURRENT_RUNE_*), the SelectRuneMenu UI with its ten [FORGEITEMS_TARGET*] difficulty bands, and the runekeeper fight surface. All 34 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -76,7 +76,21 @@
   over the held captives. Win reads everywhere went to `Battle.hero_won`:
   `sweep_deaths` clears `is_dead` every pass, so the flag read as a loss
   for every real fight, and status-effect kills (poison, Fire Bombed,
-  Hasted) now land it too.
+  win reads through `Battle.hero_won` - the sweep clears `is_dead` every pass.
+- **Runes & the forge (NEW):** `tools/extract_runes.py` pulls the three
+  registries out of `Assets/Runes/Runes.xml` into `lib/campaign_runes.ml`
+  - 15 base runes (slot position, the JXXX switch code, the base ability,
+  a guarding monster and a map node), 10 modifiers carrying the forge
+  arithmetic as plain fields, 13 powers carrying the item effect, and the
+  150-row (base, modifier) name table. `player.runes` holds the
+  collection; a fresh hero starts with the three gifted runes
+  ([RUNESANDITEMS_HELP]), `claim_rune` gates a world rune on standing at
+  its node, and `forge_rune` computes the spec exactly as each modifier's
+  description states (base' = data x data_mult + data_add, power' likewise
+  rounded nearest, difficulty stacking both diff fields -
+  `port.rune_forge_formula`). What remains: the forged item in inventory
+  and battle (JXXX's hooks), the SelectRuneMenu UI with its ten
+  [FORGEITEMS_TARGET*] bands, and the runekeeper fight surface.
 - **Companions (NEW):** `lib/campaign_companion_hooks.ml` ports the ten
   `OnStartBattle` bodies from `Assets/Companions/*.lua` into one rule table -
   CHECK_TYPE guards over the monster's type tags, NPAT's percentile roll plus
@@ -128,8 +142,9 @@
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
 - **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (84),
-  `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101) and
-  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 521
+  `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101),
+  `test/test_callback_effects.ml` (24), `test/test_location_actions.ml` (30)
+  and `test/test_runes.ml` (36) - 557
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -159,7 +174,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 89 | 10 (4 open) | 36 |
+| `docs/reverse/evidence.yml` | 90 | 10 (4 open) | 37 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location

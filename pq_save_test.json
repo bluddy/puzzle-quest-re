@@ -39,7 +39,8 @@
     "dungeon_built": true,
     "monster_defeats": [],
     "captives": [],
-    "mount": null
+    "mount": null,
+    "runes": [ "UDAG", "UCRA", "UFIR" ]
   },
   "quests": [ { "quest_id": "Q0Q0", "state": 1, "vars": [] } ],
   "map_visibility": {
