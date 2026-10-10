@@ -658,6 +658,22 @@ let capture_finish (p: player) (monster_id: string) (attempt: Capture.t) : playe
     else { p with captives = monster_id :: p.captives }
   | Capture.Playing | Capture.Lost -> p
 
+(* The capture a won fight raises, if any: the encounter's monster when both
+   [CAPTURE_LISTHELP] gates hold - dungeon built, that enemy down three times
+   - and the hero does not hold it yet ([PETS_DETAILS] counts enemies
+   captured, one apiece). Quest and callback wins reach the same gates
+   through record_defeat; the map front opens the minigame from the road
+   popup first (port.capture_ui). *)
+let capture_offer (player: player) (enc: encounter) : string option =
+  if enc.sprite = "" then None
+  else
+    (try
+       let m = Campaign_monsters.monster_by_sprite enc.sprite in
+       if capture_eligible player m.id && not (List.mem m.id player.captives)
+       then Some m.id
+       else None
+     with Not_found -> None)
+
 (* ------------------------------------------------------------------ *)
 (* Battle Integration *)
 (* ------------------------------------------------------------------ *)

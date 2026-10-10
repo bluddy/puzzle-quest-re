@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Mount combat bonuses landed (MOUNTS_HELP's other two purposes): the ridden mount's skill bonus rides the combatant - `mount_addstat + ((level - 1) / addlevel) * mount_addperlevel`, `mount_stat` read through the engine's 0-based `Combat.skill_of_index`, so every mount grants exactly what its capture string says (MDSP +2 Fire Mastery at level 1, +1 more every 2 levels) - and its `mount_spell` joins the hero's spell list the way a quest fight's spell does, in all three battle paths; `player.skills` stays the profession base, so mounting never rewrites the saved character (`port.mount_skill_formula`). Fly/training-based encounter avoidance, banner effects and capture UI remain open. All 32 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Capture UI landed (the last unwired engine hand-off): a won road battle whose monster passes `Campaign.capture_offer` - dungeon built, 3+ wins over that monster, not already held, the encounter's sprite resolves to a monster - opens the minigame in `pq_map_gfx` the moment the popup closes (`port.capture_ui`). The shipped CaptureMenu window is `gfx/capture_layout.ml` geometry over the engine's own `Capture.t`: pad_grid drawn as flat gem colours with the shipped letters, a two-click orthogonal swap through `Capture.play`, the [CANCEL] button giving the attempt up, and one more click on a terminal state running `capture_finish` (collect the captive, or [CAPTURE_FAIL]); travel freezes while it is up. Callback/quest wins and the city Pets list remain open surfaces. All 33 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -59,7 +59,13 @@
   monster) and quest wins (battle_monster); `capture_eligible` applies the
   two `[CAPTURE_LISTHELP]` gates (dungeon built, 3+ wins), `capture_finish`
   adds the captive once, and `test_capture.ml` pins the charset, the
-  settle loop, both battle paths, the gates and the save.
+  settle loop, both battle paths, the gates, the save and the offer.
+  The map front now wires the win to the menu: `capture_offer` runs the
+  same two gates (plus not-already-held and a resolvable sprite) over a
+  won road encounter, and `pq_map_gfx` opens the minigame through
+  `capture_begin` - `gfx/capture_layout.ml` places the 8x8 pad_grid, the
+  [CAPTURE]/help lines and the give-up button; a terminal state takes one
+  more click to run `capture_finish` (`port.capture_ui`).
 - **Companions (NEW):** `lib/campaign_companion_hooks.ml` ports the ten
   `OnStartBattle` bodies from `Assets/Companions/*.lua` into one rule table -
   CHECK_TYPE guards over the monster's type tags, NPAT's percentile roll plus
@@ -110,9 +116,9 @@
   companion pass; `loadout_of_equipment` folds the nine-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (186), `test/test_capture.ml` (57),
+- **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (64),
   `test/test_companion.ml` (128), `test/test_quest_battle.ml` (87) and
-  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 512
+  `test/test_callback_effects.ml` (24) and `test/test_location_actions.ml` (30) - 542
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -142,7 +148,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 87 | 10 (4 open) | 33 |
+| `docs/reverse/evidence.yml` | 88 | 10 (4 open) | 34 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location

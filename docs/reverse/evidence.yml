@@ -2370,6 +2370,49 @@ claims:
       capture_begin while the surrounding state (defeats, captives, dungeon)
       round-trips.
 
+  - id: campaign.capture_offer
+    title: A road battle's victory offers the capture when both gates hold
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      The capture menu is not a separate visit: [CAPTURE_LISTHELP] describes
+      it as what happens after you beat a monster ("capture the monster by
+      beating it in a battle and clearing the gem grid"), and the engine's
+      own gates decide which beats count. capture_offer runs them over a
+      won encounter - capture_eligible (dungeon built, 3+ recorded wins
+      over that monster id), the monster not already in captives, and the
+      encounter's sprite resolving to a shipped monster - and answers the
+      monster id the minigame should begin for, or None. Everything else
+      about the win (gold, XP, the defeat count) settles first, exactly as
+      it already did.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[CAPTURE_LISTHELP] - beat it in a battle, then clear the grid"
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/CaptureMenu.xml
+        note: the menu the win opens
+      - kind: code
+        ref: lib/campaign.ml
+        fn: capture_offer
+      - kind: code
+        ref: lib/campaign.ml
+        fn: capture_eligible
+      - kind: code
+        ref: test/test_capture.ml
+    affects: [lib/campaign.ml, bin/pq_map_gfx.ml]
+    notes: >
+      The two [CAPTURE_LISTHELP] gates are the engine's own - capture_offer
+      is a read-only projection over them, so a quest-battle win or a
+      callback fight that already recorded its defeat can reuse it later
+      when those surfaces are wired (port.capture_ui keeps them open on
+      purpose). An encounter whose sprite resolves to nothing (or a
+      non-monster string) offers nothing rather than raising: the port
+      treats unresolved data as no capture, matching the engine's silent
+      sprite lookup.
+
   - id: campaign.companion_start_battle
     title: Party companions fire OnStartBattle once when the battle opens
     area: campaign
@@ -3939,5 +3982,32 @@ port_decisions:
       front of known_spells). Fly and training-based encounter avoidance
       stay open: YOURCITY_MOUNTS_TEXT ties avoidance to training levels,
       which the port has no system for.
+    supersedes: null
+    date: 2026-10-10
+
+  - id: port.capture_ui
+    decision: >
+      The capture minigame is offered after a won road encounter only.
+      pq_map_gfx runs Campaign.capture_offer when the road popup closes on
+      a player win; on Some it opens Capture.t through capture_begin and
+      the window takes over every click until a terminal state is
+      dismissed through capture_finish or the player backs out via
+      [CANCEL]. Callback battles, quest battles and the city Pets list
+      keep their current flows.
+    rationale: >
+      The engine already records defeats on all three battle paths, so the
+      offer helper is path-agnostic - wiring the road popup is simply the
+      one surface the map front already owns end-to-end (popup -> result),
+      and it matches [CAPTURE_LISTHELP]'s "beat it in a battle" framing.
+      Callback and quest wins already settle their own capture flag and
+      banners; opening a modal minigame from the conversation window or
+      the quest panel would need focus rules those screens do not have
+      yet, so they stay open (Capture surfaces in GAPS). [CANCEL] is a
+      port addition - the shipped screen has no give-up button - because a
+      stuck player would otherwise be forced to finish a grid the port's
+      no-refill rules may make unwinnable; giving up keeps the recorded
+      defeats, so the next eligible win simply offers again. The minigame
+      freezes travel while it is up, like the road popup does, so a
+      journey cannot run past the window.
     supersedes: null
     date: 2026-10-10

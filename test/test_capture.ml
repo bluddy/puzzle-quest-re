@@ -237,7 +237,33 @@ let () =
   let p_win, r_win = Campaign.process_battle_result base road_enc b in
   check "a won road battle records one defeat"
     (r_win.Campaign.player_won
-     && Campaign.monster_defeats p_win road_mid = 1);
+    && Campaign.monster_defeats p_win road_mid = 1);
+
+  (* The offer the map front raises after that win: both gates hold and the
+     enemy is not held yet (port.capture_ui). *)
+  check "a first win offers no capture"
+    (Campaign.capture_offer p_win road_enc = None);
+  let three =
+    List.fold_left
+      (fun p _ -> Campaign.record_defeat p road_mid)
+      base [ 1; 2; 3 ]
+  in
+  check "the third win offers the capture"
+    (Campaign.capture_offer three road_enc = Some road_mid);
+  check "an enemy already held offers nothing"
+    (Campaign.capture_offer
+       { three with Campaign.captives = [ road_mid ] }
+       road_enc
+    = None);
+  check "the dungeon gate holds for the offer too"
+    (Campaign.capture_offer
+       { three with Campaign.dungeon_built = false }
+       road_enc
+    = None);
+  check "an encounter whose sprite resolves to nothing offers nothing"
+    (Campaign.capture_offer three
+       { road_enc with Campaign_encounters.sprite = "" }
+    = None);
 
   (* Begin and finish: an all-empty shipped grid is already cleared, a
      populated one starts in play, and only a win adds the captive. *)

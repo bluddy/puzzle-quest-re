@@ -20,7 +20,11 @@
 
     The road fight itself runs headless through the campaign API and the
     window reports the result on the console - hosting the battle view
-    inside the map is the coupling neither front end wants yet. *)
+    inside the map is the coupling neither front end wants yet. A won fight
+    whose monster passes the capture gates opens the minigame instead
+    ([Campaign.capture_offer]): CaptureMenu.xml's grid drawn as flat gem
+    colours, two clicks a swap through [Capture.play], and the console's
+    [CANCEL] button standing in for the gamepad back-out. *)
 open Puzzle_quest_lib
 open Pq_gfx
 module E = Tsdl.Sdl.Event
@@ -78,6 +82,8 @@ type ui = {
   mutable city : city_view option;
   conv : Conv_window.state;  (* hosted dialogue over the map, always present *)
   mutable pending : (string * string) option;  (* (qid, loc): action awaiting complete *)
+  mutable capture : (string * Capture.t) option;  (* monster id + live attempt *)
+  mutable capture_sel : (int * int) option;  (* first gem of a pending swap *)
 }
 
 let node_colour (k : Campaign.node_kind) : Layout.colour =
@@ -419,6 +425,82 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
             ~y:(City_layout.done_btn.Layout.y + 16)
   | _ -> ())
 
+(* The capture minigame over everything: CaptureMenu.xml's grid as flat gem
+   colours with the shipped letters, its title and help lines, the port's
+   give-up button, and a gold ring on the first gem of a pending swap. A
+   terminal state changes the hint and takes one more click, which is where
+   [Campaign.capture_finish] runs (in the click handler). *)
+let draw_capture (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
+    (attempt : Capture.t) : unit =
+  solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+    (Layout.rgba 0 0 0 190);
+  let board = attempt.Capture.board in
+  for r = 0 to 7 do
+    for c = 0 to 7 do
+      let rect = Capture_layout.cell_rect c r in
+      let gem = Board.get_gem board { Board.x = c; y = r } in
+      solid rs gl
+        { Layout.x = rect.Layout.x + 2; y = rect.Layout.y + 2;
+          w = rect.Layout.w - 4; h = rect.Layout.h - 4 }
+        (Layout.gem_colour gem);
+      let label = Layout.gem_letter gem in
+      if label <> " " then (
+        match (ui.fonts, ui.system) with
+        | Some f, Some m ->
+            rs :=
+              !rs
+              @ Font.draw gl f m label
+                  ~x:
+                    (rect.Layout.x
+                    + ((rect.Layout.w - Font_layout.measure m label) / 2))
+                  ~y:(rect.Layout.y + 48)
+        | _ -> ())
+    done
+  done;
+  (* The pending swap's first gem: a gold ring on the cell. *)
+  (match ui.capture_sel with
+  | Some (c, r) ->
+      let rect = Capture_layout.cell_rect c r in
+      let x = rect.Layout.x and y = rect.Layout.y in
+      let w = rect.Layout.w and h = rect.Layout.h in
+      let gold = Layout.rgb 240 210 90 in
+      solid rs gl { Layout.x = x; y; w; h = 3 } gold;
+      solid rs gl { Layout.x = x; y = y + h - 3; w; h = 3 } gold;
+      solid rs gl { Layout.x = x; y; w = 3; h } gold;
+      solid rs gl { Layout.x = x + w - 3; y; w = 3; h } gold
+  | None -> ());
+  (match (ui.fonts, ui.system) with
+  | Some f, Some m ->
+      let title = Text_data.text "[CAPTURE]" in
+      rs :=
+        !rs
+        @ Font.draw gl f m title
+            ~x:((window_w - Font_layout.measure m title) / 2)
+            ~y:(Capture_layout.title_y + 22) ~colour:(Layout.rgb 240 210 90);
+      let hint =
+        match attempt.Capture.status with
+        | Capture.Playing -> Text_data.text "[CAPTURE_HELP]"
+        | Capture.Won -> "grid cleared - click to collect the captive"
+        | Capture.Lost -> Text_data.text "[CAPTURE_FAIL]"
+      in
+      rs :=
+        !rs
+        @ Font.draw gl f m hint
+            ~x:((window_w - Font_layout.measure m hint) / 2)
+            ~y:(Capture_layout.help_y + 14);
+      let cr = Capture_layout.cancel_rect in
+      solid rs gl cr (Layout.rgb 40 44 56);
+      solid rs gl { cr with Layout.h = 3 } (Layout.rgb 240 210 90);
+      let label = Text_data.text "[CANCEL]" in
+      rs :=
+        !rs
+        @ Font.draw gl f m label
+            ~x:
+              (cr.Layout.x
+              + ((cr.Layout.w - Font_layout.measure m label) / 2))
+            ~y:(cr.Layout.y + 21)
+  | _ -> ())
+
 let draw ?(present = true) (ui : ui) : unit =
   let gl = ui.gl in
   Gl.begin_frame gl;
@@ -513,10 +595,64 @@ let draw ?(present = true) (ui : ui) : unit =
       | _ -> ())
   | None ->
       ());
+  (* The capture minigame outranks everything, popup included. *)
+  (match ui.capture with
+  | Some (_, attempt) -> draw_capture rs gl ui attempt
+  | None -> ());
   Gl.submit gl !rs;
   if present then Gl.present gl
 
+(* The minigame holds every click while it is up: a terminal state takes one
+   more click to apply and close, otherwise a click selects a gem, swaps it
+   with an orthogonally adjacent second, or backs out through [CANCEL]. *)
+let handle_capture_click (ui : ui) (mx : int) (my : int) : unit =
+  match ui.capture with
+  | None -> ()
+  | Some (mid, attempt) -> (
+    match attempt.Capture.status with
+    | Capture.Won | Capture.Lost ->
+        let won = attempt.Capture.status = Capture.Won in
+        ui.player <- Campaign.capture_finish ui.player mid attempt;
+        ui.capture <- None;
+        ui.capture_sel <- None;
+        (if won then
+           Printf.printf "  captured %s!\n"
+             (try
+                Text_data.text
+                  (Campaign_monsters.monster_by_id mid)
+                    .Campaign_monsters.name_text
+              with Not_found -> mid)
+         else Printf.printf "  %s\n" (Text_data.text "[CAPTURE_FAIL]"));
+        flush stdout
+    | Capture.Playing -> (
+        match Capture_layout.hit mx my with
+        | Capture_layout.Cancel ->
+            ui.capture <- None;
+            ui.capture_sel <- None;
+            Printf.printf "  capture cancelled - try again later\n";
+            flush stdout
+        | Capture_layout.Cell (c, r) -> (
+            match ui.capture_sel with
+            | Some (c0, r0) when c0 = c && r0 = r -> ui.capture_sel <- None
+            | Some (c0, r0) when abs (c0 - c) + abs (r0 - r) = 1 -> (
+                match
+                  Capture.play attempt
+                    { Board.from_pos = { Board.x = c0; Board.y = r0 };
+                      Board.to_pos = { Board.x = c; Board.y = r } }
+                with
+                | Some next ->
+                    ui.capture <- Some (mid, next);
+                    ui.capture_sel <- None
+                | None ->
+                    (* an illegal swap reselects on the clicked gem *)
+                    ui.capture_sel <- Some (c, r))
+            | _ -> ui.capture_sel <- Some (c, r))
+        | Capture_layout.Miss -> ()))
+
 let handle_click (ui : ui) (mx : int) (my : int) : unit =
+  match ui.capture with
+  | Some _ -> handle_capture_click ui mx my
+  | None -> (
   match ui.popup with
   | Some enc ->
       (* The road fight holds everything, dialogue included. *)
@@ -529,7 +665,18 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
         (if result.Campaign.player_won then "won" else "lost")
         battle.Battle.turns_elapsed result.Campaign.final_life
         result.Campaign.gold_gained result.Campaign.xp_gained;
-      flush stdout
+      flush stdout;
+      (* A won fight whose monster passes the capture gates opens the
+         minigame right away (port.capture_ui). *)
+      if result.Campaign.player_won then
+        (match Campaign.capture_offer ui.player enc with
+        | Some mid ->
+            ui.capture <- Some (mid, Campaign.capture_begin mid);
+            ui.capture_sel <- None;
+            Printf.printf "  the %s can be captured - swap two gems, or Cancel\n"
+              enc.Campaign_encounters.description;
+            flush stdout
+        | None -> ())
   | None ->
       if Conv_window.busy ui.conv then Conv_window.handle_click ui.conv mx my
       else (
@@ -568,7 +715,7 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                         Printf.printf "  %s stops you on the road!\n"
                           enc.Campaign_encounters.description;
                         flush stdout
-                    | None -> ()))))
+                    | None -> ())))))
 
 (** One frame: the hosted dialogue first - it holds walking while a box, a
     tree or a banner is up, and when it drains the pending action completes
@@ -589,6 +736,8 @@ let step (ui : ui) (dt : float) : unit =
     | None -> ());
     match (ui.journey, ui.popup) with
     | Some _, Some _ -> ()
+    (* the minigame holds the journey where it is, like the popup does *)
+    | _, _ when ui.capture <> None -> ()
     | Some j, None -> (
         let p', ts' =
           Campaign.advance_travel_with_events ui.player j (walk_speed *. dt)
@@ -660,7 +809,9 @@ let () =
       player = hero;
       journey = None; popup = None; city = None;
       conv = Conv_window.create ~gl ~fonts ~system ~player:hero;
-      pending = None }
+      pending = None;
+      capture = None;
+      capture_sel = None }
   in
   if !open_city_flag then open_city ui start_city;
   Printf.printf
