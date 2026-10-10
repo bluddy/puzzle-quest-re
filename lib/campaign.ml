@@ -51,6 +51,7 @@ type player = {
   dungeon_built: bool;       (* capture gate; chosen: true, see capture section *)
   monster_defeats: (string * int) list; (* monster id * wins toward capture *)
   captives: string list;     (* monster ids captured *)
+  mount: string option;      (* the chosen ride: a captured, rideable monster id *)
 }
 
 let default_equipment = {
@@ -79,6 +80,7 @@ let create_player name prof_id sex age =
     dungeon_built = true;
     monster_defeats = [];
     captives = [];
+    mount = None;
   }
 
 (* ------------------------------------------------------------------ *)
@@ -217,24 +219,59 @@ let encounters_on_road_visible (player: player) (start: string) (end_: string) :
 (* ------------------------------------------------------------------ *)
 
 (* How long the crossing takes: the file's own distance heuristic, measured
-   in map units. How fast a hero walks those units is not recovered, so one
-   unit passes per tick - a constant speed, no mount modifier (mount speed
-   stays a GAPS quick win). The encounter scripts say when appearance is
-   asked - OnQueryAppearance is "called when a hero moves to a new location"
-   - but not how often a road is polled while it is being crossed, so the
-   port asks once, at departure. Both readings are port.travel_model. *)
+   in map units, divided by how fast the hero covers them. Walking is one
+   unit per tick; a chosen mount multiplies that (port.mount_travel_speed
+   extends port.travel_model). The tiers are the registry's mount_speed -
+   the capture strings call them slow, average and fast - and the rumor
+   "[a] mount moves you faster" holds for every tier, so even a slow mount
+   beats walking. What else a mount grants - skills, its own spell, flying,
+   encounter avoidance - is separate and stays a GAPS gap. The encounter
+   scripts say when appearance is asked - OnQueryAppearance is "called when
+   a hero moves to a new location" - but not how often a road is polled
+   while it is being crossed, so the port asks once, at departure. Both
+   readings are port.travel_model. *)
 
-let travel_time (from_: string) (to_: string) : float = node_distance from_ to_
+(* The chosen ride's speed multiplier: 1.0 on foot, then per tier 1.5 slow
+   / 2.0 average / 2.5 fast. A mount has to be a captive the registry
+   marks rideable ([INV_MOUNTS_TEXT]: "Mounts are beasts you have
+   captured"); a non-captive, a non-mount, or a missing id rides nothing. *)
+let mounted_speed (player: player) : float =
+  match player.mount with
+  | None -> 1.0
+  | Some mid ->
+    (try
+       let m = Campaign_monsters.monster_by_id mid in
+       if m.mount = 1 then 1.5 +. 0.5 *. float_of_int m.mount_speed else 1.0
+     with Not_found -> 1.0)
+
+(* [MOUNTS_HELP]: "You may choose a single mount to ride into combat." One
+   at a time - picking a mount swaps the previous choice, None dismounts -
+   and the choice is free: mounts differ only in what they grant. *)
+let set_mount (player: player) (mid: string option) : player =
+  match mid with
+  | None -> { player with mount = None }
+  | Some id ->
+    (try
+       let m = Campaign_monsters.monster_by_id id in
+       if List.mem id player.captives && m.mount = 1 then
+         { player with mount = Some id }
+       else player
+     with Not_found -> player)
+
+let travel_time (player: player) (from_: string) (to_: string) : float =
+  node_distance from_ to_ /. mounted_speed player
 
 let road_exists (start_: string) (end_: string) : bool =
   Hashtbl.mem road_table (start_, end_)
 
 (* Begin a journey: the road has to be in the graph and revealed - the same
-   both-endpoints rule the map draws by, so a hidden road cannot be walked. *)
-let begin_travel (from_: string) (to_: string) : travel_state option =
+   both-endpoints rule the map draws by, so a hidden road cannot be walked.
+   The hero's mount shortens the crossing before the walk starts; the front
+   end just feeds [walk_speed *. dt] against that [total_time]. *)
+let begin_travel (player: player) (from_: string) (to_: string) : travel_state option =
   if road_exists from_ to_ && get_road_visible from_ to_ then
     Some (Traveling { from_ = from_; to_ = to_; progress = 0.0;
-                      total_time = travel_time from_ to_ })
+                      total_time = travel_time player from_ to_ })
   else None
 
 (* One tick of walking: [dt] distance units at the port's one-unit speed.

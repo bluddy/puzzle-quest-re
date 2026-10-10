@@ -43,6 +43,7 @@ type save_player = {
   dungeon_built: bool;
   monster_defeats: (string * int) list;
   captives: string list;
+  mount: string option;
 }
 
 type save_quest_state = {
@@ -112,6 +113,7 @@ let save_player_to_json (p: save_player) =
     "dungeon_built", `Bool p.dungeon_built;
     "monster_defeats", `List (List.map (fun (id, n) -> `Assoc [("id", `String id); ("count", `Int n)]) p.monster_defeats);
     "captives", `List (List.map (fun s -> `String s) p.captives);
+    "mount", (match p.mount with Some s -> `String s | None -> `Null);
   ]
 
 let save_quest_state_to_json q =
@@ -186,7 +188,9 @@ let save_player_of_json json =
       | j -> j |> to_list |> List.map (fun v -> (v |> member "id" |> to_string, v |> member "count" |> to_int)));
     captives = (match json |> member "captives" with
       | `Null -> []
-      | j -> j |> to_list |> List.map to_string); }
+      | j -> j |> to_list |> List.map to_string);
+    (* saves written before a mount was choosable load on foot *)
+    mount = (match json |> member "mount" with `Null -> None | `String s -> Some s | _ -> None); }
 
 let save_quest_state_of_json json =
   { quest_id = json |> member "quest_id" |> to_string;
@@ -269,7 +273,8 @@ module SaveConvert = struct
       current_city = p.current_city;
       dungeon_built = p.dungeon_built;
       monster_defeats = p.monster_defeats;
-      captives = p.captives }
+      captives = p.captives;
+      mount = p.mount }
 
   let skill_affinities_from_save (s: skill_affinities) : Campaign_types.skill_affinities =
     { earth = s.earth; fire = s.fire; air = s.air; water = s.water;
@@ -301,7 +306,8 @@ module SaveConvert = struct
       current_city = s.current_city;
       dungeon_built = s.dungeon_built;
       monster_defeats = s.monster_defeats;
-      captives = s.captives }
+      captives = s.captives;
+      mount = s.mount }
 end
 
 (* ------------------------------------------------------------------ *)

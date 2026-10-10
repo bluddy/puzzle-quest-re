@@ -342,6 +342,27 @@ let () =
   show_party "picked up again:" camp3;
   print_endline "";
 
+  (* Mounts: a chosen captive divides the road - the registry's mount_speed
+     tiers (the capture strings say slow / average / fast) as a 1.5 / 2.0 /
+     2.5 multiplier - and only a rideable captive qualifies (MOUNTS_HELP,
+     INV_MOUNTS_TEXT: mounts are beasts you have captured). *)
+  print_endline "=== Mount speed ===";
+  let on_foot = Campaign.travel_time player5 start_city "WTHR" in
+  let stabled = { player5 with Campaign.captives = [ "MDSP"; "MWLF" ] } in
+  let fast = Campaign.set_mount stabled (Some "MWLF") in
+  let slow = Campaign.set_mount stabled (Some "MDSP") in
+  print_endline ("  " ^ start_city ^ "->WTHR on foot: "
+                 ^ string_of_float on_foot);
+  print_endline ("  fast mount MWLF: "
+                 ^ string_of_float (Campaign.travel_time fast start_city "WTHR"));
+  print_endline ("  slow mount MDSP: "
+                 ^ string_of_float (Campaign.travel_time slow start_city "WTHR"));
+  print_endline ("  MGRI refused (not captured): "
+                 ^ string_of_bool
+                     ((Campaign.set_mount stabled (Some "MGRI")).Campaign.mount
+                     = None));
+  print_endline "";
+
   (* Test save/load *)
   print_endline "=== Testing Save/Load ===";
   let save_file = "pq_save_test.json" in

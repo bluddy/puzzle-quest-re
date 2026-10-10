@@ -346,7 +346,9 @@ let () =
       Campaign.completed_quests = [ "Q0T1" ];
       Campaign.companions = [ "NDKH" ];
       Campaign.awards = [ "AMME" ];
-      Campaign.current_city = Some "CBAR" } in
+      Campaign.current_city = Some "CBAR";
+      Campaign.captives = [ "MWLF" ];
+      Campaign.mount = Some "MWLF" } in
 
   (* Visibility as it is *now*, not as the data shipped: one node hidden. *)
   Campaign.set_location_visible "WSIR" false;
@@ -381,6 +383,8 @@ let () =
     (List.mem "AMME" awards);
   check "load restores the location"
     (location = "CBAR" && p2.Campaign.current_city = Some "CBAR");
+  check "load restores the chosen mount"
+    (p2.Campaign.mount = Some "MWLF");
 
   check "load puts a hidden node back behind the save"
     (not (Campaign.node_visible "WSIR"));
@@ -672,8 +676,8 @@ let () =
 (* ------------------------------------------------------------------ *)
 
 let () =
-  (* Travel: the map answers where and how far, and a road is an edge only     between nodes the graph knows. These are the primitives a front end moves
-     along; there is no journey step in the engine yet (GAPS, World Map). *)
+  (* Travel: the map answers where and how far, and a road is an edge only     between nodes the graph knows; begin_travel times the walk, and a chosen
+     mount shortens it (port.mount_travel_speed). *)
   let d = Campaign.node_distance "CBAR" "WTHR" in
   check "distance is positive between distinct nodes" (d > 0.);
   check "distance is symmetric"
@@ -691,28 +695,28 @@ let () =
      stop the hero on a road that holds an active encounter. *)
   Campaign.set_location_visible "CBAR" true;
   Campaign.set_location_visible "WTHR" true;
-  (match Campaign.begin_travel "CBAR" "WTHR" with
-  | Some (Campaign.Traveling t) ->
-      check "the journey is timed by the nodes' distance"
-        (abs_float (t.total_time -. d) < 1e-9
-         && t.progress = 0.0
-         && t.to_ = "WTHR");
-      check "one tick walks but does not arrive"
-        (match Campaign.advance_travel (Campaign.Traveling t) (d /. 2.) with
-         | Campaign.Traveling t2 ->
-             t2.progress = d /. 2. && t2.to_ = "WTHR"
-         | _ -> false);
-      check "the arrival tick lands on the far node"
-        (match Campaign.advance_travel (Campaign.Traveling t) d with
-         | Campaign.AtNode "WTHR" -> true
-         | _ -> false)
-  | _ -> check "a revealed road opens a journey" false);
+  (match Campaign.begin_travel (fresh ()) "CBAR" "WTHR" with
+   | Some (Campaign.Traveling t) ->
+       check "the journey is timed by the nodes' distance"
+         (abs_float (t.total_time -. d) < 1e-9
+          && t.progress = 0.0
+          && t.to_ = "WTHR");
+       check "one tick walks but does not arrive"
+         (match Campaign.advance_travel (Campaign.Traveling t) (d /. 2.) with
+          | Campaign.Traveling t2 ->
+              t2.progress = d /. 2. && t2.to_ = "WTHR"
+          | _ -> false);
+       check "the arrival tick lands on the far node"
+         (match Campaign.advance_travel (Campaign.Traveling t) d with
+          | Campaign.AtNode "WTHR" -> true
+          | _ -> false)
+   | _ -> check "a revealed road opens a journey" false);
   Campaign.set_location_visible "WTHR" false;
   check "a journey on a hidden road cannot begin"
-    (Campaign.begin_travel "CBAR" "WTHR" = None);
+    (Campaign.begin_travel (fresh ()) "CBAR" "WTHR" = None);
   Campaign.set_location_visible "WTHR" true;
   check "a journey into the void cannot begin"
-    (Campaign.begin_travel "CBAR" "ZZZZ" = None);
+    (Campaign.begin_travel (fresh ()) "CBAR" "ZZZZ" = None);
   check "and a step outside traveling changes nothing"
     (match Campaign.advance_travel (Campaign.AtNode "CBAR") 5.0 with
      | Campaign.AtNode "CBAR" -> true
@@ -727,7 +731,42 @@ let () =
     (stopped 1000);
   check "a hero under its level is never stopped"
     (Campaign.road_encounter { walker with Campaign.level = 0 } "CGAL" "WRAR"
-     = None)
+     = None);
+
+  (* Mount speed: the chosen ride divides the road. Tiers are the registry's
+     mount_speed - MWLF a fast mount, MDSP a slow one, MBAT not rideable -
+     and every tier beats walking. *)
+  let rider captive = { (fresh ()) with Campaign.captives = captive } in
+  let chosen =
+    Campaign.set_mount (rider [ "MWLF" ]) (Some "MWLF")
+  in
+  check "a captive mount is chosen" (chosen.Campaign.mount = Some "MWLF");
+  check "a mount you have not captured cannot be chosen"
+    ((Campaign.set_mount (fresh ()) (Some "MWLF")).Campaign.mount = None);
+  check "a monster that is not rideable cannot be chosen"
+    ((Campaign.set_mount (rider [ "MBAT" ]) (Some "MBAT")).Campaign.mount
+     = None);
+  check "a missing monster id rides nothing"
+    ((Campaign.set_mount (rider [ "ZZZZ" ]) (Some "ZZZZ")).Campaign.mount
+     = None);
+  check "dismounting clears the mount"
+    ((Campaign.set_mount chosen None).Campaign.mount = None);
+  check "on foot the road is the raw distance"
+    (abs_float (Campaign.travel_time (fresh ()) "CBAR" "WTHR" -. d) < 1e-9);
+  check "the fast mount covers the road at 2.5"
+    (abs_float
+       (Campaign.travel_time chosen "CBAR" "WTHR" -. d /. 2.5)
+    < 1e-9);
+  check "the slow mount still beats walking"
+    (Campaign.travel_time
+       (Campaign.set_mount (rider [ "MDSP" ]) (Some "MDSP"))
+       "CBAR" "WTHR"
+    < d);
+  check "a mounted journey is timed by the shorter road"
+    (match Campaign.begin_travel chosen "CBAR" "WTHR" with
+     | Some (Campaign.Traveling t) ->
+         abs_float (t.total_time -. d /. 2.5) < 1e-9
+     | _ -> false)
 ;;
 
 let () =

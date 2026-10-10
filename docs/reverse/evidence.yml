@@ -2877,6 +2877,42 @@ claims:
 
   # ---------------------------------------------------------- companions ----
 
+  - id: campaign.mount_speed
+    title: Mounts are captured rideables whose speed tier is slow, average or fast
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      Eight monsters ship Data mount="1" (MDSP, MGRI, MGSP, MRAT, MSCO, MSWO,
+      MWLF, MWYV) and five records carry a Mount speed of 0, 1 or 2 - the
+      per-monster capture strings name those tiers "slow mount", "average"
+      and "fast", and the fly flag too (MGRI "fast flying mount", MWYV
+      "flying mount of average speed"). MOUNTS_HELP states "they affect the
+      speed you move on the World Map" as one of a mount's three purposes,
+      and INV_MOUNTS_TEXT / YOURCITY_PETS_TEXT say mounts are captured beasts
+      chosen from your captives. The port reads mount_speed as a travel-time
+      divisor (port.mount_travel_speed); the skills, extra spell and fly
+      effects are named but unwired.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Monsters/MWLF.xml
+        note: 'Data mount="1", Mount speed="2" fly="0" spell="SHWL"'
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[MOUNTS_HELP], [INV_MOUNTS_TEXT], [YOURCITY_PETS_TEXT], [RUMOR_U007_DESC], per-monster CAPT strings for the tiers"
+      - kind: code
+        ref: lib/campaign_monsters.ml
+      - kind: code
+        ref: lib/campaign.ml
+        fn: mounted_speed
+      - kind: code
+        ref: test/test_campaign.ml
+    affects: [lib/campaign.ml, lib/campaign_save.ml, bin/campaign_demo.ml]
+    notes: >
+      Two non-rideable records (MBAT, MGWA) also carry Mount speed="1" -
+      vestigial elements the mount flag gates off, so they can never be
+      chosen.
   - id: campaign.companion_roster
     title: Companions are a recruited roster and a traveling party of eight
     area: campaign
@@ -3806,5 +3842,30 @@ port_decisions:
       the highlight live while the battle clocks idle. The column/row shapes
       come from Layout.aim_cells so the geometry is testable without a
       window.
+    supersedes: null
+    date: 2026-10-10
+
+  - id: port.mount_travel_speed
+    decision: >
+      The ridden mount is player.mount - a chosen captive whose monster
+      record ships mount="1" - and travel_time divides the node distance by
+      its speed tier: mount_speed 0/1/2 as a 1.5 / 2.0 / 2.5 multiplier, 1.0
+      on foot. begin_travel takes the player, so the crossing is timed at
+      departure; the front end keeps feeding walk_speed a second against the
+      shorter total_time.
+    rationale: >
+      Mounts are captured, not bought or rewarded (INV_MOUNTS_TEXT,
+      YOURCITY_PETS_TEXT), and MOUNTS_HELP says you choose a single one - so
+      the chosen state sits beside captives, while the equipment record's
+      mount field stays the panel's item slot it always was (no item is a
+      mount; a monster id stored there would break item_by_id on load). The
+      tier numbers are the capture strings' own words - slow, average, fast
+      for mount_speed 0, 1, 2 - and the rumor "a mount moves you faster"
+      makes even the slow tier beat walking, which fixes the three values as
+      evenly spaced multipliers rather than a guess at the original's
+      arithmetic. Fly, the mount spell and the skill bonuses (MOUNTS_HELP's
+      other two purposes) grant nothing here; they stay open gaps. This
+      extends port.travel_model, which measured the road at one unit per tick
+      with no modifier when nothing was choosable.
     supersedes: null
     date: 2026-10-10

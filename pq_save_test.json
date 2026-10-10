@@ -34,11 +34,13 @@
     "active_quests": [ { "quest_id": "Q0Q0", "state": 1 } ],
     "completed_quests": [],
     "companions": [],
+    "recruited_companions": [],
     "awards": [],
     "current_city": "CBAR",
     "dungeon_built": true,
     "monster_defeats": [],
-    "captives": []
+    "captives": [],
+    "mount": null
   },
   "quests": [ { "quest_id": "Q0Q0", "state": 1, "vars": [] } ],
   "map_visibility": {

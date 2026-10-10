@@ -111,7 +111,7 @@
 | Gap | Details |
 |-----|---------|
 | Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` fills the roster and the party, ninth refused from the party only); `RemoveCompanion` drops by id from the party and keeps the roster, the arrival rules run through `Campaign.enter_location` (travel arrival calls it via `advance_travel_with_events`), and the map Companions tab swaps and removes |
-| Mount | `mount` equipment slot exists; no speed/fly logic, no banner effects |
+| Mount | Speed landed: `player.mount` (a chosen captive, registry `mount = 1`) divides `travel_time` by its tier - 1.5 slow / 2.0 average / 2.5 fast (`port.mount_travel_speed`); `equipment.mount` stays an item slot. Fly/training, mount spell and skill bonuses and banner effects remain open |
 | Capture flow | Engine side done (eligibility, begin/finish, captives, save); no encounter UI wiring a battle win to the capture menu |
 
 ### 11. Character Creation
@@ -171,10 +171,10 @@
 1. ~~**Quest prerequisite checks**~~ ✅ wired to `is_quest_available`
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
-4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (159 assertions)
+4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (169 assertions)
 5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (57 assertions); success adds the captive
 6. ~~**Companion equip**~~ — roster + party (`recruited_companions` / `companions`); add at home, leave anywhere; the ten OnStartBattle hooks are the passives and follow the party (companions ship no separate skill data)
-7. **Mount speed** — `mount` slot → modify travel time between nodes
+7. ~~**Mount speed**~~ — the chosen captive divides the road (`set_mount` gates on a captured, rideable monster); tiers 1.5 slow / 2.0 average / 2.5 fast from `mount_speed`, and `begin_travel` takes the player to time the crossing
 8. ~~**Grid spell cell selection**~~ — hover lights the shape the spell reads (`Layout.aim_cells`: column/row/cell) with the HUD prompt; every cell stays a valid target; click-to-aim was already wired
 
 ---
@@ -241,8 +241,9 @@ Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters,
 conversation triggers + per-callback effects, companion equip, grid-spell
-aim hover), and the conversation UI now walks actions, renders
+aim hover, mount speed), and the conversation UI now walks actions, renders
 portraits/backdrops, fires battle callbacks and applies each scriptcall's
 extracted body effects. Pick one:
 
-- **Mount speed** - the mount slot modifies travel time (quick win 7)
+- **Mount combat bonuses** - the ridden mount's skills and extra combat spell (MOUNTS_HELP's other two purposes)
+- **Capture UI** - a battle win opening the capture menu (the engine side is done)

@@ -553,7 +553,7 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                     Printf.printf "  already at %s\n" id;
                     flush stdout
               else
-                match Campaign.begin_travel here id with
+                match Campaign.begin_travel ui.player here id with
                 | None ->
                     Printf.printf "  no revealed road to %s\n" id;
                     flush stdout

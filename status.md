@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Grid-spell aim hover landed (quick win 8): the play front tracks the mouse (the repo's first `mouse_motion` handler) and, while an aim question is open, lights the shape the spell reads - the whole column, the whole row, or the one cell - under the cursor via the new pure `Layout.aim_cells`, with the same selection glow a pending swap uses; a faint ring marks the cell under the mouse at all times and the HUD prompt says "aim". Every cell stays a valid target (`port.human_aim_click`), so the shape is the highlight and there is no filter. Click-to-aim was already wired (`choose_aim` -> `fx_input`). All 32 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Mount speed landed (quick win 7, the last of the list): `player.mount` holds the chosen ride - a captive whose registry entry is rideable (`mount = 1`), set with `Campaign.set_mount` (captive-gated, one at a time, MOUNTS_HELP's "choose a single mount") - and `travel_time` divides the road by the tier (`mount_speed` 0/1/2 as the capture strings' slow/average/fast: 1.5 / 2.0 / 2.5, every mount beats walking), so `begin_travel` now takes the player and times the crossing shorter with no front-end change (`port.mount_travel_speed`). Mount skills/spell/fly and banner effects remain open. All 32 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -32,7 +32,7 @@
   `English/*Text.xml` TextLibrary files; `Text_data.text` resolves a tag or returns
   it unchanged. Quest titles, city/item/monster/profession names now render as
   strings (`Family Reunion`, `Bartonia`, `Warrior`) instead of `[TAG]`.
-- **Engine:** Player creation, travel (journey step: begin, advance, arrival, departure encounter roll), encounter triggering, city shops/income (buy at the registry cost, gold checked), level-up
+- **Engine:** Player creation, travel (journey step: begin, advance, arrival, mount-shortened crossing, departure encounter roll), encounter triggering, city shops/income (buy at the registry cost, gold checked), level-up
 - **Quest prerequisites (NEW):** `is_quest_available` checks every extracted condition —
   `donequest0/1/2`, `notdonequest`, `notactivequest`, `companion0/1`, `notcompanion`,
   `item`, `notitem`, `award`, `notaward` — plus level band and not-already-active.
@@ -142,7 +142,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 85 | 10 (4 open) | 31 |
+| `docs/reverse/evidence.yml` | 86 | 10 (4 open) | 32 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
@@ -155,6 +155,7 @@ Key decisions recorded:
 - `port.full_loop_map_actions` - the map Actions tab + travel arrivals + shared Conv_window host the location-event loop; complete_action stays caller-driven
 - `campaign.companion_roster_equip` - equipping is party membership over a recruited roster; add at home, leave anywhere; the hooks are the passives
 - `port.aim_hover_highlight` - hover lights the shape the spell reads (column/row/cell); all 64 cells stay valid, no filter
+- `port.mount_travel_speed` - the chosen captive divides the road (1.5 slow / 2.0 average / 2.5 fast); `equipment.mount` stays an item slot
 - `port.conversation_ui` — portrait at (96,50), dialogue at y=170, choices at y=350; text wraps at 560px; `--conv --shot` pixel-checks
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
@@ -210,7 +211,7 @@ source assets.
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Landed: hover lights the shape the spell reads (column/row/cell via `Layout.aim_cells`), the HUD prompt says aim, click-to-aim was already wired; `fx.ml`'s `play_for_fx` still skips `target = Grid` calls - their cells arrive through `on_grid_fx`, by design (`port.grid_effects_are_an_observer_not_an_event`) |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, tavern rumors, and the Companions tab (leave/pick up); a dedicated hero screen and captive teaching remain open |
-| **Medium** | **Companions / Mounts** | Companion equip landed (roster/party + the ten hooks as the passives); mount speed/fly and banner effects remain open |
+| **Medium** | **Companions / Mounts** | Companion equip landed (roster/party + the ten hooks as the passives) and mount speed landed (the chosen captive divides the road, tiers 1.5/2.0/2.5); mount fly/training, mount spell and skill bonuses, and banner effects remain open |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |
 | **Low** | **Polish** | Key remap, color-blind palettes, UI scale, tooltips, settings menu |
