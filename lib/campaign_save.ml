@@ -16,7 +16,6 @@ type save_equipment = {
   ring1: string option;
   ring2: string option;
   mount: string option;
-  banner: string option;
   companion: string option;
 }
 
@@ -89,7 +88,6 @@ let save_equipment_to_json e =
     "ring1", (match e.ring1 with Some s -> `String s | None -> `Null);
     "ring2", (match e.ring2 with Some s -> `String s | None -> `Null);
     "mount", (match e.mount with Some s -> `String s | None -> `Null);
-    "banner", (match e.banner with Some s -> `String s | None -> `Null);
     "companion", (match e.companion with Some s -> `String s | None -> `Null);
   ]
 
@@ -155,11 +153,14 @@ let skill_affinities_of_json json : Campaign_types.skill_affinities =
     cunning = json |> member "cunning" |> to_int;
     morale = json |> member "morale" |> to_int; }
 
+(* Saves written while the equipment record still carried a speculative
+   banner slot carry a "banner" key this reader simply never asks for
+   (port.banner_slot_removed). *)
 let save_equipment_of_json json =
   let opt_member name = try Some (json |> member name |> to_string) with _ -> None in
   { weapon = opt_member "weapon"; armor = opt_member "armor"; helm = opt_member "helm";
     gauntlets = opt_member "gauntlets"; ring1 = opt_member "ring1"; ring2 = opt_member "ring2";
-    mount = opt_member "mount"; banner = opt_member "banner"; companion = opt_member "companion"; }
+    mount = opt_member "mount"; companion = opt_member "companion"; }
 
 let save_player_of_json json =
   { name = json |> member "name" |> to_string;
@@ -258,7 +259,7 @@ module SaveConvert = struct
     in
     { weapon = opt_map e.weapon; armor = opt_map e.armor; helm = opt_map e.helm;
       gauntlets = opt_map e.gauntlets; ring1 = opt_map e.ring1; ring2 = opt_map e.ring2;
-      mount = opt_map e.mount; banner = opt_map e.banner; companion = opt_map e.companion }
+      mount = opt_map e.mount; companion = opt_map e.companion }
 
   let player_to_save (p: Campaign.player) : save_player =
     { name = p.name; profession_id = p.profession.id; sex = p.sex; age = p.age;
@@ -288,7 +289,6 @@ module SaveConvert = struct
       ring1 = (match e.ring1 with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
       ring2 = (match e.ring2 with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
       mount = (match e.mount with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      banner = (match e.banner with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
       companion = (match e.companion with Some id -> Some (Campaign_items.item_by_id id) | None -> None); }
 
   let player_from_save (s: save_player) : Campaign.player =

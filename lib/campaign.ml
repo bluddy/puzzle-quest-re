@@ -22,7 +22,6 @@ type equipment = {
   ring1: item option;
   ring2: item option;
   mount: item option;
-  banner: item option;
   companion: item option;
 }
 
@@ -56,7 +55,7 @@ type player = {
 
 let default_equipment = {
   weapon = None; armor = None; helm = None; gauntlets = None;
-  ring1 = None; ring2 = None; mount = None; banner = None; companion = None
+  ring1 = None; ring2 = None; mount = None; companion = None
 }
 
 let create_player name prof_id sex age =
@@ -226,8 +225,7 @@ let encounters_on_road_visible (player: player) (start: string) (end_: string) :
    "[a] mount moves you faster" holds for every tier, so even a slow mount
    beats walking. What a mount grants beyond speed - its skill bonus, its
    own spell - rides into every battle (port.mount_skill_formula); flying
-   and the training-based encounter avoidance, and banner effects, stay
-   GAPS gaps. The encounter
+   and the training-based encounter avoidance stay GAPS gaps. The encounter
    scripts say when appearance is asked - OnQueryAppearance is "called when
    a hero moves to a new location" - but not how often a road is polled
    while it is being crossed, so the port asks once, at departure. Both
@@ -774,10 +772,11 @@ let spells_of_ids (ids: string list) : Spell.spell list =
 (* The battle loadout built from the character's equipment panel: each slot's
    item becomes a runtime [Item] by id and lands where its own location says -
    the four XML locations (weapon/head/body/misc, [ITMLOC0..3]) decide the
-   placement, so the panel's extra fields (gauntlets, rings, mount, banner,
-   companion) fold in by whatever location they carry. Two items of one
-   location leave the later field's in the slot; that is a choice, since the
-   engine's own fold is not recovered. *)
+   placement, so the panel's extra fields (gauntlets, rings, mount, companion)
+   fold in by whatever location they carry. Two items of one location leave the
+   later field's in the slot; that is a choice, since the engine's own fold is
+   not recovered. No banner field: nothing in the shipped game ever fills one
+   (port.banner_slot_removed). *)
 let loadout_of_equipment (e: equipment) : Item.loadout =
   let l = Item.new_loadout () in
   List.iter
@@ -789,7 +788,7 @@ let loadout_of_equipment (e: equipment) : Item.loadout =
          | None -> ()
          | Some i -> ignore (Item.equip l i)))
     [ e.weapon; e.armor; e.helm; e.gauntlets; e.ring1; e.ring2;
-      e.mount; e.banner; e.companion ];
+      e.mount; e.companion ];
   l
 
 (* Open a battle between two combatants: board, companion OnStartBattle

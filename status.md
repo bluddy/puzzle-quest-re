@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Capture surfaces landed - the offer now reaches every front the game has (`port.capture_surfaces`). A won callback fight (the conversation battles that are the game's quest fights) carries `cb_capture_offer`: `execute_callback` computes it where the monster id and the stage's capture flag live (`callback_capture_offer` - won, capture allowed, both gates), `conv_window` parks it behind the Victory banner, and the map front takes it on the banner's dismiss through `take_capture_offer` and opens the minigame. The city panel grew a **Pets** tab (`[PETS]` - Captives): `capture_candidates` rows readied by the [CAPTURE_LISTHELP] gates click straight into the grid, held captives display under them, and the panel heads with `[YOURCITY_PETS_TEXT]`. Underneath this, two real bugs fell: status-effect kills (poison, Fire Bombed, Hasted) never set `is_dead`, and every post-run win read in the game was therefore always false because `Battle.run`'s faithful `sweep_deaths` clears that flag each pass - so real road/callback/quest fights all registered as losses, the banner always said Defeat, and captures never offered in play. Wins now read `Battle.hero_won` (the run's own life-based verdict) everywhere. All 33 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Banner effects resolved - as a negative (`port.banner_slot_removed`): the shipped game carries no banner mechanic, so the port's day-one speculative `equipment.banner` field is gone. All 160 item XMLs declare one of four locations (weapon/head/body/misc), GameText carries no `[BANNER]` tag (only Q2Q6's war-banner prose and the UWAR+UMAS rune word), the Lua native surface has no banner call, no screen XML names a banner widget, and the exe holds no banner string - mount keeps its panel slot because [ITMLOC5] "--- Mounts ---" and MOUNTS_HELP ground it, banner had no anchor at all. The save reader ignores the dropped key older files may carry (test-pinned), the equipment record and the loadout fold lost the field, and the tracked demo save regenerated without it. All 33 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -124,7 +124,7 @@
   declare table for `OnStartBattle` (six of 160 - IDHE/IFLH helms credit
   mana, the four IWL* walls raise max life and life), `lib/item_hooks.ml`
   ports the bodies, and `open_battle` fires them on both sides after the
-  companion pass; `loadout_of_equipment` folds the nine-field character
+  companion pass; `loadout_of_equipment` folds the eight-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
 - **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (84),
@@ -159,7 +159,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 89 | 10 (4 open) | 35 |
+| `docs/reverse/evidence.yml` | 89 | 10 (4 open) | 36 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location

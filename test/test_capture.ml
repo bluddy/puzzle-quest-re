@@ -466,7 +466,43 @@ let () =
     p3.Campaign.dungeon_built;
   check "an old save loads no defeats"
     (Campaign.monster_defeats p3 "MTRO" = 0);
-  check "an old save loads no captives" (p3.Campaign.captives = [])
+  check "an old save loads no captives" (p3.Campaign.captives = []);
+
+  (* A save from when the equipment record carried a speculative banner
+     slot: the key is ignored, not an error (port.banner_slot_removed). *)
+  let with_banner =
+    match Campaign_save.save_campaign_to_json save with
+    | `Assoc fs ->
+        `Assoc
+          (List.map
+             (fun (k, v) ->
+               if k = "player" then
+                 (k,
+                  match v with
+                  | `Assoc pfs ->
+                      `Assoc
+                        (List.map
+                           (fun (n, nv) ->
+                             if n = "equipment" then
+                               ( n,
+                                 match nv with
+                                 | `Assoc efs ->
+                                     `Assoc (("banner", `String "IADO") :: efs)
+                                 | other -> other )
+                             else (n, nv))
+                           pfs)
+                  | other -> other)
+               else (k, v))
+             fs)
+    | other -> other
+  in
+  let p4, _, _, _, _, _ =
+    Campaign_save.apply_save (Campaign_save.save_campaign_of_json with_banner)
+  in
+  check "a save carrying the dropped banner slot still loads"
+    (p4.Campaign.name = sp.Campaign.name
+    && p4.Campaign.equipment.weapon = None
+    && p4.Campaign.captives = [ "MRAX" ])
 
 (* ------------------------------------------------------------------ *)
 (* 7. Greedy play over every shipped grid                             *)

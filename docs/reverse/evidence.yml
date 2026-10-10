@@ -4100,3 +4100,30 @@ port_decisions:
       tick like the damage path does.
     supersedes: null
     date: 2026-10-10
+
+  - id: port.banner_slot_removed
+    decision: >
+      The equipment record no longer carries a banner field. The panel keeps
+      weapon, armor, helm, gauntlets, the two rings, mount and companion -
+      the slots the shipped game fills - and the save reader ignores a
+      "banner" key older files may still carry.
+    rationale: >
+      The field was speculative from the project's first commit and nothing
+      in the shipped game ever fills, shows or reads a banner: all 160 item
+      XMLs declare one of four locations (weapon/head/body/misc - the
+      [ITMLOC0..3] headings), GameText carries no [BANNER] tag (the word
+      appears only in Q2Q6's war-banner quest prose and as the UWAR+UMAS
+      rune word), the Lua native surface has no banner call among its 162
+      tokens, no screen XML names a banner widget, and the exe holds no
+      banner string in either encoding. Mount keeps its panel slot because
+      [ITMLOC5] "--- Mounts ---", MOUNTS_HELP and INV_MOUNTS_TEXT ground
+      it; banner has no such anchor anywhere. Deleting the field rather
+      than parking it keeps the record honest: loadout_of_equipment folded
+      e.banner (always None) into the loadout, the save round-tripped a
+      key that could never be non-None, and a reader of the type would
+      take a banner slot for a mechanic. Old saves load untouched - the
+      reader only asks for keys it knows - and test_capture pins that
+      with a banner-keyed file. The Victory banner in conv_window is
+      unrelated UI and unaffected.
+    supersedes: null
+    date: 2026-10-10
