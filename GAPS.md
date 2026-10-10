@@ -46,7 +46,7 @@
 | ~~Quest rewards~~ | ✅ gold/XP/items/awards/companions from the quest script (`run_quest_on_end`), not the 200/200 default |
 | ~~Quest failure paths~~ | `quest_abandon` runs OnAbandon (releases + state reset) and respects the `abandonable` flag; `run_quest_on_fail` still has no caller — no OnFail hook |
 | ~~Conversation battle callbacks~~ | ✅ the 13 conversation pairs in the 33-row `callback_battles` table fire through `Campaign.execute_callback` from `pq_conv_gfx`'s scriptcall step — headless fight, stage/capture/spoils settle, Victory/Defeat banner |
-| Conversation callbacks | ✅ every scriptcall applies its extracted `callback_effects` first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then its 33-row-table fight; reward reattribution keeps callback grants out of the turn-in buckets. Still open: the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5, QU02) have no arrival event to run under, and the 94 OnExecuteAction / 50 OnCompleteAction conversation sites are extracted but dormant (no location-action UI) |
+| Conversation callbacks | ✅ every scriptcall applies its extracted `callback_effects` first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then its 33-row-table fight; reward reattribution keeps callback grants out of the turn-in buckets. Still open: the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5, QU02) have no arrival event to run under, and the 94 OnExecuteAction / 50 OnCompleteAction conversation sites now run through the location-action API (map Actions tab + demo driver) |
 
 ### 2. Ruins & Companion Capture
 | Gap | Details |
@@ -82,7 +82,7 @@
 | Gap | Details |
 |-----|---------|
 | Branching dialogues | No choice nodes ship in the data — actions are `talk_youngmale`/`oldmale`/`youngfemale`/`oldfemale`/`wait`/`end`/`scriptcall`/`player`/`npc`, walked in order by `pq_conv_gfx` on click |
-| Quest integration | ✅ quest state queues conversations (`pending_conversations`): accept fills the OnBegin intro, `enter_location` the guarded arrivals, callbacks their nested trees — drained by `campaign_demo` (prints) and `pq_conv_gfx` (prompts). Still open: no UI *opens* a queued tree interactively (`start_conversation` / `has_conversation` remain uncalled), and the location-action conversations stay dormant |
+| Quest integration | ✅ quest state queues conversations (`pending_conversations`): accept fills the OnBegin intro, `enter_location` the guarded arrivals, callbacks their nested trees — drained by `campaign_demo` (prints), `pq_conv_gfx` (prompts) and the map window's shared `Conv_window` (opens queued trees over the map; `start_conversation` as a direct API remains unused) |
 | Portrait/backdrop rendering | ✅ `pq_conv_gfx` draws the backdrop full-window (dimmed) with the current action's aspect-fit portrait and speaker name; images resolve from `game/Assets` (`PQ_GAME_ASSETS` overrides) with a `.png`/`.jpg` swap since backdrops ship as JPEGs; missing art falls back to flat colours |
 
 ### 7. World Map UI (SDL2)
@@ -244,7 +244,4 @@ conversation triggers + per-callback effects), and the conversation UI now
 walks actions, renders portraits/backdrops, fires battle callbacks and
 applies each scriptcall's extracted body effects. Pick one:
 
-- **Map-gfx location actions** - a city action panel over `query_actions`
-  (the flow itself is landed: engine groups, the demo driver, the message
-  popup in the conversation window, `test_location_actions.ml`)
 - **Companion equip** - equip slot + passive bonuses (phase 8)

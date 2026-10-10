@@ -1274,3 +1274,16 @@ let complete_action ?(success = true) (player : player) (qid : string)
         (st = -1 || st = cur)
         && (suc = -1 || suc = (if success then 1 else 0))
         && (loc = "" || loc = location))
+
+(* The travel step a driver should call: [advance_travel], and when the walk
+   lands on [AtNode] the location's quest events run through
+   [enter_location] - the OnEnterLocation rules, the extracted arrival
+   groups (boxes, nested trees, companion removals) - so walking into a node
+   fires the arrival moment the Lua scripts name. Mid-road steps pass the
+   player through untouched. Both pending queues fill as usual; the driver
+   drains them after. *)
+let advance_travel_with_events (player : player) (ts : travel_state)
+    (dt : float) : player * travel_state =
+  match advance_travel ts dt with
+  | AtNode id -> (enter_location player id, AtNode id)
+  | ts' -> (player, ts')

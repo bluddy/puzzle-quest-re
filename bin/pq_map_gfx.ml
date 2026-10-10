@@ -2,9 +2,14 @@
     it, and a click to walk somewhere.
 
     Everything about {e what happens} belongs to the engine:
-    [Campaign.begin_travel] only opens a revealed road, [advance_travel]
-    walks it and lands on [AtNode], [road_encounter] asks the road's list
-    once at departure - and when the hero stops, the popup says so. This
+    [Campaign.begin_travel] only opens a revealed road, [advance_travel_with_events]
+    walks it and runs the arrival moment ([enter_location]: OnEnterLocation
+    rules, guarded arrival boxes and trees), [road_encounter] asks the road's
+    list once at departure - and when the hero stops, the popup says so. The
+    city panel's Actions tab lists [Campaign.query_actions] for the node and
+    clicking one starts it through [execute_action]; the queued dialogue,
+    messages and callback battles run in the shared [Conv_window] over the
+    map, and when that drains the driver follows with [complete_action]. This
     front end draws those states and feeds them clicks; nothing about the
     recovered rules is re-implemented here.
 
@@ -13,9 +18,9 @@
     window still opens, on flat colours, which is the only state a fresh
     checkout can honestly be in.
 
-    The fight itself runs headless through the campaign API and the window
-    reports the result on the console - hosting the battle view inside the
-    map is the coupling neither front end wants yet. *)
+    The road fight itself runs headless through the campaign API and the
+    window reports the result on the console - hosting the battle view
+    inside the map is the coupling neither front end wants yet. *)
 open Puzzle_quest_lib
 open Pq_gfx
 module E = Tsdl.Sdl.Event
@@ -54,7 +59,7 @@ let load_segments () : ((int * int) * Gl.texture option) list =
              in
              ((r, c), tex))))
 
-type city_tab = Shop | Spells | Tavern
+type city_tab = Shop | Spells | Tavern | Actions
 
 type city_view = {
   cid : string;
@@ -71,6 +76,8 @@ type ui = {
   mutable journey : Campaign.travel_state option;
   mutable popup : Campaign_encounters.encounter option;
   mutable city : city_view option;
+  conv : Conv_window.state;  (* hosted dialogue over the map, always present *)
+  mutable pending : (string * string) option;  (* (qid, loc): action awaiting complete *)
 }
 
 let node_colour (k : Campaign.node_kind) : Layout.colour =
@@ -127,13 +134,18 @@ let hero_world (ui : ui) : int * int =
 (** The city panel's tabs: the mode button walks them in this order, and the
     labels are the game's own strings. *)
 let next_tab (t : city_tab) : city_tab =
-  match t with Shop -> Spells | Spells -> Tavern | Tavern -> Shop
+  match t with
+  | Shop -> Spells
+  | Spells -> Tavern
+  | Tavern -> Actions
+  | Actions -> Shop
 
 let tab_label (t : city_tab) : string =
   match t with
   | Shop -> Text_data.text "[BUYITEMS]"
   | Spells -> Text_data.text "[SELECTSPELLMENU_HEADING]"
   | Tavern -> Text_data.text "[RUMORS]"
+  | Actions -> "Actions"
 
 let open_city (ui : ui) (cid : string) : unit =
   ui.city <- Some { cid; tab = Shop; rumor = 0 };
@@ -195,9 +207,19 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
              purse - LEARNTALLSPELLS says so, and the research flow is
              another workstream. *)
           ()
-      | Tavern -> advance_rumor cv)
+      | Tavern -> advance_rumor cv
+      | Actions -> (
+          match List.nth_opt (Campaign.query_actions ui.player cv.cid) i with
+          | None -> ()
+          | Some (qid, tag) ->
+              Printf.printf "  action: %s - %s\n" qid (Text_data.text tag);
+              flush stdout;
+              ui.player <- Campaign.execute_action ui.player qid cv.cid;
+              ui.pending <- Some (qid, cv.cid)))
   | City_layout.Elsewhere -> (
-      match cv.tab with Tavern -> advance_rumor cv | Shop | Spells -> ())
+      match cv.tab with
+      | Tavern -> advance_rumor cv
+      | Shop | Spells | Actions -> ())
 
 (** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
 let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
@@ -273,7 +295,23 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
                (cv.rumor + 1) (List.length Campaign.rumors))
             City_layout.row_x
             (City_layout.row_y0 + 30)
-      | None -> ()));
+      | None -> ())
+  | Actions ->
+      List.iteri
+        (fun i (qid, tag) ->
+          if i < City_layout.max_rows then begin
+            let qname =
+              match
+                try Some (Campaign_quests.quest_by_id qid) with Not_found -> None
+              with
+              | Some q -> Text_data.text q.Campaign_quests.name_text
+              | None -> qid
+            in
+            text
+              (qname ^ " - " ^ Text_data.text tag)
+              (City_layout.row_x + 30) (row_y i + 3)
+          end)
+        (Campaign.query_actions ui.player cv.cid));
   solid rs gl City_layout.mode_btn (Layout.rgb 44 48 60);
   solid rs gl City_layout.done_btn (Layout.rgb 44 48 60);
   (match (f, sys) with
@@ -358,6 +396,8 @@ let draw ?(present = true) (ui : ui) : unit =
   (match ui.city with
   | Some cv -> draw_city rs gl ui cv
   | None -> ());
+  (* The hosted dialogue over whatever is underneath; the road popup still     outranks it in the click order below. *)
+  if Conv_window.busy ui.conv then Conv_window.draw ~present:false ui.conv;
   (* The encounter popup: dim the map, banner, and the one line that says     what a click does. *)
   (match ui.popup with
   | Some enc ->
@@ -394,6 +434,7 @@ let draw ?(present = true) (ui : ui) : unit =
 let handle_click (ui : ui) (mx : int) (my : int) : unit =
   match ui.popup with
   | Some enc ->
+      (* The road fight holds everything, dialogue included. *)
       let battle = Campaign.run_encounter_battle ui.player enc in
       let player, result = Campaign.process_battle_result ui.player enc battle in
       ui.player <- player;
@@ -404,7 +445,9 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
         battle.Battle.turns_elapsed result.Campaign.final_life
         result.Campaign.gold_gained result.Campaign.xp_gained;
       flush stdout
-  | None -> (
+  | None ->
+      if Conv_window.busy ui.conv then Conv_window.handle_click ui.conv mx my
+      else (
       match ui.city with
       | Some cv -> handle_city_click ui cv mx my
       | None -> (
@@ -442,24 +485,47 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                         flush stdout
                     | None -> ()))))
 
-(** One frame's walking. The popup holds the journey where it is. *)
+(** One frame: the hosted dialogue first - it holds walking while a box, a
+    tree or a banner is up, and when it drains the pending action completes
+    - then the road popup holds the journey where it is, then walking,
+    which through [advance_travel_with_events] fires the arrival moment. *)
 let step (ui : ui) (dt : float) : unit =
-  match (ui.journey, ui.popup) with
-  | Some _, Some _ -> ()
-  | Some j, None -> (
-      match Campaign.advance_travel j (walk_speed *. dt) with
-      | Campaign.Traveling j' -> ui.journey <- Some (Campaign.Traveling j')
-      | Campaign.AtNode id ->
-          ui.journey <- None;
-          ui.player <- { ui.player with Campaign.current_city = Some id };
-          Printf.printf "  arrived at %s\n" id;
-          flush stdout;
-          (* Arriving in a city is entering it. *)
-          (match Hashtbl.find_opt Campaign.map_nodes id with
-          | Some n when n.Campaign.kind = Campaign.City -> open_city ui id
-          | _ -> ())
-      | other -> ui.journey <- Some other)
-  | None, _ -> ()
+  Conv_window.sync_player ui.conv ui.player;
+  Conv_window.step ui.conv dt;
+  ui.player <- Conv_window.player_of ui.conv;
+  if Conv_window.busy ui.conv then ()
+  else begin
+    (match ui.pending with
+    | Some (qid, loc) ->
+        ui.pending <- None;
+        ui.player <- Campaign.complete_action ~success:true ui.player qid loc;
+        Printf.printf "  %s: action finished at %s\n" qid loc;
+        flush stdout
+    | None -> ());
+    match (ui.journey, ui.popup) with
+    | Some _, Some _ -> ()
+    | Some j, None -> (
+        let p', ts' =
+          Campaign.advance_travel_with_events ui.player j (walk_speed *. dt)
+        in
+        match ts' with
+        | Campaign.Traveling j' ->
+            ui.player <- p';
+            ui.journey <- Some (Campaign.Traveling j')
+        | Campaign.AtNode id ->
+            ui.player <- { p' with Campaign.current_city = Some id };
+            ui.journey <- None;
+            Printf.printf "  arrived at %s\n" id;
+            flush stdout;
+            (* Arriving in a city is entering it. *)
+            (match Hashtbl.find_opt Campaign.map_nodes id with
+            | Some n when n.Campaign.kind = Campaign.City -> open_city ui id
+            | _ -> ())
+        | other ->
+            ui.player <- p';
+            ui.journey <- Some other)
+    | None, _ -> ()
+  end
 
 let () =
   Random.self_init ();
@@ -502,10 +568,14 @@ let () =
   let start_city =
     start.Campaign.profession.Campaign_professions.start_city
   in
+  let hero = { start with Campaign.current_city = Some start_city } in
+  let system = Font_layout.metrics_of_tag "font_system" in
   let ui =
-    { gl; segments; fonts; system = Font_layout.metrics_of_tag "font_system";
-      player = { start with Campaign.current_city = Some start_city };
-      journey = None; popup = None; city = None }
+    { gl; segments; fonts; system;
+      player = hero;
+      journey = None; popup = None; city = None;
+      conv = Conv_window.create ~gl ~fonts ~system ~player:hero;
+      pending = None }
   in
   if !open_city_flag then open_city ui start_city;
   Printf.printf
@@ -513,7 +583,7 @@ let () =
     (Gl.renderer_name ()) (Gl.gl_version ()) Map_view.world Map_view.origin_x
     Map_view.origin_y;
   print_endline
-    "  click a revealed node to walk there; click the popup to fight; close the window to quit";
+    "  click a revealed node to walk there; the city's Actions tab runs quest\n  actions (their dialogue opens over the map); click the popup to fight;\n  close the window to quit";
   flush stdout;
   (* --shot is how this front is checked without a display: one frame, the
      same raw RGBA path the battle front photographs with. *)

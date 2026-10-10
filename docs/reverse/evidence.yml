@@ -2190,7 +2190,7 @@ claims:
       - kind: code
         ref: lib/campaign.ml
         fn: enter_location
-      - kind: test
+      - kind: code
         ref: test/test_callback_effects.ml
     affects: [tools/extract_quests.py, lib/campaign_quests.ml, lib/campaign.ml,
               bin/campaign_demo.ml, bin/pq_conv_gfx.ml]
@@ -3694,3 +3694,29 @@ port_decisions:
       whole chain as the reference driver.
     supersedes: null
     date: 2026-10-09
+
+  - id: port.full_loop_map_actions
+    decision: >
+      The location-event loop is playable in the map window: the city
+      panel's Actions tab lists Campaign.query_actions for the node and a
+      click starts it through execute_action; travel arrivals fire through
+      advance_travel_with_events (advance_travel plus enter_location on
+      AtNode), so guarded boxes and trees queue on landing; the shared
+      gfx/conv_window module hosts queued dialogue, message boxes and
+      callback battle banners over the map (pq_conv_gfx is now a thin
+      front over it), and when the dialog drains the driver follows with
+      complete_action. Conversation trees open in the hosted window
+      instead of printing.
+    rationale: >
+      Queues are engine state, and a front end that only prints them
+      leaves the loop untestable in the real UI; hosting them in one
+      shared module keeps pq_conv_gfx and pq_map_gfx on the same window
+      code and makes the pending-conversation walk the interactive path
+      the engine always implied. complete_action stays caller-driven
+      (decoupled from battle settle, matching quest_battle_complete), and
+      the road popup still outranks the dialog in the click order,
+      matching the road fight's interruptive role. The map city panel
+      covers cities only (waypoints are not browsed), and quest-stage
+      battles (run_quest_battle) are not yet wired to action rows.
+    supersedes: null
+    date: 2026-10-10

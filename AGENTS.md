@@ -60,7 +60,7 @@ unterminated string/comment, or a trailing semicolon in a preceding toplevel
   (state writes, grants, nested conversations, `QUEST_COMPLETE`) and then
   runs the body's fight when it has one (`callback_battles_table` in
   `lib/campaign_quests.ml`).
-- **Location actions:** `Campaign.query_actions` (first match), `execute_action`, `complete_action`, `enter_location` apply the extracted guarded effect groups against the live quest state; `Campaign.pending_messages` queues `ShowMessage` boxes (popped via `take_pending_message`, callback fired through `execute_callback`). Both pending queues are global: drain before asserting on them in tests.
+- **Location actions:** `Campaign.query_actions` (first match), `execute_action`, `complete_action`, `enter_location` apply the extracted guarded effect groups against the live quest state; `Campaign.pending_messages` queues `ShowMessage` boxes (popped via `take_pending_message`, callback fired through `execute_callback`). Both pending queues are global: drain before asserting on them in tests. Travel arrival must call `Campaign.advance_travel_with_events` (not bare `advance_travel`): it runs `enter_location` on `AtNode`. The map front hosts queued dialogue/messages/battle banners in `gfx/conv_window.ml` (shared with `pq_conv_gfx`); when the hosted dialog drains, the driver calls `complete_action`.
 - Generated files (`lib/campaign_quests.ml`, `lib/campaign_conversations.ml`,
   etc.) are produced by scripts in `tools/` — edit the generator, not the
   output.

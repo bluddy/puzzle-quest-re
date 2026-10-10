@@ -301,6 +301,41 @@ check "turning Q0Q4 in queues its OnEnd box (the game's only one)"
    && take_conv () = None);
 
 (* ---------------------------------------------------------------- *)
+(* travel: advance_travel_with_events fires the arrival moment       *)
+(* ---------------------------------------------------------------- *)
+
+drain ();
+let walking : Campaign.travel_state =
+  Campaign.Traveling
+    { from_ = "CENM"; to_ = "WSIR"; progress = 0.0; total_time = 0.5 }
+in
+let p20, ts20 = Campaign.advance_travel_with_events (active "Q0Q0" 1) walking 0.25 in
+check "a mid-road step passes the player through untouched"
+  (state_of p20 "Q0Q0" = Some 1
+   && (match ts20 with
+       | Campaign.Traveling t -> t.progress > 0.0 && t.total_time = 0.5
+       | _ -> false)
+   && take_msg () = None && take_conv () = None);
+
+drain ();
+let p21, ts21 = Campaign.advance_travel_with_events (active "Q0Q0" 1) walking 1.0 in
+check "landing on the ambush node runs enter_location (Q0Q0 box)"
+  (ts21 = Campaign.AtNode "WSIR" && state_of p21 "Q0Q0" = Some 1
+   && (match take_msg () with
+       | Some m -> m.Campaign.pmsg_text = "[QUEST_Q0Q0_AMBUSH]"
+       | None -> false)
+   && take_conv () = None);
+
+drain ();
+let quiet : Campaign.travel_state =
+  Campaign.Traveling
+    { from_ = "CBAR"; to_ = "CENM"; progress = 0.0; total_time = 0.5 }
+in
+let _p22, ts22 = Campaign.advance_travel_with_events (active "Q0Q0" 1) quiet 1.0 in
+check "a plain arrival queues nothing"
+  (ts22 = Campaign.AtNode "CENM" && take_msg () = None && take_conv () = None);
+
+(* ---------------------------------------------------------------- *)
 (* Global state cleanup                                              *)
 (* ---------------------------------------------------------------- *)
 
