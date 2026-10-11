@@ -446,14 +446,17 @@ def header_states(header, s_max):
 
 def make_guard_lookup(body_ns, body_nc, consts, s_max):
     """Context lookup for effect attribution: lookup(pos) ->
-    (stages | None, locs | None, side) evaluated over the if-chain OPEN at
-    pos - the same frame walk as scan_battle_branches (if/elseif/else over
-    end, do/function/repeat opaque), plus idLocation tests. stages is the
-    innermost open header's questState set (None = untested; an
-    else-branch carries [] and falls through, since it means "not these");
-    locs likewise from idLocation== resolved through the file constants;
-    side is 'win'/'fail'/'none' from the success tests. Closed blocks do
-    not leak - unlike nearest-preceding scans."""
+    (stages | None, locs | None, side, arms) evaluated over the if-chain
+    OPEN at pos - the same frame walk as scan_battle_branches (if/elseif/
+    else over end, do/function/repeat opaque), plus idLocation tests.
+    stages is the innermost open header's questState set (None = untested;
+    an else-branch carries [] and falls through, since it means "not
+    these"); locs likewise from idLocation== resolved through the file
+    constants; side is 'win'/'fail'/'none' from the success tests; arms is
+    ((if-pos, 'then'|'elseif'|'else'), ...) over the open non-generic
+    frames, so two positions can be told to sit in sibling arms of a
+    branch still open at both (see resolve_message). Closed blocks do not
+    leak - unlike nearest-preceding scans."""
     kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
     idloc = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
 
@@ -485,7 +488,9 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 locs = list(fr['locs'])
             if side == 'none' and fr['side'] is not None:
                 side = fr['side']
-        return (stages, locs, side)
+        arms = tuple((fr['id'], fr['arm']) for fr in stack
+                     if not fr['generic'])
+        return (stages, locs, side, arms)
 
     changes.append((-1, snap()))
     for k, pos in kws:
@@ -497,6 +502,8 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 'locs': header_locs(header),
                 'side': s,
                 'chain': s,
+                'id': pos,
+                'arm': 'then',
                 'generic': False,
             })
         elif k == 'elseif' and stack and not stack[-1]['generic']:
@@ -504,6 +511,7 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
             fr = stack[-1]
             fr['stages'] = header_states(header, s_max)
             fr['locs'] = header_locs(header)
+            fr['arm'] = 'elseif'
             s = success_side(header)
             if s is not None:
                 fr['chain'] = s
@@ -514,6 +522,7 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
             fr = stack[-1]
             fr['stages'] = []
             fr['locs'] = []
+            fr['arm'] = 'else'
             fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
         elif k in ('do', 'function', 'repeat'):
             stack.append({'stages': None, 'locs': None, 'side': None,
@@ -552,7 +561,17 @@ def build_msg_assigns(body):
     return out
 
 
-def resolve_message(msg_assigns, hit, lookup, consts=None):
+def arm_conflict(a, site):
+    """True when the assignment sits in a sibling arm of a branch that is
+    still open at the site: the two open-frame stacks share an if whose
+    arm differs (then vs else/elseif), so the branch that wrote the
+    assignment never ran on a path reaching the site - the value it
+    bound is dead there."""
+    s = dict(site[3])
+    return any(fid in s and s[fid] != arm for fid, arm in a[3])
+
+
+def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
     """One QUEST_MESSAGE(_CALLBACK) site -> (rows, err): rows are
     [(pos, st, suc, loc, title, text, cb)] in assignment order, err the
     unresolved text token when nothing resolves (rows empty then).
@@ -566,10 +585,14 @@ def resolve_message(msg_assigns, hit, lookup, consts=None):
     after the chain closed).  A row's guard merges the assignment's
     open-if context with the site's: stages/locs intersect (empty =
     dead row, dropped), the success side prefers the assignment.
-    Literal / inline GET_TEXT arguments carry no assignment, so their
-    row takes the site context alone.  The third call argument
-    (idLocation / myLocation) is where the engine anchors the box, not
-    a condition - the open-if context already carries location truth."""
+    An assignment in a SIBLING ARM of a branch open at the site is dead
+    there and its row is dropped (arm_conflict) - without that, two
+    sites inside one if/else each pick up the other's text and queue a
+    box Lua never shows.  Literal / inline GET_TEXT arguments carry no
+    assignment, so their row takes the site context alone.  The third
+    call argument (idLocation / myLocation) is where the engine anchors
+    the box, not a condition - the open-if context already carries
+    location truth."""
     title_tok = hit.group(2).strip()
     text_tok = hit.group(3).strip()
     cb_tok = hit.group(6)
@@ -580,7 +603,7 @@ def resolve_message(msg_assigns, hit, lookup, consts=None):
         elif consts is not None:
             cb = consts.get(cb_tok, "")
     site_pos = hit.start()
-    site = lookup(site_pos) if lookup else (None, None, 'none')
+    site = lookup(site_pos) if lookup else (None, None, 'none', ())
 
     def tags(tok, limit):
         if tok.startswith('"'):
@@ -609,8 +632,24 @@ def resolve_message(msg_assigns, hit, lookup, consts=None):
         return max(usable, key=lambda c: -1 if c[1] is None else c[1])[0]
 
     rows = []
+    kept = []
+    dropped = 0
     for ttag, tpos in text_cands:
         a = lookup(tpos) if (lookup and tpos is not None) else site
+        if arm_conflict(a, site):
+            dropped += 1
+            continue
+        kept.append((ttag, tpos, a))
+    if not kept:
+        # every assignment sits in a sibling arm of the site (no shipped
+        # script does this - the site's own arm always binds the variable
+        # first): keep the unfiltered candidates rather than lose the site
+        kept = [(t, p, lookup(p) if (lookup and p is not None) else site)
+                for t, p in text_cands]
+        dropped = 0
+    if stats is not None:
+        stats['msg_arm_drops'] += dropped
+    for ttag, tpos, a in kept:
         # merge assignment + site context
         stages = a[0] if a[0] is not None else site[0]
         if site[0] is not None and a[0] is not None:
@@ -689,7 +728,7 @@ def analyze_lua(src, qid, stats):
             at pos into the group's key form (complete keys carry the
             success side; OnEnd effects are turn-in events, not
             location-bound, so their loc guard collapses to wildcard)."""
-            stages, locs, side = lookup(pos)
+            stages, locs, side, _arms = lookup(pos)
             if evk == 'end':
                 locs = None
             if force_loc is not None:
@@ -827,7 +866,8 @@ def analyze_lua(src, qid, stats):
             stats['hooks'][('message', hook)] += 1
             if hook == 'OnCancelAction':
                 continue  # dormant: no cancel event in the port yet
-            rows, err = resolve_message(msg_assigns, hit, lookup, consts)
+            rows, err = resolve_message(msg_assigns, hit, lookup, consts,
+                                         stats)
             if err is not None:
                 stats['unresolved'].append((qid, hook, err))
                 continue
@@ -1229,7 +1269,8 @@ def new_stats():
     return {'raw': Counter(), 'extracted': Counter(), 'hooks': Counter(),
             'unresolved': [], 'missing_lua': [],
             'battle_unattributed': [], 'battle_conflicts': [],
-            'remove_elsewhere': [], 'conv_other_hooks': []}
+            'remove_elsewhere': [], 'conv_other_hooks': [],
+            'msg_arm_drops': 0}
 
 
 def main():
@@ -1270,6 +1311,8 @@ def main():
                 print(f"  callback: {(q['id'],) + row}")
         for row in stats['remove_elsewhere']:
             print(f"  elsewhere: {row}")
+        print(f"message rows dropped (sibling-arm assignments): "
+              f"{stats['msg_arm_drops']}")
         n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
                   for b in ('begin', 'abandon')}
         n_conv_cb = sum(len(v) for q in quests for _, v in q["conversation_callbacks"])

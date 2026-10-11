@@ -47,6 +47,7 @@
 | ~~Quest failure paths~~ | `quest_abandon` runs OnAbandon (releases + state reset) and respects the `abandonable` flag; `run_quest_on_fail` still has no caller — no OnFail hook |
 | ~~Conversation battle callbacks~~ | ✅ the 13 conversation pairs in the 33-row `callback_battles` table fire through `Campaign.execute_callback` from `pq_conv_gfx`'s scriptcall step — headless fight, stage/capture/spoils settle, Victory/Defeat banner |
 | Conversation callbacks | ✅ every scriptcall applies its extracted `callback_effects` first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then its 33-row-table fight; reward reattribution keeps callback grants out of the turn-in buckets. The two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5's CallbackConvE, QU02's CallbackConvB) fire from `execute_callback`; the 94 OnExecuteAction / 50 OnCompleteAction conversation sites run through the location-action API (map Actions tab + demo driver) |
+| Dual-arm message boxes | Where a branch keys on something the group key cannot hold (`QUEST_HERO_HAS_COMPANION_SELECTED`, e.g. QS00's arrival and QK06's execute), both arms' boxes sit in the same (questState, idLocation) group and the port queues both where Lua posts one - the arm-exclusion rule removed the duplicate *copies* a twin site injected, but picking the live arm needs a runtime condition on party membership. QS02-style success/failure arms are fine: the success bit is in the key |
 
 ### 2. Ruins & Companion Capture
 | Gap | Details |

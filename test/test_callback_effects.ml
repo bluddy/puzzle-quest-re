@@ -124,6 +124,44 @@ check "callback rewards left the turn-in buckets"
   ((quest "Q0T0").Campaign_quests.reward_items = []
    && (quest "Q0Q4").Campaign_quests.reward_companions = []);
 
+(* Message rows: an assignment in a sibling arm of a branch open at the
+   site is dead there - without that rule each site picked up its twin's
+   text and queued a box Lua never shows. *)
+let q3q6 = quest "Q3Q6" in
+check "Q3Q6's success group carries one box - the callback one"
+  (List.map (fun (_, _, _, e) -> e)
+     (List.filter (fun (st, suc, _, _) -> st = 1 && suc = 1)
+        q3q6.Campaign_quests.complete_effects)
+  = [ [ Campaign_quests.ShowMessage
+          ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", "CallbackMsgA");
+        Campaign_quests.SetQuestState 2 ] ]);
+
+let q1q0 = quest "Q1Q0" in
+check "Q1Q0 keeps its failure box and only at the wildcard state"
+  (List.filter (fun (_, suc, _, _) -> suc = 0)
+     q1q0.Campaign_quests.complete_effects
+  = [ (-1, 0, "",
+        [ Campaign_quests.ShowMessage
+            ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "") ]) ]);
+
+let qk06 = quest "QK06" in
+check "QK06's execute group drops the sibling-arm NOCOMP copy"
+  (List.map (fun (_, _, e) -> e) qk06.Campaign_quests.execute_effects
+   = [ [ Campaign_quests.ShowMessage
+           ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "");
+         Campaign_quests.ShowMessage
+           ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA") ] ]);
+
+let qs00 = quest "QS00" in
+check "QS00's arrival keeps one box per arm, no NOCOMP twin"
+  (List.map (fun (_, _, e) -> e) qs00.Campaign_quests.enter_effects
+   = [ [ Campaign_quests.ShowMessage
+           ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "");
+         Campaign_quests.ShowMessage
+           ("[QUEST_QS00_NAME]", "[QUEST_QS00_PRELUDE]", "ConvB") ];
+       [ Campaign_quests.ShowMessage
+           ("[QUEST_QS00_NAME]", "[QUEST_QS00_REENTER]", "") ] ]);
+
 check "location-action conversations live in the execute/complete groups"
   (List.exists
      (fun (q : Campaign_quests.quest) ->

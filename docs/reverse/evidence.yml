@@ -3965,10 +3965,15 @@ port_decisions:
       first-match would drop the stage advance and the turn-in that Q0Q0
       and Q1G3 perform in a single event. The third message argument is the
       display anchor (idLocation/myLocation), not a guard - forcing it as
-      one broke Q1E0's SUCCESS2/FAILURE2 boxes. A caller-driven
-      complete_action keeps the battle settle decoupled, matching the
-      quest_battle_complete separation, and campaign_demo walks Q0I2's
-      whole chain as the reference driver.
+      one broke Q1E0's SUCCESS2/FAILURE2 boxes. A message row only comes
+      from an assignment in the same branch arm as its site: an assignment
+      in a sibling arm of a branch open at the site is dead there, so two
+      sites inside one if/else no longer pick up each other's text (the
+      rule that removed the duplicate SUCCESS1/NOCOMP boxes Q3Q6, QK06,
+      QS02 and the phantom FAILURE copies Q1Q0/Q3Q2 carried). A
+      caller-driven complete_action keeps the battle settle decoupled,
+      matching the quest_battle_complete separation, and campaign_demo
+      walks Q0I2's whole chain as the reference driver.
     supersedes: null
     date: 2026-10-09
 

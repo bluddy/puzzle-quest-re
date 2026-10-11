@@ -12858,7 +12858,7 @@ let quests = [
     query_actions = [(1, "WRMO", "[QUEST_Q1Q0_ACTION]"); (2, "WRMO", "[QUEST_Q1Q0_ACTION]"); (1, "WSFA", "[QUEST_Q1Q0_ACTION]"); (2, "WSFA", "[QUEST_Q1Q0_ACTION]"); (1, "WBHE", "[QUEST_Q1Q0_ACTION]"); (2, "WBHE", "[QUEST_Q1Q0_ACTION]"); (1, "WWSK", "[QUEST_Q1Q0_ACTION]"); (2, "WWSK", "[QUEST_Q1Q0_ACTION]"); (3, "CDKO", "[QUEST_Q1Q0_RETURN]")];
     enter_effects = [(-1, "WBHE", [Conversation "Conv_Q1Q0b"])];
     execute_effects = [(3, "", [Complete])];
-    complete_effects = [(-1, 0, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "")]); (1, 0, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "")]); (2, 0, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "")]); (1, 1, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP2]", ""); SetQuestState 2; ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP3]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP4]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP5]", ""); SetQuestState 3]); (2, 1, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP2]", ""); SetQuestState 2; ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP3]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP4]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP5]", ""); SetQuestState 3])];
+    complete_effects = [(-1, 0, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "")]); (1, 1, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP2]", ""); SetQuestState 2; ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP3]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP4]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP5]", ""); SetQuestState 3]); (2, 1, "", [ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP2]", ""); SetQuestState 2; ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP3]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP4]", ""); ShowMessage ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_STEP5]", ""); SetQuestState 3])];
     end_effects = [(-1, "", [SetQuestState 3])];
   };
   {
@@ -15366,7 +15366,7 @@ let quests = [
     query_actions = [(1, "CDRH", "[QUEST_Q1Q8_ACTION]"); (2, "CDRH", "[QUEST_Q1Q8_ACTION1]")];
     enter_effects = [];
     execute_effects = [(1, "", [ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_MSGA]", "CallbackMsgA")]); (2, "", [ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_MSGB]", "CallbackMsgB")])];
-    complete_effects = [(2, 1, "", [ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_MSGC]", "CallbackMsgC"); ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_MSGC]", "")]); (2, 0, "", [ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_FAILURE]", "")])];
+    complete_effects = [(2, 1, "", [ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_MSGC]", "CallbackMsgC")]); (2, 0, "", [ShowMessage ("[QUEST_Q1Q8_NAME]", "[QUEST_Q1Q8_FAILURE]", "")])];
     end_effects = [(-1, "", [SetQuestState 3])];
   };
   {
@@ -16861,7 +16861,7 @@ let quests = [
     query_actions = [(1, "RUML", "[QUEST_Q1R3_ACTION]"); (1, "RCBL", "[QUEST_Q1R3_ACTION]"); (1, "RMOL", "[QUEST_Q1R3_ACTION]"); (2, "CDRH", "[QUEST_Q1R3_RETURN]")];
     enter_effects = [];
     execute_effects = [(1, "RUML", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGA]", "CallbackMsgA")]); (1, "RCBL", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGB]", "CallbackMsgB")]); (1, "RMOL", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGC]", "CallbackMsgC")]); (2, "", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGE]", "CallbackMsgE")])];
-    complete_effects = [(1, 1, "RUML", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGD]", "CallbackMsgD"); ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGD]", "")]); (1, 0, "RUML", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_FAILURE]", "")]); (2, 1, "", [Conversation "Conv_Q1R3b"]); (2, 0, "", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_FAILURE]", "")])];
+    complete_effects = [(1, 1, "RUML", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_MSGD]", "CallbackMsgD")]); (1, 0, "RUML", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_FAILURE]", "")]); (2, 1, "", [Conversation "Conv_Q1R3b"]); (2, 0, "", [ShowMessage ("[QUEST_Q1R3_NAME]", "[QUEST_Q1R3_FAILURE]", "")])];
     end_effects = [(-1, "", [SetQuestState 3])];
   };
   {
@@ -33388,7 +33388,7 @@ let quests = [
     query_actions = [(-1, "CYLA", "[QUEST_Q3Q2_ACTION]")];
     enter_effects = [];
     execute_effects = [];
-    complete_effects = [(-1, 0, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_FAILURE]", "")]); (1, 0, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_FAILURE]", "")]); (2, 0, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_FAILURE]", "CallbackMsg2")]); (3, 0, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_FAILURE]", "CallbackMsg3")]); (1, 1, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_SUCCESS1]", ""); SetQuestState 2]); (2, 1, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_SUCCESS2]", "CallbackMsg2")]); (3, 1, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_SUCCESS3]", "CallbackMsg3")]); (4, 1, "", [Conversation "Conv_Q3Q2d"])];
+    complete_effects = [(-1, 0, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_FAILURE]", "")]); (1, 1, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_SUCCESS1]", ""); SetQuestState 2]); (2, 1, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_SUCCESS2]", "CallbackMsg2")]); (3, 1, "", [ShowMessage ("[QUEST_Q3Q2_NAME]", "[QUEST_Q3Q2_SUCCESS3]", "CallbackMsg3")]); (4, 1, "", [Conversation "Conv_Q3Q2d"])];
     end_effects = [(-1, "", [SetQuestState 5])];
   };
   {
@@ -34019,7 +34019,7 @@ let quests = [
     query_actions = [(1, "WBBR", "[QUEST_Q3Q4_ACTION1]"); (2, "WBBR", "[QUEST_Q3Q4_ACTION2]"); (3, "CYLA", "[QUEST_Q3Q4_ACTION3]")];
     enter_effects = [];
     execute_effects = [(3, "", [Conversation "Conv_Q3Q4c"])];
-    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_SUCCESS1]", "CallbackMsgA"); ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_SUCCESS1]", ""); SetQuestState 2]); (1, 0, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_FAILURE1]", "")]); (2, 1, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_SUCCESS2]", ""); SetQuestState 3]); (2, 0, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_FAILURE2]", "")])];
+    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_SUCCESS1]", "CallbackMsgA"); SetQuestState 2]); (1, 0, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_FAILURE1]", "")]); (2, 1, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_SUCCESS2]", ""); SetQuestState 3]); (2, 0, "", [ShowMessage ("[QUEST_Q3Q4_NAME]", "[QUEST_Q3Q4_FAILURE2]", "")])];
     end_effects = [(-1, "", [SetQuestState 4])];
   };
   {
@@ -34772,7 +34772,7 @@ let quests = [
     query_actions = [(1, "CLBC", "[QUEST_Q3Q6_ACTION1]"); (2, "CLBC", "[QUEST_Q3Q6_ACTION2]")];
     enter_effects = [];
     execute_effects = [];
-    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", "CallbackMsgA"); ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", ""); SetQuestState 2]); (1, 0, "", [ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_FAILURE1]", "")]); (2, 1, "", [Conversation "Conv_Q3Q6c"; Conversation "Conv_Q3Q6cc"]); (2, 0, "", [ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_FAILURE2]", "")])];
+    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", "CallbackMsgA"); SetQuestState 2]); (1, 0, "", [ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_FAILURE1]", "")]); (2, 1, "", [Conversation "Conv_Q3Q6c"; Conversation "Conv_Q3Q6cc"]); (2, 0, "", [ShowMessage ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_FAILURE2]", "")])];
     end_effects = [(-1, "", [SetQuestState 3])];
   };
   {
@@ -40856,7 +40856,7 @@ let quests = [
     callback_effects = [("CallbackConvA", [SetQuestState 1]); ("CallbackConvB", [Complete])];
     query_actions = [(1, "CKUN", "[QUEST_QK06_ACTION]")];
     enter_effects = [];
-    execute_effects = [(1, "", [ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", ""); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "MsgCallbackA"); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA")])];
+    execute_effects = [(1, "", [ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", ""); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA")])];
     complete_effects = [(1, 1, "", [Conversation "Conv_QK05b"]); (1, 0, "", [ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_FAILURE]", "")])];
     end_effects = [(-1, "", [SetQuestState 2])];
   };
@@ -42136,7 +42136,7 @@ let quests = [
     conversation_callbacks = [("ConvB", ["Conv_QS00b"])];
     callback_effects = [("CallbackConvA", [SetQuestState 1]); ("CallbackConvB", [SetQuestState 2]); ("CompleteQ", [Complete]); ("ConvB", [Conversation "Conv_QS00b"])];
     query_actions = [(1, "CENM", "[QUEST_QS00_RETCOMP]"); (2, "CENM", "[QUEST_QS00_ACTION]")];
-    enter_effects = [(1, "CENM", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", ""); ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "ConvB"); ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_PRELUDE]", "ConvB")]); (2, "CENM", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_REENTER]", "")])];
+    enter_effects = [(1, "CENM", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", ""); ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_PRELUDE]", "ConvB")]); (2, "CENM", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_REENTER]", "")])];
     execute_effects = [(1, "CENM", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "")])];
     complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_REWARD]", "CompleteQ")]); (2, 1, "", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_REWARD]", "CompleteQ")]); (1, 0, "", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_FAILURE]", "CompleteQ")]); (2, 0, "", [ShowMessage ("[QUEST_QS00_NAME]", "[QUEST_QS00_FAILURE]", "CompleteQ")])];
     end_effects = [(-1, "", [SetQuestState 3])];
@@ -42814,7 +42814,7 @@ let quests = [
     query_actions = [];
     enter_effects = [(-1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_BATTLE]", "Battle")])];
     execute_effects = [];
-    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", "ConvB"); ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", "")]); (1, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")]); (2, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "ConvC"); ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "")]); (2, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")])];
+    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", "ConvB")]); (1, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")]); (2, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "ConvC")]); (2, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")])];
     end_effects = [(-1, "", [SetQuestState 4])];
   };
   {
