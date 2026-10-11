@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Forged items landed (`port.rune_item_mint`): `forge_item` mints the spec into a real inventory item - id "R" ^ base ^ modifier ^ power (self-describing, so a loaded save rebuilds one without the session registry), name/icon from the 150-row table, slot from the base, power text both abilities with the data filled - and `loadout_of_equipment` resolves minted ids into runtime items whose JXXX hooks ride the existing machinery: OnGiveDamage (bases 0/1/9 add BASEDATA on 3+/3+/6+ hits) folds through the battle's damage pass, and the OnStartBattle payoffs (powers 0-4: mana or max life) register per-item in `Item_hooks.rune_start_payoffs`. A duplicate triple yields no extra copy ([RUNEDUP_TEXT]); the bodies that need absent machinery stay quiet (base D's full-pool caps, base E's reflect outside the damage-transform signature, powers 9/A's per-event percentile, and the skill/resist/victory/match hooks battle never invokes). The forge UI, the runekeeper surface and the [MAXRUNEITEM] cap remain open. All 34 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. The forge UI and the runekeeper surface landed (`port.forge_ui`). The city panel gained a **Forge** tab (`[FORGEITEMS]`, cycling after Pets): the held runes list with their kind tags, click fills or clears one of three slots, the status line shows the triple with its `[FORGEITEMS_TARGET*]` difficulty band (`forge_band` - ten equal sixty-point steps, the exe's thresholds unrecovered), and the centred forge button forges through `forge_item` ([FORGEITEMS_SUCCESS] + the minted name). Forging is instant - the skill game `[FORGEITEMS_FAIL]` expects is not ported, and the [FORGEITEMS_HELP0] citadel-building gate rides the unported buildings system. The world side: clicking the node you stand on when a rune's drop sits there opens the keeper popup ([RUNEKEEPER] as a synthetic encounter against the guard monster); winning claims through `claim_rune` ([RUNE_SUCCESS]), losing leaves it claimable. All 34 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -102,6 +102,14 @@
   outside the damage-transform signature, a per-event percentile, and the
   hook kinds battle never invokes) and stay quiet, the way [Item_hooks]
   documents the same absences for fixed items.
+  The surfaces followed (`port.forge_ui`): the city's Forge tab picks the
+  triple from the held runes and shows the `[FORGEITEMS_TARGET*]` band
+  before the centred forge button (`forge_band`, ten equal sixty-point
+  steps - the exe's thresholds are not recovered), and clicking the rune
+  node you stand on opens the keeper popup - the guard monster under
+  [RUNEKEEPER] - whose win claims the rune through `claim_rune`. The
+  skill game `[FORGEITEMS_FAIL]` expects and the [FORGEITEMS_HELP0]
+  building gate stay open.
 - **Companions (NEW):** `lib/campaign_companion_hooks.ml` ports the ten
   `OnStartBattle` bodies from `Assets/Companions/*.lua` into one rule table -
   CHECK_TYPE guards over the monster's type tags, NPAT's percentile roll plus
@@ -155,7 +163,7 @@
 - **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (84),
   `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101),
   `test/test_callback_effects.ml` (24), `test/test_location_actions.ml` (30)
-  and `test/test_runes.ml` (48) - 569
+  and `test/test_runes.ml` (59) - 580
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -185,7 +193,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 90 | 10 (4 open) | 38 |
+| `docs/reverse/evidence.yml` | 90 | 10 (4 open) | 39 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location

@@ -132,7 +132,17 @@ let () =
   check "the panel body is elsewhere"
     (City_layout.hit 400 100 = City_layout.Elsewhere);
   check "right of the buttons is elsewhere"
-    (City_layout.hit 1000 420 = City_layout.Elsewhere)
+    (City_layout.hit 1000 420 = City_layout.Elsewhere);
+  check "the forge button sits between the other two"
+    (City_layout.forge_btn.Layout.x = 273
+    && City_layout.forge_btn.Layout.y = 402
+    && City_layout.forge_btn.Layout.w = 160
+    && City_layout.forge_btn.Layout.h = 50);
+  check "a click on it reads Forge" (City_layout.hit 300 420 = City_layout.Forge);
+  check "its edges are exclusive"
+    (City_layout.hit 272 420 = City_layout.Elsewhere
+    && City_layout.hit 433 420 = City_layout.Elsewhere
+    && City_layout.hit 300 452 = City_layout.Elsewhere)
 
 let () =
   if !failures = 0 then print_endline "all map view tests passed"

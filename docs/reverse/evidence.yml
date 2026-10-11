@@ -4249,3 +4249,39 @@ port_decisions:
       any item. The [MAXRUNEITEM] cap and the forge UI stay open with it.
     supersedes: null
     date: 2026-10-10
+
+  - id: port.forge_ui
+    decision: >
+      The forge lives in the city panel as a Forge tab cycling after Pets:
+      the held runes list with kind tags, a click fills or clears one of
+      three slots (base, modifier, power), the status line shows the
+      triple with its [FORGEITEMS_TARGET*] difficulty band, and the
+      centred forge button - City_layout.forge_btn between Done and the
+      mode button - forges through forge_item. Forging is instant. The
+      world side is the node you stand on: a rune's location click opens
+      the keeper popup, the guard monster as a synthetic encounter under
+      [RUNEKEEPER], and winning claims through claim_rune.
+    rationale: >
+      SelectRuneMenu's own furniture (three rune columns, OKAY, the
+      str_target difficulty line) maps onto the port's tab pattern the
+      way the Pets tab did, and the ten equal sixty-point bands behind
+      forge_band are a port choice because the exe's thresholds are not
+      recovered - every shipped combination lands between 100 and 600, so
+      the bands at least separate the gifted triple (100) from a
+      UDAG+UGOD pairing (450). Forging is instant because the skill game
+      [FORGEITEMS_FAIL] implies is not ported for any system yet (spell
+      research has the same shape); the failure string therefore stays
+      unused, and [FORGEITEMS_HELP0]'s "build a Forge" gate rides the
+      citadel-building system the port has not modelled - the shop's own
+      precedent, since buy_item is not building-gated either. The keeper
+      fight reuses the road popup wholesale: the encounter type is a
+      sprite and a level, so the synthetic record (id RUNEKEEPER, the
+      guard's sprite and level_base, the node as its end_) runs through
+      run_encounter_battle and process_battle_result like any road fight,
+      which also means a keeper win can offer the guard to the capture
+      minigame like any other win. Clicking the standing node is the
+      trigger because arrival is already a busy moment (the enter_location
+      queue) and the port's map has no hover affordance - the console
+      line tells the player the keeper is there.
+    supersedes: null
+    date: 2026-10-10

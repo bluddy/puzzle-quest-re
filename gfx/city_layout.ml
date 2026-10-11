@@ -12,6 +12,9 @@ type hit =
           shop, next rumor in the tavern. *)
   | Tab
       (** The mode button: the next city tab. *)
+  | Forge
+      (** The forge button, shown only on the Forge tab - the hit test is
+          tab-agnostic and the caller checks. *)
   | Leave
       (** Done: back to the map. *)
   | Elsewhere
@@ -39,6 +42,10 @@ let row_w = 480
 let mode_btn : Layout.rect = { Layout.x = 60; y = 402; w = 160; h = 50 }
 let done_btn : Layout.rect = { Layout.x = 486; y = 402; w = 160; h = 50 }
 
+(** The forge button, centred between the other two - SelectRuneMenu's
+    [OKAY] in the port's tab furniture. *)
+let forge_btn : Layout.rect = { Layout.x = 273; y = 402; w = 160; h = 50 }
+
 let in_rect (r : Layout.rect) (mx : int) (my : int) : bool =
   mx >= r.Layout.x && mx < r.Layout.x + r.Layout.w
   && my >= r.Layout.y && my < r.Layout.y + r.Layout.h
@@ -47,6 +54,7 @@ let in_rect (r : Layout.rect) (mx : int) (my : int) : bool =
     the rows, but a rectangle is only ever in one place. *)
 let hit (mx : int) (my : int) : hit =
   if in_rect done_btn mx my then Leave
+  else if in_rect forge_btn mx my then Forge
   else if in_rect mode_btn mx my then Tab
   else
     let dy = my - row_y0 in

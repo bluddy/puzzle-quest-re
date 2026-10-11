@@ -311,6 +311,47 @@ let () =
        false
      with Not_found -> true)
 
+(* ------------------------------------------------------------------ *)
+(* 6. The forge list, the difficulty bands, the keeper fight          *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  let g = fresh () in
+  check "the held list is the gifted three, in registry order"
+    (List.map Campaign_runes.rune_id (Campaign.held_runes g)
+    = [ "UDAG"; "UCRA"; "UFIR" ]);
+  let p = { g with Campaign.current_city = Some "WSGK" } in
+  let claimed =
+    match Campaign.claim_rune p "USWO" with
+    | Some q -> q
+    | None -> failwith "claim failed"
+  in
+  check "a claimed rune joins the held list in kind order"
+    (List.map Campaign_runes.rune_id (Campaign.held_runes claimed)
+    = [ "UDAG"; "USWO"; "UCRA"; "UFIR" ]);
+  check "the node answers its rune"
+    (Campaign.rune_at_node "WSGK" = Some "USWO");
+  check "a node with no rune answers nothing"
+    (Campaign.rune_at_node "CGAL" = None && Campaign.rune_at_node "" = None);
+  (match Campaign.runekeeper_encounter "USWO" with
+  | Some enc ->
+      check "the keeper fights the guard under the RUNEKEEPER name"
+        (enc.Campaign_encounters.description = "Runekeeper"
+        && enc.Campaign_encounters.sprite
+           = (Campaign_monsters.monster_by_id "MWIG").Campaign_monsters.sprite
+        && enc.Campaign_encounters.my_level
+           = (Campaign_monsters.monster_by_id "MWIG")
+               .Campaign_monsters.level_base
+        && enc.Campaign_encounters.end_ = "WSGK")
+  | None -> check "the keeper fights the guard under the RUNEKEEPER name" false);
+  check "a gifted rune has no keeper fight"
+    (Campaign.runekeeper_encounter "UDAG" = None);
+  check_int "the band floor is Easy" (Campaign.forge_band 0) 0;
+  check_int "100 lands one band up" (Campaign.forge_band 100) 1;
+  check_int "bands step by sixty" (Campaign.forge_band 240) 4;
+  check_int "the ceiling is the last band" (Campaign.forge_band 600) 9;
+  check_int "and clamps past it" (Campaign.forge_band 900) 9
+
 let () =
   if !failures = 0 then print_endline "all rune tests passed"
   else begin

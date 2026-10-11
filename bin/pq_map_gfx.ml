@@ -63,12 +63,15 @@ let load_segments () : ((int * int) * Gl.texture option) list =
              in
              ((r, c), tex))))
 
-type city_tab = Shop | Spells | Tavern | Actions | Companions | Pets
+type city_tab = Shop | Spells | Tavern | Actions | Companions | Pets | Forge
 
 type city_view = {
   cid : string;
   mutable tab : city_tab;
   mutable rumor : int;
+  mutable forge_base : string option;  (** the triple the forge tab holds *)
+  mutable forge_mod : string option;
+  mutable forge_pow : string option;
 }
 
 type ui = {
@@ -79,6 +82,8 @@ type ui = {
   mutable player : Campaign.player;
   mutable journey : Campaign.travel_state option;
   mutable popup : Campaign_encounters.encounter option;
+  mutable popup_rune : string option;
+      (** the rune the popup's Runekeeper guards, if this is that fight *)
   mutable city : city_view option;
   conv : Conv_window.state;  (* hosted dialogue over the map, always present *)
   mutable pending : (string * string) option;  (* (qid, loc): action awaiting complete *)
@@ -146,7 +151,8 @@ let next_tab (t : city_tab) : city_tab =
   | Tavern -> Actions
   | Actions -> Companions
   | Companions -> Pets
-  | Pets -> Shop
+  | Pets -> Forge
+  | Forge -> Shop
 
 let tab_label (t : city_tab) : string =
   match t with
@@ -156,9 +162,13 @@ let tab_label (t : city_tab) : string =
   | Actions -> "Actions"
   | Companions -> Text_data.text "[COMPANIONS]"
   | Pets -> Text_data.text "[PETS]"
+  | Forge -> Text_data.text "[FORGEITEMS]"
 
 let open_city (ui : ui) (cid : string) : unit =
-  ui.city <- Some { cid; tab = Shop; rumor = 0 };
+  ui.city <-
+    Some
+      { cid; tab = Shop; rumor = 0; forge_base = None; forge_mod = None;
+        forge_pow = None };
   Printf.printf "  entered %s\n"
     (Text_data.text (Campaign_map.city_by_id cid).Campaign_map.name_text);
   flush stdout
@@ -212,6 +222,26 @@ let monster_name (id : string) : string =
   try
     Text_data.text (Campaign_monsters.monster_by_id id).Campaign_monsters.name_text
   with Not_found -> id
+
+(** The forge tab's rows: the held runes in registry order, each tagged     with the slot it fills. *)
+let rune_rows (p : Campaign.player) :
+    [ `Base of string | `Mod of string | `Pwr of string ] list =
+  List.map
+    (fun (k : Campaign_runes.rune_kind) ->
+      match k with
+      | Campaign_runes.Base_rune r -> `Base r.Campaign_runes.id
+      | Campaign_runes.Modifier_rune r -> `Mod r.Campaign_runes.id
+      | Campaign_runes.Power_rune r -> `Pwr r.Campaign_runes.id)
+    (Campaign.held_runes p)
+
+(** A rune's display name; the tables all carry a name tag. *)
+let rune_display (id : string) : string =
+  Text_data.text
+    (match Campaign_runes.rune_by_id id with
+    | Some (Campaign_runes.Base_rune r) -> r.Campaign_runes.name_text
+    | Some (Campaign_runes.Modifier_rune r) -> r.Campaign_runes.name_text
+    | Some (Campaign_runes.Power_rune r) -> r.Campaign_runes.name_text
+    | None -> id)
 
 (** Fill a recovered %s in a runtime string - Printf.sprintf will not take     a tag that only becomes a format after Text_data resolves it. *)
 let fill1 (pat : string) (arg : string) : string =
@@ -327,11 +357,46 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
           | Some (`Held mid) ->
               Printf.printf "  %s: %s\n" (monster_name mid)
                 (Text_data.text "[PETS_HELP]");
-              flush stdout))
+              flush stdout)
+      | Forge -> (
+          (* Clicking a held rune fills its slot; clicking it again clears
+             it - the picker SelectRuneMenu runs over three columns. *)
+          match List.nth_opt (rune_rows ui.player) i with
+          | None -> ()
+          | Some (`Base id) ->
+              cv.forge_base <-
+                (if cv.forge_base = Some id then None else Some id)
+          | Some (`Mod id) ->
+              cv.forge_mod <-
+                (if cv.forge_mod = Some id then None else Some id)
+          | Some (`Pwr id) ->
+              cv.forge_pow <-
+                (if cv.forge_pow = Some id then None else Some id)))
+  | City_layout.Forge ->
+      if cv.tab <> Forge then ()
+      else (
+        match (cv.forge_base, cv.forge_mod, cv.forge_pow) with
+        | Some b, Some m, Some w -> (
+            match Campaign.forge_item ui.player ~base:b ~modifier:m ~power:w with
+            | Some (player, it) ->
+                ui.player <- player;
+                cv.forge_base <- None;
+                cv.forge_mod <- None;
+                cv.forge_pow <- None;
+                Printf.printf "  %s %s\n"
+                  (Text_data.text "[FORGEITEMS_SUCCESS]")
+                  (Text_data.text it.Campaign_items.name_text);
+                flush stdout
+            | None ->
+                Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_FAIL]");
+                flush stdout)
+        | _ ->
+            Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_3RUNES]");
+            flush stdout)
   | City_layout.Elsewhere -> (
       match cv.tab with
       | Tavern -> advance_rumor cv
-      | Shop | Spells | Actions | Companions | Pets -> ())
+      | Shop | Spells | Actions | Companions | Pets | Forge -> ())
 
 (** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
 let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
@@ -476,9 +541,63 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
            (string_of_int (List.length ui.player.Campaign.captives))
            (string_of_int (List.length Campaign_monsters.monsters)))
         City_layout.row_x
-        (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8));
+        (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8)
+  | Forge ->
+      List.iteri
+        (fun i row ->
+          if i < City_layout.max_rows then begin
+            let id, kind, selected =
+              match row with
+              | `Base id -> (id, "base", cv.forge_base = Some id)
+              | `Mod id -> (id, "modifier", cv.forge_mod = Some id)
+              | `Pwr id -> (id, "power", cv.forge_pow = Some id)
+            in
+            let col =
+              if selected then Layout.rgb 240 210 90
+              else Layout.rgb 230 230 230
+            in
+            text ~colour:col
+              (rune_display id)
+              (City_layout.row_x + 30) (row_y i + 3);
+            let w = measure kind in
+            text ~colour:col kind
+              (City_layout.row_x + City_layout.row_w - w - 8) (row_y i + 3)
+          end)
+        (rune_rows ui.player);
+      let status =
+        match (cv.forge_base, cv.forge_mod, cv.forge_pow) with
+        | Some b, Some m, Some w -> (
+            match
+              Campaign.forge_rune ui.player ~base:b ~modifier:m ~power:w
+            with
+            | Some s ->
+                (* the tag is a literal here - the runtime-format rule is
+                   about tags that only become formats after Text_data *)
+                Printf.sprintf "%s / %s / %s - %s"
+                  (rune_display b) (rune_display m) (rune_display w)
+                  (Text_data.text
+                     (Printf.sprintf "[FORGEITEMS_TARGET%d]"
+                        (Campaign.forge_band s.Campaign.difficulty)))
+            | None -> Text_data.text "[FORGEITEMS_3RUNES]")
+        | _ -> Text_data.text "[FORGEITEMS_3RUNES]"
+      in
+      text ~colour:(Layout.rgb 150 150 160) status City_layout.row_x
+        (City_layout.row_y0
+        + (City_layout.max_rows * City_layout.row_step)
+        + 8);
+      let held = List.length (rune_rows ui.player) in
+      if held > City_layout.max_rows then
+        text ~colour:(Layout.rgb 150 150 160)
+          (Printf.sprintf "(%d more - not visible)"
+             (held - City_layout.max_rows))
+          City_layout.row_x
+          (City_layout.row_y0
+          + ((City_layout.max_rows + 1) * City_layout.row_step)
+          + 8));
   solid rs gl City_layout.mode_btn (Layout.rgb 44 48 60);
   solid rs gl City_layout.done_btn (Layout.rgb 44 48 60);
+  if cv.tab = Forge then
+    solid rs gl City_layout.forge_btn (Layout.rgb 44 48 60);
   (match (f, sys) with
   | Some ff, Some m ->
       let l1 = tab_label (next_tab cv.tab) in
@@ -496,7 +615,18 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
             ~x:
               (City_layout.done_btn.Layout.x
               + ((City_layout.done_btn.Layout.w - Font_layout.measure m l2) / 2))
-            ~y:(City_layout.done_btn.Layout.y + 16)
+            ~y:(City_layout.done_btn.Layout.y + 16);
+      if cv.tab = Forge then begin
+        let l3 = Text_data.text "[FORGEITEMS]" in
+        rs :=
+          !rs
+          @ Font.draw gl ff m l3
+              ~x:
+                (City_layout.forge_btn.Layout.x
+                + ((City_layout.forge_btn.Layout.w - Font_layout.measure m l3)
+                  / 2))
+              ~y:(City_layout.forge_btn.Layout.y + 16)
+      end
   | _ -> ())
 
 (* The capture minigame over everything: CaptureMenu.xml's grid as flat gem
@@ -653,7 +783,11 @@ let draw ?(present = true) (ui : ui) : unit =
       (match (ui.fonts, ui.system) with
       | Some f, Some m ->
           let title =
-            "The " ^ enc.Campaign_encounters.description ^ " blocks the road!"
+            match ui.popup_rune with
+            | Some _ -> "A Runekeeper guards a rune here!"
+            | None ->
+                "The " ^ enc.Campaign_encounters.description
+                ^ " blocks the road!"
           in
           rs :=
             !rs
@@ -750,7 +884,20 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
             Printf.printf "  the %s can be captured - swap two gems, or Cancel\n"
               enc.Campaign_encounters.description;
             flush stdout
-        | None -> ())
+        | None -> ());
+      (* A won keeper fight claims the rune it guards ([RUNE_HELP]). *)
+      (match ui.popup_rune with
+      | Some rid ->
+          ui.popup_rune <- None;
+          if result.Campaign.player_won then
+            (match Campaign.claim_rune ui.player rid with
+            | Some p' ->
+                ui.player <- p';
+                Printf.printf "  %s %s\n" (Text_data.text "[RUNE_SUCCESS]")
+                  (Text_data.text (rune_display rid));
+                flush stdout
+            | None -> ())
+      | None -> ())
   | None ->
       if Conv_window.busy ui.conv then begin
         Conv_window.handle_click ui.conv mx my;
@@ -779,13 +926,27 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                 | None -> ""
               in
               if id = here then
-                (* Clicking the city you stand in opens it - the city click     the screen exists for. Waypoints just say where you already are. *)
+                (* Clicking the city you stand in opens it - the city click     the screen exists for. A rune node offers its keeper; waypoints     otherwise just say where you already are. *)
                 match Hashtbl.find_opt Campaign.map_nodes id with
                 | Some n when n.Campaign.kind = Campaign.City ->
                     open_city ui id
-                | _ ->
-                    Printf.printf "  already at %s\n" id;
-                    flush stdout
+                | _ -> (
+                    match Campaign.rune_at_node id with
+                    | Some rid when Campaign.rune_claimable ui.player rid -> (
+                        match Campaign.runekeeper_encounter rid with
+                        | Some enc ->
+                            ui.popup <- Some enc;
+                            ui.popup_rune <- Some rid;
+                            Printf.printf
+                              "  a Runekeeper guards a rune here - click to \
+                               fight!\n";
+                            flush stdout
+                        | None ->
+                            Printf.printf "  already at %s\n" id;
+                            flush stdout)
+                    | _ ->
+                        Printf.printf "  already at %s\n" id;
+                        flush stdout)
               else
                 match Campaign.begin_travel ui.player here id with
                 | None ->
@@ -799,6 +960,7 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                     (match Campaign.road_encounter ui.player here id with
                     | Some enc ->
                         ui.popup <- Some enc;
+                        ui.popup_rune <- None;
                         Printf.printf "  %s stops you on the road!\n"
                           enc.Campaign_encounters.description;
                         flush stdout
@@ -898,7 +1060,7 @@ let () =
   let ui =
     { gl; segments; fonts; system;
       player = hero;
-      journey = None; popup = None; city = None;
+      journey = None; popup = None; popup_rune = None; city = None;
       conv = Conv_window.create ~gl ~fonts ~system ~player:hero;
       pending = None;
       capture = None;

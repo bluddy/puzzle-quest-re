@@ -728,6 +728,60 @@ let claim_rune (p: player) (rune_id: string) : player option =
     Some { p with runes = rune_id :: p.runes }
   else None
 
+(* Every rune the hero holds, registry order - bases, then modifiers,
+   then powers - the way the forge list shows them. *)
+let held_runes (p: player) : Campaign_runes.rune_kind list =
+  List.filter
+    (fun k -> List.mem (Campaign_runes.rune_id k) p.runes)
+    (List.map (fun r -> Campaign_runes.Base_rune r) Campaign_runes.base_runes
+     @ List.map
+         (fun r -> Campaign_runes.Modifier_rune r)
+         Campaign_runes.modifier_runes
+     @ List.map (fun r -> Campaign_runes.Power_rune r) Campaign_runes.power_runes)
+
+(* The rune whose world drop sits at this node, if any: the 35 guarded
+   runes each own their location, so a node answers one. *)
+let rune_at_node (node: string) : string option =
+  if node = "" then None
+  else
+    List.find_map
+      (fun k ->
+        if Campaign_runes.rune_location k = node then
+          Some (Campaign_runes.rune_id k)
+        else None)
+      (List.map (fun r -> Campaign_runes.Base_rune r) Campaign_runes.base_runes
+       @ List.map
+           (fun r -> Campaign_runes.Modifier_rune r)
+           Campaign_runes.modifier_runes
+       @ List.map
+           (fun r -> Campaign_runes.Power_rune r)
+           Campaign_runes.power_runes)
+
+(* The guardian fight at a rune's node, as a road encounter: the shipped
+   encounter type is a sprite and a level, so the keeper fight is the
+   guard monster under the [RUNEKEEPER] name. *)
+let runekeeper_encounter (rune_id: string) : encounter option =
+  match Campaign_runes.rune_by_id rune_id with
+  | None -> None
+  | Some k -> (
+    let guard = Campaign_runes.rune_guard k in
+    if guard = "" then None
+    else
+      try
+        let m = Campaign_monsters.monster_by_id guard in
+        Some
+          { Campaign_encounters.id = "RUNEKEEPER";
+            description = Text_data.text "[RUNEKEEPER]";
+            start = "";
+            end_ = Campaign_runes.rune_location k;
+            index = 0;
+            sprite = m.Campaign_monsters.sprite;
+            lua_file = "";
+            lua_object = "";
+            my_level = m.Campaign_monsters.level_base;
+            chance = 0 }
+      with Not_found -> None)
+
 (* What the forge builds from three held runes. The (base, modifier) pair
    picks the item's name and icon from the shipped 150-row table, the base
    its slot (position), and the modifier edits both data values exactly as
@@ -792,6 +846,13 @@ let forge_rune (p: player) ~(base: string) ~(modifier: string)
     && List.mem power p.runes
   then forge_spec_of ~base ~modifier ~power
   else None
+
+(* The [FORGEITEMS_TARGET0..9] band a difficulty falls in: ten equal
+   sixty-point steps. The exe's own thresholds are not recovered, so the
+   bucketing is a port choice (port.forge_ui); every shipped combination
+   lands between 100 and 600. *)
+let forge_band (difficulty: int) : int =
+  max 0 (min 9 (difficulty / 60))
 
 (* Fill one %d in a shipped string; the descs carry %% where the display
    wants a single percent. Printf.sprintf will not take a tag that only

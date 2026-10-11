@@ -113,7 +113,7 @@
 | Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` fills the roster and the party, ninth refused from the party only); `RemoveCompanion` drops by id from the party and keeps the roster, the arrival rules run through `Campaign.enter_location` (travel arrival calls it via `advance_travel_with_events`), and the map Companions tab swaps and removes |
 | Mount | Landed: `player.mount` (a chosen captive, registry `mount = 1`) divides `travel_time` by its tier - 1.5 / 2.0 / 2.5 (`port.mount_travel_speed`) - and rides into every battle: the skill bonus (`addstat + ((level - 1) / addlevel) * addperlevel`, `mount_stat` via `skill_of_index`) on the combatant plus the mount spell prepended to the hero list (`port.mount_skill_formula`); `equipment.mount` stays an item slot. Training/fly (encounter avoidance) remain open |
 | Capture flow | Landed on every surface: road wins open the minigame (`port.capture_ui`); callback wins (the quest fights play has) park `cb_capture_offer` behind the banner and the map opens it on dismiss; the city's Pets tab lists the gated candidates (`port.capture_surfaces`). Win reads go through `Battle.hero_won` - `sweep_deaths` clears `is_dead` every pass |
-| Rune forge | Landed: registries + 150-name table (`campaign.rune_forge`), collection (gifted three), claim gates, forge spec (`port.rune_forge_formula`), and the mint (`port.rune_item_mint` - inventory once, loadout resolution, JXXX damage/start hooks, save rebuild from the id); the SelectRuneMenu UI, the runekeeper surface, the [MAXRUNEITEM] cap and JXXX's unhookable bodies remain open |
+| Rune forge | Landed end to end: registries + 150-name table (`campaign.rune_forge`), collection, claim gates, forge spec (`port.rune_forge_formula`), mint (`port.rune_item_mint`), the city Forge tab and the runekeeper popup (`port.forge_ui`); the skill game `[FORGEITEMS_FAIL]` expects, the [MAXRUNEITEM] cap and JXXX's unhookable bodies remain open |
 
 ### 11. Character Creation
 | Gap | Details |
@@ -184,7 +184,7 @@
 
 | File | Needs |
 |------|-------|
-| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`, `campaign.city_services`, `port.city_services`, campaign.capture_offer, port.capture_ui, campaign.capture_list, port.capture_surfaces, port.banner_slot_removed, campaign.rune_forge, port.rune_forge_formula, port.rune_item_mint; still to add: monster AI |
+| `evidence.yml` | ✅ `campaign.map_visibility`, `campaign.quest_rewards_conditional`, `campaign.global_text_tables`, `campaign.ruin_registry`, `campaign.capture_eligible`, `campaign.capture_board`, `campaign.companion_start_battle`, `port.companion_hooks_fire_for_the_party`, `campaign.quest_battle_flow`, `port.quest_battle_loop`, `campaign.quest_remove_companion`, `spells.input_aim`, `port.human_aim_click`, `spells.ai_aim`, `port.ai_aim_fallback`, `campaign.battle_setup`, `port.campaign_task_level`, `campaign.encounter_travel`, `port.travel_model`, `render.world_map_layout`, `port.map_screen_mapping`, `campaign.city_services`, `port.city_services`, campaign.capture_offer, port.capture_ui, campaign.capture_list, port.capture_surfaces, port.banner_slot_removed, campaign.rune_forge, port.rune_forge_formula, port.rune_item_mint, port.forge_ui; still to add: monster AI |
 | `graphics_plan.md` | Phase 4: world map rendering, city UI, conversation UI |
 | `README.md` | Update "What works" with Save/Load, Quest/Map gaps |
 | `tools/graphics_plan.md` | Add phases for city UI, world map, conversation UI |
@@ -243,9 +243,10 @@ campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters,
 conversation triggers + per-callback effects, companion equip, grid-spell
 aim hover, mount speed, mount combat bonuses, capture UI, capture
-surfaces, banner slot, runes, rune items), and the conversation UI now
-walks actions, renders portraits/backdrops, fires battle callbacks and
-applies each scriptcall's extracted body effects. Pick one:
+surfaces, banner slot, runes, rune items, forge UI), and the
+conversation UI now walks actions, renders portraits/backdrops, fires
+battle callbacks and applies each scriptcall's extracted body effects.
+Pick one:
 
-- **Forge UI** - SelectRuneMenu's three-rune picker, the ten [FORGEITEMS_TARGET*] difficulty bands, and the runekeeper surface that claims world runes
+- **Forge minigame** - the skill game [FORGEITEMS_FAIL] expects (the ten Easy..Godlike bands become targets) and the [MAXRUNEITEM] cap
 - **Mount training** - the Stable's timed battles; mount levels buy map encounter avoidance (YOURCITY_MOUNTS_TEXT)
