@@ -1478,11 +1478,21 @@ let take_pending_message () : pending_message option =
 (* Quest lifecycle (player level)                                     *)
 (* ------------------------------------------------------------------ *)
 
+(* A companion gate from the extracted guards: every (id, must-be-present)
+   must hold against the traveling party ([] = no companion test = ungated).
+   Lua's QUEST_HERO_HAS_COMPANION_SELECTED reads the selected hero of the
+   single-hero engine; the port reads player.companions. *)
+let companion_ok (p : player) (gate : (string * bool) list) : bool =
+  List.for_all
+    (fun (cid, present) -> List.mem cid p.companions = present)
+    gate
+
 (* Accept a quest: runs OnBegin (node reveals + ruin registration) and adds
    it to active_quests at state 1. The OnBegin intro conversation queues for
-   the UI (first extracted site: an if/else branch like Q3Q7's award check
-   takes the first source-order tree, same convention as the reward
-   fields). No-op if the quest isn't available. *)
+   the UI - the first begin row whose companion gate holds against the
+   accepting party (the if/else trees take the first source-order row that
+   fires, same convention as the reward fields; Q0Q8 and Q3Q6 open only
+   with their companion along). No-op if the quest isn't available. *)
 let quest_accept (player: player) (qid: string) : player =
   let q = quest_by_id qid in
   if not (is_quest_available player q) then player
@@ -1492,9 +1502,11 @@ let quest_accept (player: player) (qid: string) : player =
     let p = List.fold_left apply_quest_effect player effects in
     if List.exists (fun (id, _) -> id = qid) p.active_quests then p
     else begin
-      (match q.conversations_begin with
-       | conv :: _ -> queue_conversation conv
-       | [] -> ());
+      (match List.find_opt
+               (fun (_, gate) -> companion_ok p gate)
+               q.conversations_begin with
+       | Some (conv, _) -> queue_conversation conv
+       | None -> ());
       { p with active_quests = (qid, 1) :: p.active_quests }
     end
 
@@ -1540,8 +1552,11 @@ let quest_battle_complete ?capture ?monster (player: player) (qid: string)
         match capture, monster with
         | Some c, Some m -> c, m
         | _ ->
-          (match List.find_opt (fun (st, _, _) -> st = stage) q.battle_actions with
-           | Some (_, idx, cap) ->
+          (match List.find_opt
+                   (fun (st, _, _, gate) ->
+                      st = stage && companion_ok player gate)
+                   q.battle_actions with
+           | Some (_, idx, cap, _) ->
              let m = match List.nth_opt q.battles idx with
                | Some (mid, _) -> mid
                | None -> q.battle_monster
@@ -1589,9 +1604,11 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
   | None -> None
   | Some stage ->
     let q = quest_by_id qid in
-    match List.find_opt (fun (st, _, _) -> st = stage) q.battle_actions with
+    match List.find_opt
+            (fun (st, _, _, gate) -> st = stage && companion_ok player gate)
+            q.battle_actions with
     | None -> None
-    | Some (_, idx, _) ->
+    | Some (_, idx, _, _) ->
       match List.nth_opt q.battles idx with
       | None -> None
       | Some (monster_id, hero_spell_ids) ->
@@ -1616,15 +1633,6 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
           in
           let won = Battle.hero_won battle in
           Some (quest_battle_settle player qid won battle, battle)
-
-(* A companion gate from the extracted guards: every (id, must-be-present)
-   must hold against the traveling party ([] = no companion test = ungated).
-   Lua's QUEST_HERO_HAS_COMPANION_SELECTED reads the selected hero of the
-   single-hero engine; the port reads player.companions. *)
-let companion_ok (p : player) (gate : (string * bool) list) : bool =
-  List.for_all
-    (fun (cid, present) -> List.mem cid p.companions = present)
-    gate
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into
@@ -1759,7 +1767,7 @@ type callback_result = {
 let execute_callback ?(rng = Random.int) (player: player) (qid: string)
     (callback_name: string) : callback_result option =
   let q_opt = (try Some (quest_by_id qid) with Not_found -> None) in
-  let effects : callback_effect list option =
+  let effects : ((string * bool) list * callback_effect) list option =
     match q_opt with
     | None -> None
     | Some q -> List.assoc_opt callback_name q.callback_effects
@@ -1786,7 +1794,14 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
       match effects with
       | None -> p
       | Some effs ->
-        List.fold_left (fun acc e -> apply_callback_effect acc qid e) p effs
+        (* each row carries its companion gate (Lua tests at the if in the
+           body, so the fold's accumulator is the party those tests see) *)
+        List.fold_left
+          (fun acc (gate, e) ->
+            if companion_ok acc gate then
+              apply_callback_effect acc qid e
+            else acc)
+          p effs
     in
     match cbrow with
     | None -> Some { cb_player = p; cb_battle = None; cb_capture_offer = None }

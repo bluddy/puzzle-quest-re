@@ -99,12 +99,12 @@ let () =
 
 let q0i2 = quest "Q0I2" in
 check "Q0I2's OnBegin intro conversation"
-  (q0i2.Campaign_quests.conversations_begin = [ "Conv_Q0I2a" ]);
+  (q0i2.Campaign_quests.conversations_begin = [ ("Conv_Q0I2a", []) ]);
 check "Q0I2's callback effects: a state write and a complete"
   (List.assoc_opt "CallbackConvB" q0i2.Campaign_quests.callback_effects
-   = Some [ Campaign_quests.SetQuestState 2 ]
+   = Some [ ([], Campaign_quests.SetQuestState 2) ]
    && List.assoc_opt "CallbackConvC" q0i2.Campaign_quests.callback_effects
-      = Some [ Campaign_quests.Complete ]);
+      = Some [ ([], Campaign_quests.Complete) ]);
 
 let q3q1 = quest "Q3Q1" in
 check "Q3Q1's arrivals are attributed to state+location"
@@ -120,7 +120,8 @@ check "Q0Q5's wildcard-state arrival carries its companion gate"
 
 let q3q7 = quest "Q3Q7" in
 check "Q3Q7's branch keeps both trees (first source order fires)"
-  (q3q7.Campaign_quests.conversations_begin = [ "Conv_Q3Q7a"; "Conv_Q3Q7aa" ]);
+  (q3q7.Campaign_quests.conversations_begin =
+   [ ("Conv_Q3Q7a", []); ("Conv_Q3Q7aa", []) ]);
 
 check "callback rewards left the turn-in buckets"
   ((quest "Q0T0").Campaign_quests.reward_items = []
@@ -201,6 +202,46 @@ check "a second accept of the same quest queues nothing more"
   (let _p1 = Campaign.quest_accept p0 "Q0I2" in
    drain (); true);
 
+(* OnBegin conversations carry their companion gate: Q0Q8's intro (and
+   Q3Q6's) opens only with their companion along. *)
+drain ();
+let _q8a =
+  Campaign.quest_accept
+    { (fresh ()) with Campaign.level = 10;
+                       Campaign.completed_quests = [ "Q0Q7" ] }
+    "Q0Q8" in
+check "Q0Q8's intro stays put with NKHA away"
+  (take_one () = None);
+
+drain ();
+let _q8b =
+  Campaign.quest_accept
+    { (fresh ()) with Campaign.level = 10;
+                       Campaign.completed_quests = [ "Q0Q7" ];
+                       Campaign.companions = [ "NKHA" ] }
+    "Q0Q8" in
+check "Q0Q8's intro queues with NKHA along"
+  (take_one () = Some "Conv_Q0Q8a" && take_one () = None);
+
+drain ();
+let _q6a =
+  Campaign.quest_accept
+    { (fresh ()) with Campaign.level = 26;
+                       Campaign.completed_quests = [ "Q3Q5" ] }
+    "Q3Q6" in
+check "Q3Q6's intro stays put with NKHA away"
+  (take_one () = None);
+
+drain ();
+let _q6b =
+  Campaign.quest_accept
+    { (fresh ()) with Campaign.level = 26;
+                       Campaign.completed_quests = [ "Q3Q5" ];
+                       Campaign.companions = [ "NKHA" ] }
+    "Q3Q6" in
+check "Q3Q6's intro queues with NKHA along"
+  (take_one () = Some "Conv_Q3Q6a" && take_one () = None);
+
 check "an arrival at the guarded location queues the tree (Q0Q6 state 1, NDKH along)"
   (let p = { (active "Q0Q6" 1) with Campaign.companions = [ "NDKH" ] } in
    drain ();
@@ -255,6 +296,28 @@ check "firing a callback with a nested conversation queues it"
    match Campaign.execute_callback ~rng:seed p "Q0Q4" "CallbackEnterMaethelburg" with
    | None -> false
    | Some _r -> take_one () = Some "Conv_Q0Q4b" && take_one () = None);
+
+(* Callback effects carry their companion gate too: Q3Q7/CallbackConvC
+   posts its box only with Drong the Destroyer along. *)
+drain ();
+let _q7c =
+  Campaign.execute_callback ~rng:seed
+    { (fresh ()) with Campaign.companions = [ "NDRO" ] }
+    "Q3Q7" "CallbackConvC" in
+check "Q3Q7/CallbackConvC queues the HUNGRY box with NDRO along"
+  (match Campaign.take_pending_message () with
+   | Some m ->
+     m.Campaign.pmsg_text = "[QUEST_Q3Q7_HUNGRY]"
+     && m.Campaign.pmsg_callback = "CallbackDrong"
+   | None -> false);
+
+drain ();
+let _q7d =
+  Campaign.execute_callback ~rng:seed (fresh ()) "Q3Q7" "CallbackConvC" in
+check "Q3Q7/CallbackConvC skips the box with NDRO away"
+  (match Campaign.take_pending_message () with
+   | None -> true
+   | Some m -> m.Campaign.pmsg_text <> "[QUEST_Q3Q7_HUNGRY]");
 
 (* ---------------------------------------------------------------- *)
 (* Effects on a real player                                          *)

@@ -32,8 +32,9 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     extracted per callback (callback_effects) and apply when the dialogue
     fires the scriptcall, so nothing double-applies.
   * conversations_begin/abandon = QUEST_CONVERSATION sites in OnBegin (intro
-    - fired at accept; branches take the first source-order tree) and
-    OnAbandon. conversation_callbacks carries the sites inside callbacks
+    - fired at accept; branches take the first source-order tree whose
+    companion gate holds) and OnAbandon, as (conversation, companion gate)
+    pairs. conversation_callbacks carries the sites inside callbacks
     (fired when the dialogue runs that scriptcall).
   * query_actions = OnQueryAction's menu label per branch: (state, location,
     text tag), source order, first match wins at runtime; -1 / "" are the
@@ -51,6 +52,8 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     (ends the quest: OnEnd runs as at turn-in), reward calls, nested
     QUEST_CONVERSATION, and QUEST_MESSAGE(_CALLBACK) as ShowMessage (title +
     text tags, callback name) - queued when the dialogue fires the scriptcall.
+    Each effect row carries the companion gate its branch sits under
+    (apply-time check against the party, like the group keys).
     QUEST_UPDATE_MAP
     and QUEST_STOP_MOVEMENT are skipped (bookkeeping the port's own state
     already carries), and other Lua locals (triedNecro, didShrine, ...) are
@@ -58,8 +61,9 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
   * battles/battle_actions/battle_stage_advances/battle_stage_fails = the
     quest-battle loop. Every QUEST_BATTLE / _NOCAPTURE / _CUSTOM call, from
     any hook (OnExecuteAction for location actions, conversation callbacks
-    for script-driven fights), is attributed to its questState guard by a
-    block scanner over if/elseif/else/end (see scan_battle_branches); the
+    for script-driven fights), is attributed to its questState guard AND its
+    companion gate by a block scanner over if/elseif/else/end (see
+    scan_battle_branches); the
     second argument indexes the quest's ordered Battle list, and capture
     comes from the primitive - the third argument disagrees on some sites
     (Q0Q2 passes 1 to QUEST_BATTLE_NOCAPTURE) and the primitive wins, per
@@ -334,11 +338,32 @@ def flip_side(side):
     return 'fail' if side == 'win' else 'win'
 
 
-def scan_battle_branches(body_ns, body_nc, collect_assigns):
+COMP_RX = re.compile(
+    r'QUEST_HERO_HAS_COMPANION_SELECTED\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'
+    r'\s*\)\s*==\s*([01])')
+
+
+def header_comp(header, consts):
+    """[(cid, present)] for each companion test in the header: the header
+    is the arm's condition, so `HAS(x)==0` gates the arm on x being away
+    and `==1` on x being along. An unresolvable id drops that conjunct
+    (it cannot gate the port against a name it has)."""
+    out = []
+    for g in COMP_RX.finditer(header):
+        tok = g.group(1)
+        cid = tok[1:-1] if tok.startswith('"') else consts.get(tok)
+        if cid is None:
+            continue
+        out.append((cid, g.group(2) == '1'))
+    return out
+
+
+def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
     """Returns (calls, assigns) in source order. calls are
-    (full_name, index_arg, third_arg, stages | None); assigns are
+    (full_name, index_arg, third_arg, stages | None, comp); assigns are
     (value, side, stage | None). stage is None when no questState== guard
-    covers the event; side is 'win' / 'fail' / 'none'."""
+    covers the event; side is 'win' / 'fail' / 'none'; comp is the
+    companion conjunction the open arms sit under (see make_guard_lookup)."""
     kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
     events = [(m.start(), 'call', m) for m in BATTLE_CALL.finditer(body_ns)]
     if collect_assigns:
@@ -346,10 +371,13 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
     events.sort(key=lambda t: t[0])
 
     stack = []  # {'stages': [int] | None, 'side': 'win'|'fail'|None,
-                #  'chain': 'win'|'fail'|None, 'generic': bool}
+                #  'chain': 'win'|'fail'|None, 'comp': [...],
+                #  'comp_chain': [...] | None, 'generic': bool}
                 # side is the branch currently open at this frame, chain the
                 # side of the last success test in the frame's if/elseif
-                # chain (later branches run under its negation).
+                # chain (later branches run under its negation); comp is the
+                # companion conjunction the open arm sits under, comp_chain
+                # the last non-empty header parse (an else flips it).
     calls, assigns = [], []
     ei = 0
 
@@ -365,6 +393,13 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
                 return fr['side']
         return 'none'
 
+    def active_comp():
+        out = []
+        for fr in reversed(stack):
+            if not fr['generic'] and fr['comp']:
+                out = list(fr['comp']) + out
+        return tuple(out)
+
     def header_at(pos):
         then = next((p for k, p in kws if k == 'then' and p > pos), len(body_ns))
         return body_nc[pos:then]
@@ -373,7 +408,7 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
         if kind == 'call':
             stages = active_stages()
             calls.append(("QUEST_BATTLE" + m.group(1), m.group(3),
-                          int(m.group(4)), stages))
+                          int(m.group(4)), stages, active_comp()))
         else:
             assigns.append((int(m.group(1)), side(), active_stages()))
 
@@ -384,10 +419,13 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
         if k == 'if':
             header = header_at(pos)
             s = success_side(header)
+            hc = header_comp(header, consts)
             stack.append({
                 'stages': [int(x) for x in STATE_EQ.findall(header)],
                 'side': s,
                 'chain': s,
+                'comp': hc,
+                'comp_chain': hc,
                 'generic': False,
             })
         elif k == 'elseif' and stack and not stack[-1]['generic']:
@@ -400,13 +438,20 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns):
                 fr['side'] = s
             else:
                 fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
+            hc = header_comp(header, consts)
+            fr['comp'] = hc
+            if hc:
+                fr['comp_chain'] = hc
         elif k == 'else' and stack and not stack[-1]['generic']:
             fr = stack[-1]
             fr['stages'] = []
             fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
+            cc = fr['comp_chain']
+            fr['comp'] = ([(cc[0][0], not cc[0][1])] if cc and len(cc) == 1
+                          else [])
         elif k in ('do', 'function', 'repeat'):
             stack.append({'stages': None, 'side': None, 'chain': None,
-                          'generic': True})
+                          'comp': [], 'comp_chain': None, 'generic': True})
         elif k in ('end', 'until'):
             if stack:
                 stack.pop()
@@ -462,23 +507,6 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
     unlike nearest-preceding scans."""
     kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
     idloc = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
-    comp_rx = re.compile(
-        r'QUEST_HERO_HAS_COMPANION_SELECTED\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'
-        r'\s*\)\s*==\s*([01])')
-
-    def header_comp(header):
-        """[(cid, present)] for each companion test in the header: the
-        header is the arm's condition, so `HAS(x)==0` gates the arm on x
-        being away and `==1` on x being along. An unresolvable id drops
-        that conjunct (it cannot gate the port against a name it has)."""
-        out = []
-        for g in comp_rx.finditer(header):
-            tok = g.group(1)
-            cid = tok[1:-1] if tok.startswith('"') else consts.get(tok)
-            if cid is None:
-                continue
-            out.append((cid, g.group(2) == '1'))
-        return out
 
     def header_at(pos):
         then = next((p for k, p in kws if k == 'then' and p > pos), len(body_ns))
@@ -525,8 +553,8 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 'locs': header_locs(header),
                 'side': s,
                 'chain': s,
-                'comp': header_comp(header),
-                'comp_chain': header_comp(header),
+                'comp': header_comp(header, consts),
+                'comp_chain': header_comp(header, consts),
                 'id': pos,
                 'arm': 'then',
                 'generic': False,
@@ -537,7 +565,7 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
             fr['stages'] = header_states(header, s_max)
             fr['locs'] = header_locs(header)
             fr['arm'] = 'elseif'
-            hc = header_comp(header)
+            hc = header_comp(header, consts)
             fr['comp'] = hc
             if hc:
                 fr['comp_chain'] = hc
@@ -779,6 +807,14 @@ def analyze_lua(src, qid, stats):
         def add_group(evk, key, pos, eff):
             eff_groups[evk].setdefault(key, []).append((pos, eff))
 
+        def cb_gate(hit):
+            """Companion conjunction around a flat-list site (callback
+            effects, begin conversations) - carried on the row now."""
+            g = tuple(lookup(hit.start())[4])
+            if g:
+                stats['comp_cb_gated'] += 1
+            return g
+
         def keys_for(evk, pos, force_loc=None):
             """Guard keys for an effect site: expand the open-if snapshot
             at pos into the group's key form (complete keys carry the
@@ -827,7 +863,7 @@ def analyze_lua(src, qid, stats):
             stats['hooks'][('gold', hook)] += 1
             if is_callback:
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'gold', int(hit.group(1))))
+                    (hit.start(), 'gold', int(hit.group(1)), cb_gate(hit)))
             elif gold == 0:
                 gold = int(hit.group(1))
         for hit in CALL_PATTERNS['xp'].finditer(body):
@@ -835,7 +871,7 @@ def analyze_lua(src, qid, stats):
             stats['hooks'][('xp', hook)] += 1
             if is_callback:
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'xp', int(hit.group(1))))
+                    (hit.start(), 'xp', int(hit.group(1)), cb_gate(hit)))
             elif xp == 0:
                 xp = int(hit.group(1))
         for hit in CALL_PATTERNS['item'].finditer(body):
@@ -847,7 +883,7 @@ def analyze_lua(src, qid, stats):
                 continue
             if is_callback:
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'item', target))
+                    (hit.start(), 'item', target, cb_gate(hit)))
             else:
                 items.append(target)
         for hit in CALL_PATTERNS['award'].finditer(body):
@@ -859,7 +895,7 @@ def analyze_lua(src, qid, stats):
                 continue
             if is_callback:
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'award', target))
+                    (hit.start(), 'award', target, cb_gate(hit)))
             else:
                 awards.append(target)
         for hit in CALL_PATTERNS['companion'].finditer(body):
@@ -871,7 +907,7 @@ def analyze_lua(src, qid, stats):
                 continue
             if is_callback:
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'companion', target))
+                    (hit.start(), 'companion', target, cb_gate(hit)))
             else:
                 companions.append(target)
         # QUEST_CONVERSATION: the hook that runs the call opens the tree.
@@ -888,18 +924,18 @@ def analyze_lua(src, qid, stats):
                 continue
             cid = conversation_id(tok)
             if hook in CONV_BUCKETS:
-                if lookup(hit.start())[4]:
-                    stats['comp_cb_drops'] += 1
-                if cid not in conv_buckets[CONV_BUCKETS[hook]]:
-                    conv_buckets[CONV_BUCKETS[hook]].append(cid)
+                # begin conversations carry their gate: quest_accept queues
+                # the first whose companion test holds (Q0Q8, Q3Q6)
+                row = (cid, cb_gate(hit))
+                if cid not in [c for c, _g in
+                               conv_buckets[CONV_BUCKETS[hook]]]:
+                    conv_buckets[CONV_BUCKETS[hook]].append(row)
             elif is_callback:
-                if lookup(hit.start())[4]:
-                    stats['comp_cb_drops'] += 1
                 lst = conv_callbacks.setdefault(hook, [])
                 if cid not in lst:
                     lst.append(cid)
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'conversation', cid))
+                    (hit.start(), 'conversation', cid, cb_gate(hit)))
             elif ev is not None:
                 for key in keys_for(ev, hit.start()):
                     add_group(ev, key, hit.start(), ('conversation', cid))
@@ -918,10 +954,8 @@ def analyze_lua(src, qid, stats):
             stats['extracted']['complete'] += 1
             stats['hooks'][('complete', hook)] += 1
             if is_callback:
-                if lookup(hit.start())[4]:
-                    stats['comp_cb_drops'] += 1
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'complete', None))
+                    (hit.start(), 'complete', None, cb_gate(hit)))
             elif ev is not None:
                 for key in keys_for(ev, hit.start()):
                     add_group(ev, key, hit.start(), ('complete', None))
@@ -938,11 +972,9 @@ def analyze_lua(src, qid, stats):
             if is_callback:
                 pos, _st, _suc, _lx, cnd, title, text, cb = rows[0]
                 if cnd:
-                    # callback effects stay flat (GAPS: the out-of-scope
-                    # half) - note the gate we cannot carry
-                    stats['comp_cb_drops'] += 1
+                    stats['comp_cb_gated'] += 1
                 cb_events.setdefault(hook, []).append(
-                    (pos, 'message', (title, text, cb)))
+                    (pos, 'message', (title, text, cb), tuple(cnd)))
             elif ev is not None:
                 for pos, st, suc, lx, cnd, title, text, cb in rows:
                     key = ((st, suc, lx, cnd) if ev == 'complete'
@@ -969,10 +1001,8 @@ def analyze_lua(src, qid, stats):
         # there, as before).
         if is_callback:
             for hit in STATE_ASSIGN.finditer(body):
-                if lookup(hit.start())[4]:
-                    stats['comp_cb_drops'] += 1
                 cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'state', int(hit.group(1))))
+                    (hit.start(), 'state', int(hit.group(1)), cb_gate(hit)))
         elif ev is not None:
             for hit in STATE_ASSIGN.finditer(body):
                 for key in keys_for(ev, hit.start()):
@@ -1008,8 +1038,9 @@ def analyze_lua(src, qid, stats):
                 continue
             enter_removes.append((st, loc, comp))
         calls, assigns = scan_battle_branches(
-            body_ns, body, collect_assigns=(hook == 'OnCompleteAction'))
-        for full_name, idx_arg, third, stages in calls:
+            body_ns, body, collect_assigns=(hook == 'OnCompleteAction'),
+            consts=consts)
+        for full_name, idx_arg, third, stages, cnd in calls:
             if stages is None:
                 stats['battle_unattributed'].append(
                     (qid, hook, 'no questState guard', full_name))
@@ -1021,7 +1052,7 @@ def analyze_lua(src, qid, stats):
             stats['extracted']['battle_call'] += 1
             capture = full_name != 'QUEST_BATTLE_NOCAPTURE' and third == 1
             for st in stages:
-                battle_actions.append((st, int(idx_arg), capture))
+                battle_actions.append((st, int(idx_arg), capture, cnd))
         for value, sd, stages in assigns:
             if stages is None:
                 stats['battle_unattributed'].append(
@@ -1042,11 +1073,13 @@ def analyze_lua(src, qid, stats):
     battle_actions = dedup(battle_actions)
 
     def finalize_cb(effs):
-        """Ordered effects for one callback: first source-order value wins
-        for state/gold/xp (the reward convention); value-carrying grants
-        dedup preserving order; Message keeps one entry per site."""
+        """(kind, val, gate) rows for one callback, source order: first
+        source-order value wins for state/gold/xp (the reward
+        convention); value-carrying grants dedup preserving order; Message
+        keeps one entry per site. The gate travels with its row - the
+        same call under two companion arms is two rows."""
         out, first, seen = [], set(), set()
-        for _, kind, val in sorted(effs, key=lambda t: t[0]):
+        for _, kind, val, gate in sorted(effs, key=lambda t: t[0]):
             if kind in ('state', 'gold', 'xp'):
                 if kind in first:
                     continue
@@ -1054,10 +1087,10 @@ def analyze_lua(src, qid, stats):
             elif kind == 'message':
                 pass
             else:
-                if (kind, val) in seen:
+                if (kind, val, gate) in seen:
                     continue
-                seen.add((kind, val))
-            out.append((kind, val))
+                seen.add((kind, val, gate))
+            out.append((kind, val, gate))
         return out
 
     def finalize_groups(evk):
@@ -1235,11 +1268,22 @@ def ocaml_battles(battles):
 
 
 def ocaml_battle_actions(actions):
+    """[(stage, battle index, captures, companion gate)] - gate [] =
+    ungated."""
     if not actions:
         return "[]"
-    parts = ['(%d, %d, %s)' % (st, idx, "true" if cap else "false")
-             for st, idx, cap in actions]
+    parts = ['(%d, %d, %s, %s)'
+             % (st, idx, "true" if cap else "false", ocaml_comp(cnd))
+             for st, idx, cap, cnd in actions]
     return "[" + "; ".join(parts) + "]"
+
+
+def ocaml_gated_convs(rows):
+    """[(conversation id, companion gate)] - gate [] = ungated."""
+    if not rows:
+        return "[]"
+    return "[" + "; ".join('("%s", %s)' % (ocaml_str(cid), ocaml_comp(g))
+                           for cid, g in rows) + "]"
 
 
 def ocaml_int_pairs(pairs):
@@ -1274,10 +1318,13 @@ def ocaml_effect(kind, val):
 
 
 def ocaml_callback_effects(pairs):
+    """[(callback, [(companion gate, effect)])] - gate [] = ungated."""
     if not pairs:
         return "[]"
-    parts = ['("%s", [%s])' % (ocaml_str(cb),
-                               "; ".join(ocaml_effect(k, v) for k, v in effs))
+    parts = ['("%s", [%s])'
+             % (ocaml_str(cb),
+                "; ".join('(%s, %s)' % (ocaml_comp(g), ocaml_effect(k, v))
+                          for k, v, g in effs))
              for cb, effs in pairs]
     return "[" + "; ".join(parts) + "]"
 
@@ -1352,7 +1399,7 @@ def new_stats():
             'unresolved': [], 'missing_lua': [],
             'battle_unattributed': [], 'battle_conflicts': [],
             'remove_elsewhere': [], 'conv_other_hooks': [],
-            'msg_arm_drops': 0, 'comp_cb_drops': 0,
+            'msg_arm_drops': 0, 'comp_cb_gated': 0,
             'comp_merge_drops': 0}
 
 
@@ -1403,10 +1450,13 @@ def main():
                 n_gated += sum(1 for k, _e in q[field] if k[-1])
         n_gated_q = sum(1 for q in quests for r in q["query_actions"]
                         if r[2])
+        n_gated_battle = sum(1 for q in quests for r in q["battle_actions"]
+                             if r[3])
         print(f"companion-gated keys: {n_gated} groups, {n_gated_q} query "
-              f"rows; dropped: {stats['comp_merge_drops']} message rows "
-              f"(contradictory gates), {stats['comp_cb_drops']} flat-list "
-              f"sites (callback/begin - out of scope, GAPS)")
+              f"rows, {stats['comp_cb_gated']} callback/begin sites, "
+              f"{n_gated_battle} battle actions; "
+              f"{stats['comp_merge_drops']} message rows dropped "
+              f"(contradictory gates)")
         n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
                   for b in ('begin', 'abandon')}
         n_conv_cb = sum(len(v) for q in quests for _, v in q["conversation_callbacks"])
@@ -1439,11 +1489,26 @@ def main():
         for q in quests:
             for _, effs in q["callback_effects"]:
                 n_eff += 1
-                for k, _ in effs:
+                for k, _v, _g in effs:
                     eff_kinds[k] += 1
         print(f"callback effects: {n_eff} callbacks, "
               + (", ".join(f"{k}={n}" for k, n in sorted(eff_kinds.items()))
                  or "none"))
+        gated_cb = [(q['id'], cb, kind, gate)
+                    for q in quests
+                    for cb, effs in q["callback_effects"]
+                    for kind, _v, gate in effs if gate]
+        gated_begin = [(q['id'], cid, gate)
+                       for q in quests
+                       for cid, gate in q["conversations_begin"] if gate]
+        gated_battle = [(q['id'],) + r
+                        for q in quests for r in q["battle_actions"] if r[3]]
+        for row in gated_cb:
+            print(f"  gated callback: {row}")
+        for row in gated_begin:
+            print(f"  gated begin: {row}")
+        for row in gated_battle:
+            print(f"  gated battle: {row}")
         n_battles = sum(len(q["battles"]) for q in quests)
         n_actions = sum(len(q["battle_actions"]) for q in quests)
         n_adv = sum(len(q["battle_stage_advances"]) for q in quests)
@@ -1609,7 +1674,7 @@ def main():
     lines.append("  battle_monster: string;")
     lines.append("  battle_spells: string list;")
     lines.append("  battles: (string * string list) list;")
-    lines.append("  battle_actions: (int * int * bool) list;")
+    lines.append("  battle_actions: (int * int * bool * (string * bool) list) list;")
     lines.append("  battle_stage_advances: (int * int) list;")
     lines.append("  battle_stage_fails: (int * int) list;")
     lines.append("  enter_removes: (int * string * string) list;")
@@ -1625,10 +1690,13 @@ def main():
     lines.append("  reward_items: string list;")
     lines.append("  reward_awards: string list;")
     lines.append("  reward_companions: string list;")
-    lines.append("  conversations_begin: string list;")
+    lines.append("  conversations_begin:")
+    lines.append("    (string * (string * bool) list) list;")
     lines.append("  conversations_abandon: string list;")
     lines.append("  conversation_callbacks: (string * string list) list;")
-    lines.append("  callback_effects: (string * callback_effect list) list;")
+    lines.append("  callback_effects:")
+    lines.append("    (string * ((string * bool) list * callback_effect) list)")
+    lines.append("    list;")
     lines.append("  (* (state, location, companion gate, ...): -1 / \"\" =")
     lines.append("     wildcard, gate [] = no companion test *)")
     lines.append("  query_actions:")
@@ -1702,7 +1770,7 @@ def main():
         lines.append(f'    reward_items = {ocaml_list(q["reward_items"])};')
         lines.append(f'    reward_awards = {ocaml_list(q["reward_awards"])};')
         lines.append(f'    reward_companions = {ocaml_list(q["reward_companions"])};')
-        lines.append(f'    conversations_begin = {ocaml_list(q["conversations_begin"])};')
+        lines.append(f'    conversations_begin = {ocaml_gated_convs(q["conversations_begin"])};')
         lines.append(f'    conversations_abandon = {ocaml_list(q["conversations_abandon"])};')
         lines.append(f'    conversation_callbacks = {ocaml_callback_pairs(q["conversation_callbacks"])};')
         lines.append(f'    callback_effects = {ocaml_callback_effects(q["callback_effects"])};')

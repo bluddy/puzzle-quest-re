@@ -117,7 +117,7 @@ check "142 quests ship" (List.length quests = 142);
 check "every stage action points inside its quest's Battle list"
   (List.for_all
      (fun (q : Campaign_quests.quest) ->
-       List.for_all (fun (_, i, _) -> i < List.length q.battles) q.battle_actions)
+       List.for_all (fun (_, i, _, _) -> i < List.length q.battles) q.battle_actions)
      quests);
 
 check_int "the shipped data holds 155 Battle elements"
@@ -132,27 +132,27 @@ check_int "and 128 stage actions"
 let q0i0 = quest "Q0I0" in
 check "Q0I0: one battle, captured"
   (q0i0.Campaign_quests.battles = [ ("MTRO", []) ]
-   && q0i0.Campaign_quests.battle_actions = [ (1, 0, true) ]
+   && q0i0.Campaign_quests.battle_actions = [ (1, 0, true, []) ]
    && q0i0.Campaign_quests.battle_stage_advances = []
    && q0i0.Campaign_quests.battle_stage_fails = []);
 
 let q0e0 = quest "Q0E0" in
 check "Q0E0: the fight hands the hero a spell"
   (q0e0.Campaign_quests.battles = [ ("MCTP", [ "SFSK" ]) ]
-   && q0e0.Campaign_quests.battle_actions = [ (1, 0, true) ]
+   && q0e0.Campaign_quests.battle_actions = [ (1, 0, true, []) ]
    && q0e0.Campaign_quests.battle_stage_advances = [ (1, 2) ]);
 
 let q0s1 = quest "Q0S1" in
 check "Q0S1: two no-capture fights, state 1 -> 2 -> 3"
   (q0s1.Campaign_quests.battles = [ ("MOGR", []); ("MOGR", []) ]
-   && q0s1.Campaign_quests.battle_actions = [ (1, 0, false); (2, 1, false) ]
+   && q0s1.Campaign_quests.battle_actions = [ (1, 0, false, []); (2, 1, false, []) ]
    && q0s1.Campaign_quests.battle_stage_advances = [ (1, 2) ]
    && q0s1.Campaign_quests.battle_stage_fails = []);
 
 let q0q7 = quest "Q0Q7" in
 check "Q0Q7: three fights, capture only on the caravan one"
   (q0q7.Campaign_quests.battles = [ ("MWIG", []); ("MOGR", []); ("MDGG", []) ]
-   && q0q7.Campaign_quests.battle_actions = [ (2, 0, true); (3, 2, false); (4, 2, false) ]
+   && q0q7.Campaign_quests.battle_actions = [ (2, 0, true, []); (3, 2, false, []); (4, 2, false, []) ]
    && q0q7.Campaign_quests.battle_stage_advances = [ (2, 3); (3, 4) ]
    && q0q7.Campaign_quests.battle_stage_fails = []);
 
@@ -164,14 +164,14 @@ let q2m4 = quest "Q2M4" in
 check "Q2M4: either stage wins to 3 and loses to 2"
   (q2m4.Campaign_quests.battle_stage_advances = [ (1, 3); (2, 3) ]
    && q2m4.Campaign_quests.battle_stage_fails = [ (1, 2); (2, 2) ]
-   && q2m4.Campaign_quests.battle_actions = [ (1, 0, false); (2, 0, false) ]);
+   && q2m4.Campaign_quests.battle_actions = [ (1, 0, false, []); (2, 0, false, []) ]);
 
 let q3q2 = quest "Q3Q2" in
 check "Q3Q2: four fights in a row, four monsters"
   (q3q2.Campaign_quests.battles =
      [ ("MZOM", []); ("MWIG", []); ("MDOO", []); ("MARK", []) ]
    && q3q2.Campaign_quests.battle_actions =
-     [ (1, 0, true); (2, 1, true); (3, 2, true); (4, 3, true) ]
+     [ (1, 0, true, []); (2, 1, true, []); (3, 2, true, []); (4, 3, true, []) ]
    && q3q2.Campaign_quests.battle_stage_advances = [ (1, 2) ]
    && q3q2.Campaign_quests.battle_stage_fails = []);
 
@@ -190,6 +190,26 @@ let q3q5 = quest "Q3Q5" in
 check "Q3Q5: a win walks to 2 unless all three kills make the script branch"
   (q3q5.Campaign_quests.battle_stage_advances = [ (1, 2); (2, 2) ]
    && q3q5.Campaign_quests.battle_stage_fails = []);
+
+(* The stage action can carry a companion gate: QA00's Lua fights only
+   with NDKH selected and posts the NOCOMP box on the else arm instead. *)
+check "QA00's stage-1 action carries the NDKH gate"
+  ((quest "QA00").Campaign_quests.battle_actions = [ (1, 0, true, [ ("NDKH", true) ]) ]);
+
+check "QA00 stage 1 has no battle with NDKH away"
+  (Campaign.run_quest_battle ~rng:seed (active "QA00" 1) "QA00" = None);
+
+let qa00_along = { (active "QA00" 1) with Campaign.companions = [ "NDKH" ] } in
+(* private LCG: the shared stream below is tuned for the loop fights *)
+let qa00_state = ref 11 in
+let qa00_seed n =
+  qa00_state := (!qa00_state * 75 + 74) mod 65537;
+  if n <= 0 then 0 else !qa00_state mod n
+in
+check "QA00 stage 1 fights with NDKH along"
+  (match Campaign.run_quest_battle ~rng:qa00_seed qa00_along "QA00" with
+   | Some (p, b) -> Battle.log_of b <> [] && state_of p "QA00" <> None
+   | None -> false);
 
 (* ------------------------------------------------------------------ *)
 (* The loop itself: Q0I0 - capture, ruin release, spoils, turn-in      *)

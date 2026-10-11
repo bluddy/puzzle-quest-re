@@ -209,7 +209,7 @@ let () =
   (match
      List.find_opt
        (fun (q : Campaign_quests.quest) ->
-         List.exists (fun (st, _, _) -> st = 1) q.Campaign_quests.battle_actions
+         List.exists (fun (st, _, _, _) -> st = 1) q.Campaign_quests.battle_actions
          && is_quest_available player5 q)
        Campaign_quests.quests
    with

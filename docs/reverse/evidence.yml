@@ -3961,7 +3961,15 @@ port_decisions:
       open if-headers (an else-arm flips the single test) - checked at
       apply time against player.companions by companion_ok, so QS00 queues
       NOCOMP or PRELUDE, QK06 NOCOMP or BUTTON, and QP01's first-match
-      query skips a label whose companion is away. enter_location folds
+      query skips a label whose companion is away. The three flat lists
+      carry the same conjunction: OnBegin conversations (Q0Q8, Q3Q6 - both
+      gated NKHA) queue only when their pair holds, callback_effects rows
+      fold under the gate at execute_callback time (12 sites - Q3Q7's
+      CallbackConvC posts its HUNGRY box only with NDRO along, Q3S0's five
+      CallbackMsgs gate on their companions), and the 15 battle_actions
+      stage actions decide fight-versus-box by companion (QA00 fights with
+      NDKH along and posts the NOCOMP box otherwise, QK00/QU00 the same
+      shape for NKHA/NSUN, Q3D4's flipped chain fights first). enter_location folds
       the groups before the remove rules apply: Lua tests companions at
       if-entry while the removes sit inside the chosen arm (Q3S0 messages
       then removes, QS00 removes then messages), so the gates must read
