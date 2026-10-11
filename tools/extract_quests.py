@@ -446,19 +446,39 @@ def header_states(header, s_max):
 
 def make_guard_lookup(body_ns, body_nc, consts, s_max):
     """Context lookup for effect attribution: lookup(pos) ->
-    (stages | None, locs | None, side, arms) evaluated over the if-chain
-    OPEN at pos - the same frame walk as scan_battle_branches (if/elseif/
-    else over end, do/function/repeat opaque), plus idLocation tests.
-    stages is the innermost open header's questState set (None = untested;
-    an else-branch carries [] and falls through, since it means "not
-    these"); locs likewise from idLocation== resolved through the file
-    constants; side is 'win'/'fail'/'none' from the success tests; arms is
-    ((if-pos, 'then'|'elseif'|'else'), ...) over the open non-generic
-    frames, so two positions can be told to sit in sibling arms of a
-    branch still open at both (see resolve_message). Closed blocks do not
-    leak - unlike nearest-preceding scans."""
+    (stages | None, locs | None, side, arms, comp) evaluated over the
+    if-chain OPEN at pos - the same frame walk as scan_battle_branches
+    (if/elseif/else over end, do/function/repeat opaque), plus
+    idLocation tests. stages is the innermost open header's questState
+    set (None = untested; an else-branch carries [] and falls through,
+    since it means "not these"); locs likewise from idLocation== resolved
+    through the file constants; side is 'win'/'fail'/'none' from the
+    success tests; arms is ((if-pos, 'then'|'elseif'|'else'), ...) over
+    the open non-generic frames, so two positions can be told to sit in
+    sibling arms of a branch still open at both (see resolve_message);
+    comp is the QUEST_HERO_HAS_COMPANION_SELECTED conjunction the open
+    arms sit under - [(cid, must-be-present)] over the open frames, []
+    when no open frame tests a companion. Closed blocks do not leak -
+    unlike nearest-preceding scans."""
     kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
     idloc = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
+    comp_rx = re.compile(
+        r'QUEST_HERO_HAS_COMPANION_SELECTED\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'
+        r'\s*\)\s*==\s*([01])')
+
+    def header_comp(header):
+        """[(cid, present)] for each companion test in the header: the
+        header is the arm's condition, so `HAS(x)==0` gates the arm on x
+        being away and `==1` on x being along. An unresolvable id drops
+        that conjunct (it cannot gate the port against a name it has)."""
+        out = []
+        for g in comp_rx.finditer(header):
+            tok = g.group(1)
+            cid = tok[1:-1] if tok.startswith('"') else consts.get(tok)
+            if cid is None:
+                continue
+            out.append((cid, g.group(2) == '1'))
+        return out
 
     def header_at(pos):
         then = next((p for k, p in kws if k == 'then' and p > pos), len(body_ns))
@@ -479,6 +499,7 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
     def snap():
         stages = locs = None
         side = 'none'
+        comp = []
         for fr in reversed(stack):
             if fr['generic']:
                 continue
@@ -488,9 +509,11 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 locs = list(fr['locs'])
             if side == 'none' and fr['side'] is not None:
                 side = fr['side']
+            if fr['comp']:
+                comp = list(fr['comp']) + comp
         arms = tuple((fr['id'], fr['arm']) for fr in stack
                      if not fr['generic'])
-        return (stages, locs, side, arms)
+        return (stages, locs, side, arms, comp)
 
     changes.append((-1, snap()))
     for k, pos in kws:
@@ -502,6 +525,8 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 'locs': header_locs(header),
                 'side': s,
                 'chain': s,
+                'comp': header_comp(header),
+                'comp_chain': header_comp(header),
                 'id': pos,
                 'arm': 'then',
                 'generic': False,
@@ -512,6 +537,10 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
             fr['stages'] = header_states(header, s_max)
             fr['locs'] = header_locs(header)
             fr['arm'] = 'elseif'
+            hc = header_comp(header)
+            fr['comp'] = hc
+            if hc:
+                fr['comp_chain'] = hc
             s = success_side(header)
             if s is not None:
                 fr['chain'] = s
@@ -523,6 +552,13 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
             fr['stages'] = []
             fr['locs'] = []
             fr['arm'] = 'else'
+            # else runs when the chain's tests all failed: a single
+            # companion test flips cleanly (absent <-> along); a chain
+            # that tested companions more than once has no conjunctive
+            # flip, and falls back to no gate (the pre-comp behaviour)
+            cc = fr['comp_chain']
+            fr['comp'] = ([(cc[0][0], not cc[0][1])] if cc and len(cc) == 1
+                          else [])
             fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
         elif k in ('do', 'function', 'repeat'):
             stack.append({'stages': None, 'locs': None, 'side': None,
@@ -541,13 +577,15 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
     return lookup
 
 
-def guard_keys(stages, locs):
-    """Expand a guard snapshot into the (state, loc) key pairs to record:
-    None = untested = the runtime wildcard (-1 / \"\"). An else-branch's
-    [] never reaches here (snap() skips falsy lists)."""
+def guard_keys(stages, locs, comp):
+    """Expand a guard snapshot into the (state, loc, comp) key triples to
+    record: None = untested = the runtime wildcard (-1 / \"\") and comp
+    [] = no companion gate. An else-branch's [] never reaches here (snap()
+    skips falsy lists)."""
     sts = stages if stages is not None else [-1]
     lxs = locs if locs is not None else [""]
-    return [(st, lx) for st in sts for lx in lxs]
+    cnd = tuple(comp)          # tuple: guard keys feed dict/dedup sets
+    return [(st, lx, cnd) for st in sts for lx in lxs]
 
 
 def build_msg_assigns(body):
@@ -573,8 +611,8 @@ def arm_conflict(a, site):
 
 def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
     """One QUEST_MESSAGE(_CALLBACK) site -> (rows, err): rows are
-    [(pos, st, suc, loc, title, text, cb)] in assignment order, err the
-    unresolved text token when nothing resolves (rows empty then).
+    [(pos, st, suc, loc, cnd, title, text, cb)] in assignment order, err
+    the unresolved text token when nothing resolves (rows empty then).
 
     The text variable's each preceding assignment is its own row - the
     common shape
@@ -584,7 +622,10 @@ def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
     assignment records which side it came from (the site itself sits
     after the chain closed).  A row's guard merges the assignment's
     open-if context with the site's: stages/locs intersect (empty =
-    dead row, dropped), the success side prefers the assignment.
+    dead row, dropped), the success side prefers the assignment,
+    and the companion gates union (the conjunctions must both hold; the
+    same cid with opposite polarity is contradictory = dead row,
+    dropped).
     An assignment in a SIBLING ARM of a branch open at the site is dead
     there and its row is dropped (arm_conflict) - without that, two
     sites inside one if/else each pick up the other's text and queue a
@@ -603,7 +644,7 @@ def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
         elif consts is not None:
             cb = consts.get(cb_tok, "")
     site_pos = hit.start()
-    site = lookup(site_pos) if lookup else (None, None, 'none', ())
+    site = lookup(site_pos) if lookup else (None, None, 'none', (), [])
 
     def tags(tok, limit):
         if tok.startswith('"'):
@@ -665,10 +706,25 @@ def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
             locs = a[1]
         side = a[2] if a[2] != 'none' else site[2]
         suc = 1 if side == 'win' else (0 if side == 'fail' else -1)
+        # companion gates: both conjunctions must hold - union by cid;
+        # the same cid with opposite polarity cannot both be true
+        cnd = list(a[4])
+        dead = False
+        for cid, want in site[4]:
+            if any(c == cid for c, _ in cnd):
+                if any(c == cid and w != want for c, w in cnd):
+                    dead = True
+            else:
+                cnd.append((cid, want))
+        if dead:
+            if stats is not None:
+                stats['comp_merge_drops'] += 1
+            continue
         for st in (stages if stages is not None else [-1]):
             for lx in (locs if locs is not None else [""]):
                 rows.append((tpos if tpos is not None else site_pos,
-                             st, suc, lx, title_for(tpos), ttag, cb))
+                             st, suc, lx, tuple(cnd), title_for(tpos),
+                             ttag, cb))
     return rows, None
 
 
@@ -728,15 +784,16 @@ def analyze_lua(src, qid, stats):
             at pos into the group's key form (complete keys carry the
             success side; OnEnd effects are turn-in events, not
             location-bound, so their loc guard collapses to wildcard)."""
-            stages, locs, side, _arms = lookup(pos)
+            stages, locs, side, _arms, comp = lookup(pos)
             if evk == 'end':
                 locs = None
             if force_loc is not None:
                 locs = [force_loc]
             suc = 1 if side == 'win' else (0 if side == 'fail' else -1)
             out = []
-            for st, lx in guard_keys(stages, locs):
-                out.append((st, suc, lx) if evk == 'complete' else (st, lx))
+            for st, lx, cnd in guard_keys(stages, locs, comp):
+                out.append((st, suc, lx, cnd) if evk == 'complete'
+                           else (st, lx, cnd))
             return out
 
         m = CALL_PATTERNS['visibility'].finditer(body)
@@ -831,9 +888,13 @@ def analyze_lua(src, qid, stats):
                 continue
             cid = conversation_id(tok)
             if hook in CONV_BUCKETS:
+                if lookup(hit.start())[4]:
+                    stats['comp_cb_drops'] += 1
                 if cid not in conv_buckets[CONV_BUCKETS[hook]]:
                     conv_buckets[CONV_BUCKETS[hook]].append(cid)
             elif is_callback:
+                if lookup(hit.start())[4]:
+                    stats['comp_cb_drops'] += 1
                 lst = conv_callbacks.setdefault(hook, [])
                 if cid not in lst:
                     lst.append(cid)
@@ -847,8 +908,9 @@ def analyze_lua(src, qid, stats):
                 # event of its own: noted, and kept as a wildcard execute
                 # entry rather than dropped.
                 stats['conv_other_hooks'].append((qid, hook, cid))
-                add_group('execute', (-1, ""), hit.start(),
-                          ('conversation', cid))
+                add_group('execute',
+                          (-1, "", tuple(lookup(hit.start())[4])),
+                          hit.start(), ('conversation', cid))
         # QUEST_COMPLETE / QUEST_MESSAGE: event hooks feed the groups,
         # callback sites keep their effect rows; anything else (CompleteQ's
         # body, OnCancelAction) is counted for reconciliation only.
@@ -856,6 +918,8 @@ def analyze_lua(src, qid, stats):
             stats['extracted']['complete'] += 1
             stats['hooks'][('complete', hook)] += 1
             if is_callback:
+                if lookup(hit.start())[4]:
+                    stats['comp_cb_drops'] += 1
                 cb_events.setdefault(hook, []).append(
                     (hit.start(), 'complete', None))
             elif ev is not None:
@@ -872,12 +936,17 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, err))
                 continue
             if is_callback:
-                pos, _st, _suc, _lx, title, text, cb = rows[0]
+                pos, _st, _suc, _lx, cnd, title, text, cb = rows[0]
+                if cnd:
+                    # callback effects stay flat (GAPS: the out-of-scope
+                    # half) - note the gate we cannot carry
+                    stats['comp_cb_drops'] += 1
                 cb_events.setdefault(hook, []).append(
                     (pos, 'message', (title, text, cb)))
             elif ev is not None:
-                for pos, st, suc, lx, title, text, cb in rows:
-                    key = (st, suc, lx) if ev == 'complete' else (st, lx)
+                for pos, st, suc, lx, cnd, title, text, cb in rows:
+                    key = ((st, suc, lx, cnd) if ev == 'complete'
+                           else (st, lx, cnd))
                     add_group(ev, key, pos, ('message', (title, text, cb)))
         # OnQueryAction's menu label: the first branch Lua would show for
         # the hero's current (state, location).  GET_TEXT returns in other
@@ -887,8 +956,8 @@ def analyze_lua(src, qid, stats):
             for hit in CALL_PATTERNS['query'].finditer(body):
                 stats['extracted']['query'] += 1
                 stats['hooks'][('query', hook)] += 1
-                for st, lx in keys_for('query', hit.start()):
-                    query_actions.append((st, lx, hit.group(1)))
+                for st, lx, cnd in keys_for('query', hit.start()):
+                    query_actions.append((st, lx, cnd, hit.group(1)))
         else:
             for _hit in CALL_PATTERNS['query'].finditer(body):
                 stats['extracted']['query'] += 1
@@ -900,6 +969,8 @@ def analyze_lua(src, qid, stats):
         # there, as before).
         if is_callback:
             for hit in STATE_ASSIGN.finditer(body):
+                if lookup(hit.start())[4]:
+                    stats['comp_cb_drops'] += 1
                 cb_events.setdefault(hook, []).append(
                     (hit.start(), 'state', int(hit.group(1))))
         elif ev is not None:
@@ -1221,36 +1292,47 @@ def ocaml_callback_pairs(pairs):
     return "[" + "; ".join(parts) + "]"
 
 
+def ocaml_comp(cond):
+    """[(companion id, must-be-present)] gate -> OCaml; [] = ungated."""
+    if not cond:
+        return "[]"
+    return "[" + "; ".join(
+        '("%s", %s)' % (ocaml_str(cid), 'true' if want else 'false')
+        for cid, want in cond) + "]"
+
+
 def ocaml_query_actions(rows):
-    """[(state, location, label tag)] - state -1 / loc "" = wildcard."""
+    """[(state, location, comp gate, label tag)] - state -1 / loc "" =
+    wildcard, comp [] = ungated."""
     if not rows:
         return "[]"
     return "[" + "; ".join(
-        '(%d, "%s", "%s")' % (st, ocaml_str(loc), ocaml_str(tag))
-        for st, loc, tag in rows) + "]"
+        '(%d, "%s", %s, "%s")'
+        % (st, ocaml_str(loc), ocaml_comp(cnd), ocaml_str(tag))
+        for st, loc, cnd, tag in rows) + "]"
 
 
 def ocaml_loc_groups(rows):
-    """[((state, loc), effects)] -> [(state, loc, effects)]; state -1 /
-    loc "" = wildcard."""
+    """[((state, loc, comp), effects)] -> [(state, loc, comp, effects)];
+    state -1 / loc "" = wildcard, comp [] = ungated."""
     if not rows:
         return "[]"
-    parts = ['(%d, "%s", [%s])'
-             % (st, ocaml_str(loc),
+    parts = ['(%d, "%s", %s, [%s])'
+             % (st, ocaml_str(loc), ocaml_comp(cnd),
                 "; ".join(ocaml_effect(k, v) for k, v in effs))
-             for (st, loc), effs in rows]
+             for (st, loc, cnd), effs in rows]
     return "[" + "; ".join(parts) + "]"
 
 
 def ocaml_complete_groups(rows):
-    """[((state, success, loc), effects)] -> [(state, success, loc,
-    effects)]; -1 fields = wildcard."""
+    """[((state, success, loc, comp), effects)] -> [(state, success, loc,
+    comp, effects)]; -1 fields = wildcard, comp [] = ungated."""
     if not rows:
         return "[]"
-    parts = ['(%d, %d, "%s", [%s])'
-             % (st, suc, ocaml_str(loc),
+    parts = ['(%d, %d, "%s", %s, [%s])'
+             % (st, suc, ocaml_str(loc), ocaml_comp(cnd),
                 "; ".join(ocaml_effect(k, v) for k, v in effs))
-             for (st, suc, loc), effs in rows]
+             for (st, suc, loc, cnd), effs in rows]
     return "[" + "; ".join(parts) + "]"
 
 
@@ -1270,7 +1352,8 @@ def new_stats():
             'unresolved': [], 'missing_lua': [],
             'battle_unattributed': [], 'battle_conflicts': [],
             'remove_elsewhere': [], 'conv_other_hooks': [],
-            'msg_arm_drops': 0}
+            'msg_arm_drops': 0, 'comp_cb_drops': 0,
+            'comp_merge_drops': 0}
 
 
 def main():
@@ -1313,6 +1396,17 @@ def main():
             print(f"  elsewhere: {row}")
         print(f"message rows dropped (sibling-arm assignments): "
               f"{stats['msg_arm_drops']}")
+        n_gated = 0
+        for q in quests:
+            for field in ('enter_effects', 'execute_effects',
+                          'complete_effects', 'end_effects'):
+                n_gated += sum(1 for k, _e in q[field] if k[-1])
+        n_gated_q = sum(1 for q in quests for r in q["query_actions"]
+                        if r[2])
+        print(f"companion-gated keys: {n_gated} groups, {n_gated_q} query "
+              f"rows; dropped: {stats['comp_merge_drops']} message rows "
+              f"(contradictory gates), {stats['comp_cb_drops']} flat-list "
+              f"sites (callback/begin - out of scope, GAPS)")
         n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
                   for b in ('begin', 'abandon')}
         n_conv_cb = sum(len(v) for q in quests for _, v in q["conversation_callbacks"])
@@ -1535,12 +1629,22 @@ def main():
     lines.append("  conversations_abandon: string list;")
     lines.append("  conversation_callbacks: (string * string list) list;")
     lines.append("  callback_effects: (string * callback_effect list) list;")
-    lines.append("  query_actions: (int * string * string) list;")
-    lines.append("  enter_effects: (int * string * callback_effect list) list;")
-    lines.append("  execute_effects: (int * string * callback_effect list) list;")
+    lines.append("  (* (state, location, companion gate, ...): -1 / \"\" =")
+    lines.append("     wildcard, gate [] = no companion test *)")
+    lines.append("  query_actions:")
+    lines.append("    (int * string * (string * bool) list * string) list;")
+    lines.append("  enter_effects:")
+    lines.append("    (int * string * (string * bool) list *")
+    lines.append("     callback_effect list) list;")
+    lines.append("  execute_effects:")
+    lines.append("    (int * string * (string * bool) list *")
+    lines.append("     callback_effect list) list;")
     lines.append("  complete_effects:")
-    lines.append("    (int * int * string * callback_effect list) list;")
-    lines.append("  end_effects: (int * string * callback_effect list) list;")
+    lines.append("    (int * int * string * (string * bool) list *")
+    lines.append("     callback_effect list) list;")
+    lines.append("  end_effects:")
+    lines.append("    (int * string * (string * bool) list *")
+    lines.append("     callback_effect list) list;")
     lines.append("}")
     lines.append("")
 

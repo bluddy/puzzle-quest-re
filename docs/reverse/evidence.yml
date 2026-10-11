@@ -3955,9 +3955,19 @@ port_decisions:
       quest state, so a body that writes questState = 2 before a stage-2
       CompleteQuest test finishes in one call. Group keys are the guarded
       (questState, idLocation) pairs with -1/"" wildcards; complete groups
-      carry the success/failure bit. ShowMessage effects queue through
-      pending_messages; pq_conv_gfx pops them as a modal box whose OK click
-      fires the box's callback.
+      carry the success/failure bit; every key also carries the
+      QUEST_HERO_HAS_COMPANION_SELECTED conjunction it sits under - the
+      (companion id, must-be-present) pairs the extractor parsed from the
+      open if-headers (an else-arm flips the single test) - checked at
+      apply time against player.companions by companion_ok, so QS00 queues
+      NOCOMP or PRELUDE, QK06 NOCOMP or BUTTON, and QP01's first-match
+      query skips a label whose companion is away. enter_location folds
+      the groups before the remove rules apply: Lua tests companions at
+      if-entry while the removes sit inside the chosen arm (Q3S0 messages
+      then removes, QS00 removes then messages), so the gates must read
+      the party the arrival started with. ShowMessage effects queue
+      through pending_messages; pq_conv_gfx pops them as a modal box whose
+      OK click fires the box's callback.
     rationale: >
       The Lua bodies are sequential if-blocks over a live questState
       variable: an elseif chain exists only inside OnQueryAction, while
@@ -3970,12 +3980,20 @@ port_decisions:
       in a sibling arm of a branch open at the site is dead there, so two
       sites inside one if/else no longer pick up each other's text (the
       rule that removed the duplicate SUCCESS1/NOCOMP boxes Q3Q6, QK06,
-      QS02 and the phantom FAILURE copies Q1Q0/Q3Q2 carried). A
-      caller-driven complete_action keeps the battle settle decoupled,
-      matching the quest_battle_complete separation, and campaign_demo
-      walks Q0I2's whole chain as the reference driver.
+      QS02 and the phantom FAILURE copies Q1Q0/Q3Q2 carried). Companion
+      gates close the twin hole that rule exposed: arm exclusion picks the
+      text but both arms still shared one key, so both boxes queued; the
+      gate splits the arms (54 groups + 4 query rows; 0 contradictory
+      merges) without touching what the key cannot see - items, done-flags
+      and the callbacks/OnBegin flat lists stay ungated, counted by
+      extractor --check. The group-before-removes order is forced by Q3S0:
+      removing the gated companion first would flip the very test the
+      arrival message keys on. A caller-driven complete_action keeps the
+      battle settle decoupled, matching the quest_battle_complete
+      separation, and campaign_demo walks Q0I2's whole chain as the
+      reference driver.
     supersedes: null
-    date: 2026-10-09
+    date: 2026-10-11
 
   - id: port.full_loop_map_actions
     decision: >

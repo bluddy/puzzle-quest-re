@@ -7,8 +7,9 @@
 
     What this file proves that the extraction listings did not: that the
     queues actually fill and drain (accept queues the intro, an arrival at a
-    guarded location queues its tree, a wildcard-state arrival queues at any
-    stage, firing a callback queues its nested tree or message box), that the
+    guarded location queues its tree - and only when its companion gate
+    holds, a wildcard-state arrival queues at any stage, firing a callback
+    queues its nested tree or message box), that the
     effects land on a real player (state 1 -> 2, gold/xp/item/companion
     grants, a completes quest runs OnEnd exactly like turn-in), that
     reattribution kept rewards single-owner (Q0T0's IBSH and Q0Q4's NDKH live
@@ -108,13 +109,14 @@ check "Q0I2's callback effects: a state write and a complete"
 let q3q1 = quest "Q3Q1" in
 check "Q3Q1's arrivals are attributed to state+location"
   (q3q1.Campaign_quests.enter_effects =
-   [ (1, "WETO", [ Campaign_quests.Conversation "Conv_Q3Q1b" ]);
-     (2, "CYLA", [ Campaign_quests.Conversation "Conv_Q3Q1c" ]) ]);
+   [ (1, "WETO", [], [ Campaign_quests.Conversation "Conv_Q3Q1b" ]);
+     (2, "CYLA", [], [ Campaign_quests.Conversation "Conv_Q3Q1c" ]) ]);
 
 let q0q5 = quest "Q0Q5" in
-check "an arrival with no questState guard carries the wildcard state"
+check "Q0Q5's wildcard-state arrival carries its companion gate"
   (q0q5.Campaign_quests.enter_effects =
-   [ (-1, "WHPS", [ Campaign_quests.Conversation "Conv_Q0Q5b" ]) ]);
+   [ (-1, "WHPS", [ ("NDKH", true) ],
+       [ Campaign_quests.Conversation "Conv_Q0Q5b" ]) ]);
 
 let q3q7 = quest "Q3Q7" in
 check "Q3Q7's branch keeps both trees (first source order fires)"
@@ -129,8 +131,8 @@ check "callback rewards left the turn-in buckets"
    text and queued a box Lua never shows. *)
 let q3q6 = quest "Q3Q6" in
 check "Q3Q6's success group carries one box - the callback one"
-  (List.map (fun (_, _, _, e) -> e)
-     (List.filter (fun (st, suc, _, _) -> st = 1 && suc = 1)
+  (List.map (fun (_, _, _, _, e) -> e)
+     (List.filter (fun (st, suc, _, _, _) -> st = 1 && suc = 1)
         q3q6.Campaign_quests.complete_effects)
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", "CallbackMsgA");
@@ -138,44 +140,44 @@ check "Q3Q6's success group carries one box - the callback one"
 
 let q1q0 = quest "Q1Q0" in
 check "Q1Q0 keeps its failure box and only at the wildcard state"
-  (List.filter (fun (_, suc, _, _) -> suc = 0)
+  (List.filter (fun (_, suc, _, _, _) -> suc = 0)
      q1q0.Campaign_quests.complete_effects
-  = [ (-1, 0, "",
+  = [ (-1, 0, "", [],
         [ Campaign_quests.ShowMessage
             ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "") ]) ]);
 
 let qk06 = quest "QK06" in
-check "QK06's execute group drops the sibling-arm NOCOMP copy"
-  (List.map (fun (_, _, e) -> e) qk06.Campaign_quests.execute_effects
-   = [ [ Campaign_quests.ShowMessage
-           ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "");
-         Campaign_quests.ShowMessage
-           ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA") ] ]);
+check "QK06's execute groups split the NOCOMP / BUTTON arms by NKHA"
+  (List.map (fun (_, _, _, e) -> e) qk06.Campaign_quests.execute_effects
+  = [ [ Campaign_quests.ShowMessage
+          ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "") ];
+      [ Campaign_quests.ShowMessage
+          ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA") ] ]);
 
 let qs00 = quest "QS00" in
 check "QS00's arrival keeps one box per arm, no NOCOMP twin"
-  (List.map (fun (_, _, e) -> e) qs00.Campaign_quests.enter_effects
-   = [ [ Campaign_quests.ShowMessage
-           ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "");
-         Campaign_quests.ShowMessage
-           ("[QUEST_QS00_NAME]", "[QUEST_QS00_PRELUDE]", "ConvB") ];
-       [ Campaign_quests.ShowMessage
-           ("[QUEST_QS00_NAME]", "[QUEST_QS00_REENTER]", "") ] ]);
+  (List.map (fun (_, _, _, e) -> e) qs00.Campaign_quests.enter_effects
+  = [ [ Campaign_quests.ShowMessage
+          ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "") ];
+      [ Campaign_quests.ShowMessage
+          ("[QUEST_QS00_NAME]", "[QUEST_QS00_PRELUDE]", "ConvB") ];
+      [ Campaign_quests.ShowMessage
+          ("[QUEST_QS00_NAME]", "[QUEST_QS00_REENTER]", "") ] ]);
 
 check "location-action conversations live in the execute/complete groups"
   (List.exists
      (fun (q : Campaign_quests.quest) ->
-       List.exists (fun (_, _, effs) ->
+       List.exists (fun (_, _, _, effs) ->
            List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
              effs)
          q.Campaign_quests.execute_effects)
      Campaign_quests.quests
    && List.exists
         (fun (q : Campaign_quests.quest) ->
-          List.exists (fun (_, _, _, effs) ->
+          List.exists (fun (_, _, _, _, effs) ->
               List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
                 effs)
-            q.Campaign_quests.complete_effects)
+              q.Campaign_quests.complete_effects)
         Campaign_quests.quests);
 
 check "no OnAbandon conversations ship (the queue path is completeness only)"
@@ -199,29 +201,41 @@ check "a second accept of the same quest queues nothing more"
   (let _p1 = Campaign.quest_accept p0 "Q0I2" in
    drain (); true);
 
-check "an arrival at the guarded location queues the tree (Q0Q6 state 1)"
-  (let p = active "Q0Q6" 1 in
+check "an arrival at the guarded location queues the tree (Q0Q6 state 1, NDKH along)"
+  (let p = { (active "Q0Q6" 1) with Campaign.companions = [ "NDKH" ] } in
    drain ();
    let _p2 = Campaign.enter_location p "WALF" in
    take_one () = Some "Conv_Q0Q6b" && take_one () = None);
 
+check "the same arrival queues nothing with NDKH away (Q0Q6 gate)"
+  (let p = active "Q0Q6" 1 in
+   drain ();
+   let _p2b = Campaign.enter_location p "WALF" in
+   take_one () = None);
+
 check "an arrival at the wrong stage queues nothing (Q0Q6 state 2)"
-  (let p = active "Q0Q6" 2 in
+  (let p = { (active "Q0Q6" 2) with Campaign.companions = [ "NDKH" ] } in
    drain ();
    let _p3 = Campaign.enter_location p "WALF" in
    take_one () = None);
 
 check "an arrival at the wrong location queues nothing"
-  (let p = active "Q0Q6" 1 in
+  (let p = { (active "Q0Q6" 1) with Campaign.companions = [ "NDKH" ] } in
    drain ();
    let _p4 = Campaign.enter_location p "CBAR" in
    take_one () = None);
 
-check "a wildcard-state arrival queues at any stage (Q0Q5 at WHPS)"
-  (let p = active "Q0Q5" 3 in
+check "a wildcard-state arrival queues at any stage (Q0Q5 at WHPS, NDKH along)"
+  (let p = { (active "Q0Q5" 3) with Campaign.companions = [ "NDKH" ] } in
    drain ();
    let _p5 = Campaign.enter_location p "WHPS" in
    take_one () = Some "Conv_Q0Q5b" && take_one () = None);
+
+check "the wildcard-state arrival is gated too (Q0Q5 without NDKH)"
+  (let p = active "Q0Q5" 3 in
+   drain ();
+   let _p5b = Campaign.enter_location p "WHPS" in
+   take_one () = None);
 
 check "Q3Q1's stage 1 arrival queues its own tree only"
   (let p = active "Q3Q1" 1 in

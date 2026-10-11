@@ -9,9 +9,12 @@
    walks state 1 -> 2 -> Complete in a single call, enter fires guarded
    arrivals, and turn-in pays OnEnd's message box.
 
-   What the listings did not show: that the queues fill and drain, that
-   the guarded groups actually land on a real player, and that a message's
-   callback fires through execute_callback like the UI's OK button.
+    What the listings did not show: that the queues fill and drain, that
+    the guarded groups actually land on a real player, that a message's
+    callback fires through execute_callback like the UI's OK button, and
+    that the companion gates read the party - each dual-arm quest queues
+    one box for the companion along and the other for the companion away
+    (QK06, QS00, Q3S0; QP01's label, Q2Q7's conversation).
 
    The map tables and the ruin registry are global mutable state, so the
    whole file snapshots them first and restores at the end, like
@@ -95,17 +98,17 @@ let () =
 (* ---------------------------------------------------------------- *)
 
 let q0i2 = quest "Q0I2" in
-check "Q0I2's query rows carry stage, node and label"
+check "Q0I2's query rows carry stage, node, gate and label"
   (q0i2.Campaign_quests.query_actions =
-   [ (1, "CENM", "[QUEST_Q0I2_ACTION1]");
-     (2, "CENM", "[QUEST_Q0I2_ACTION2]") ]);
+   [ (1, "CENM", [], "[QUEST_Q0I2_ACTION1]");
+     (2, "CENM", [], "[QUEST_Q0I2_ACTION2]") ]);
 let q0q0 = quest "Q0Q0" in
 check "Q0Q0's complete groups are success, failure, then the live chain"
-  (List.map (fun (st, suc, loc, _) -> (st, suc, loc))
+  (List.map (fun (st, suc, loc, _, _) -> (st, suc, loc))
      q0q0.Campaign_quests.complete_effects
    = [ (1, 1, ""); (1, 0, ""); (1, -1, ""); (2, -1, "") ]);
 check "Q0I3 turns in straight from execute at stage 2"
-  ((quest "Q0I3").Campaign_quests.execute_effects = [ (2, "", [ Campaign_quests.Complete ]) ]);
+  ((quest "Q0I3").Campaign_quests.execute_effects = [ (2, "", [], [ Campaign_quests.Complete ]) ]);
 
 (* ---------------------------------------------------------------- *)
 (* query: first match wins                                          *)
@@ -241,6 +244,99 @@ check "Q0I3's failure leaves stage 1 and queues its own box"
    && (match take_msg () with
        | Some m -> m.Campaign.pmsg_text = "[QUEST_Q0I3_FAILURE]"
        | None -> false));
+
+(* ---------------------------------------------------------------- *)
+(* companion gates: the extracted (id, present) tests read the party *)
+(* ---------------------------------------------------------------- *)
+
+drain ();
+let g1 =
+  Campaign.execute_action
+    { (active "QK06" 1) with Campaign.companions = [ "NKHA" ] }
+    "QK06" "" in
+check "QK06 execute with NKHA along queues the button box"
+  ((match take_msg () with
+    | Some m ->
+      m.Campaign.pmsg_text = "[QUEST_QK06_BUTTON]"
+      && m.Campaign.pmsg_callback = "MsgCallbackA"
+      && m.Campaign.pmsg_quest = "QK06"
+    | None -> false)
+   && take_msg () = None && take_conv () = None
+   && state_of g1 "QK06" = Some 1);
+
+drain ();
+let _g2 = Campaign.execute_action (active "QK06" 1) "QK06" "" in
+check "QK06 execute with NKHA away queues the NOCOMP box instead"
+  ((match take_msg () with
+    | Some m ->
+      m.Campaign.pmsg_text = "[QUEST_QK06_NOCOMP]"
+      && m.Campaign.pmsg_callback = ""
+    | None -> false)
+   && take_msg () = None && take_conv () = None);
+
+check "QP01's label shows only with NPAT along"
+  (Campaign.query_actions
+     { (active "QP01" 1) with Campaign.companions = [ "NPAT" ] }
+     "WPIK"
+   = [ ("QP01", "[QUEST_QP01_ACTION1]") ]);
+
+check "QP01 offers nothing with NPAT away (the gate holds the label)"
+  (Campaign.query_actions (active "QP01" 1) "WPIK" = []);
+
+drain ();
+let _g3 =
+  Campaign.complete_action ~success:true
+    { (active "Q2Q7" 1) with Campaign.companions = [ "NDRO" ] }
+    "Q2Q7" "" in
+check "Q2Q7's win queues its conversation with NDRO along"
+  (take_conv () = Some "Conv_Q2Q7b" && take_conv () = None);
+
+drain ();
+let _g4 =
+  Campaign.complete_action ~success:true (active "Q2Q7" 1) "Q2Q7" "" in
+check "Q2Q7's win skips the conversation with NDRO away"
+  (take_conv () = None);
+
+drain ();
+let g5 =
+  Campaign.enter_location
+    { (active "QS00" 1) with Campaign.companions = [ "NSER" ] }
+    "CENM" in
+check "QS00's arrival with NSER along queues the prelude and removes her"
+  ((match take_msg () with
+    | Some m ->
+      m.Campaign.pmsg_text = "[QUEST_QS00_PRELUDE]"
+      && m.Campaign.pmsg_callback = "ConvB"
+    | None -> false)
+   && take_msg () = None && take_conv () = None
+   && not (List.mem "NSER" g5.Campaign.companions));
+
+drain ();
+let _g6 = Campaign.enter_location (active "QS00" 1) "CENM" in
+check "QS00's arrival with NSER away queues the NOCOMP box"
+  ((match take_msg () with
+    | Some m -> m.Campaign.pmsg_text = "[QUEST_QS00_NOCOMP]"
+    | None -> false)
+   && take_msg () = None && take_conv () = None);
+
+drain ();
+let g7 =
+  Campaign.enter_location
+    { (active "Q3S0" 2) with Campaign.companions = [ "NSER" ] }
+    "WLOB" in
+check "Q3S0's sword point with NSER along queues the leave box and removes"
+  ((match take_msg () with
+    | Some m -> m.Campaign.pmsg_text = "[QUEST_Q3S0_LEAVE0]"
+    | None -> false)
+   && take_msg () = None && take_conv () = None
+   && not (List.mem "NSER" g7.Campaign.companions));
+
+drain ();
+let _g8 =
+  Campaign.enter_location { (active "Q3S0" 2) with Campaign.companions = [] }
+    "WLOB" in
+check "Q3S0's sword point with NSER away queues nothing"
+  (take_msg () = None && take_conv () = None);
 
 (* ---------------------------------------------------------------- *)
 (* enter: guarded arrivals and the message queue itself              *)

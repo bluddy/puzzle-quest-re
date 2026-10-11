@@ -541,7 +541,8 @@ let run_quest_on_abandon (qi: quest_instance) : quest_instance * quest_effect li
    (Q3S0's five sword points, Q3W0's at CENM). The Lua's
    QUEST_HERO_HAS_COMPANION_SELECTED guard needs no check here: dropping
    someone who is not in the party is the no-op the guard would have
-   prevented, and the leave message rides no campaign event. *)
+   prevented, and the leave message rides no campaign event - its own arm
+   carries the gate in enter_effects (apply_loc_groups / companion_ok). *)
 let run_quest_on_enter_location (qi: quest_instance) (location: string) : quest_instance * quest_effect list =
   let state = match qi.state with Active n -> n | _ -> -1 in
   qi,
@@ -1616,6 +1617,15 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
           let won = Battle.hero_won battle in
           Some (quest_battle_settle player qid won battle, battle)
 
+(* A companion gate from the extracted guards: every (id, must-be-present)
+   must hold against the traveling party ([] = no companion test = ungated).
+   Lua's QUEST_HERO_HAS_COMPANION_SELECTED reads the selected hero of the
+   single-hero engine; the port reads player.companions. *)
+let companion_ok (p : player) (gate : (string * bool) list) : bool =
+  List.for_all
+    (fun (cid, present) -> List.mem cid p.companions = present)
+    gate
+
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into
    completed_quests) - plus the extracted end_effects: OnEnd's own
@@ -1636,13 +1646,13 @@ let quest_turn_in (player: player) (qid: string) : player =
        (inside run_quest_on_end) would otherwise have removed. *)
     let p =
       List.fold_left
-        (fun acc (st, _loc, effs) ->
+        (fun acc (st, _loc, gate, effs) ->
           let cur =
             match List.assoc_opt qid acc.active_quests with
             | Some s -> s
             | None -> -2
           in
-          if st = -1 || st = cur then
+          if (st = -1 || st = cur) && companion_ok acc gate then
             List.fold_left
               (fun a e ->
                 match e with
@@ -1837,21 +1847,24 @@ let complete_encounter (player: player) (enc: encounter) : player =
    group Completes the quest: Lua's questState variable outlives the
    CompleteQuest bookkeeping, so later guards still see it. *)
 let apply_loc_groups (player : player) (qid : string)
-    (rows : (int * string * callback_effect list) list)
+    (rows :
+       (int * string * (string * bool) list * callback_effect list) list)
     (matches : int -> string -> player -> bool) : player =
   List.fold_left
-    (fun acc (st, loc, effs) ->
-      if matches st loc acc then
+    (fun acc (st, loc, gate, effs) ->
+      if matches st loc acc && companion_ok acc gate then
         List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
       else acc)
     player rows
 
 let apply_complete_groups (player : player) (qid : string)
-    (rows : (int * int * string * callback_effect list) list)
+    (rows :
+       (int * int * string * (string * bool) list * callback_effect list)
+       list)
     (matches : int -> int -> string -> player -> bool) : player =
   List.fold_left
-    (fun acc (st, suc, loc, effs) ->
-      if matches st suc loc acc then
+    (fun acc (st, suc, loc, gate, effs) ->
+      if matches st suc loc acc && companion_ok acc gate then
         List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
       else acc)
     player rows
@@ -1861,41 +1874,53 @@ let apply_complete_groups (player : player) (qid : string)
    order so a later rule sees an earlier removal - the order the engine's
    single hero would), then the extracted enter_effects: arrival
    conversations, messages, state writes and completes under their guard
-   (state -1 = any stage, loc "" = any node), live like the sequential
-   if-blocks of the Lua body. *)
+   (state -1 = any stage, loc "" = any node, gate [] = no companion test),
+   live like the sequential if-blocks of the Lua body.
+
+   The group fold runs BEFORE the remove rules apply: Lua evaluates the
+   QUEST_HERO_HAS_COMPANION_SELECTED tests at if-entry, while the removes
+   sit inside the chosen arm (Q3S0 messages then removes, QS00 removes
+   then messages) - the gates must see the party the arrival started
+   with. The removes themselves matched stage+location at build time, so
+   the reorder cannot change which of them fire. *)
 let enter_location (player: player) (location: string) : player =
   List.fold_left
     (fun p (qid, st) ->
       let q = quest_by_id qid in
       let qi = { quest = q; state = Active st;
                  vars = quest_var_set [] "questState" (string_of_int st) } in
-      let _, effects = run_quest_on_enter_location qi location in
-      let p = List.fold_left (fun p' e -> apply_quest_effect p' e) p effects in
-      apply_loc_groups p qid q.enter_effects
-        (fun st' loc' p' ->
-          let cur =
-            match List.assoc_opt qid p'.active_quests with
-            | Some s -> s
-            | None -> st
-          in
-          (st' = -1 || st' = cur) && (loc' = "" || loc' = location)))
+      let _, removes = run_quest_on_enter_location qi location in
+      let p =
+        apply_loc_groups p qid q.enter_effects
+          (fun st' loc' p' ->
+            let cur =
+              match List.assoc_opt qid p'.active_quests with
+              | Some s -> s
+              | None -> st
+            in
+            (st' = -1 || st' = cur) && (loc' = "" || loc' = location))
+      in
+      List.fold_left (fun p' e -> apply_quest_effect p' e) p removes)
     player player.active_quests
 
 (* What the hero can do at [location]: for each active quest, the first
-   OnQueryAction label whose (state, location) guard matches - source order,
-   the branch Lua would show (state -1 / loc "" = any). [(qid, text tag)];
-   quests with no matching branch are left out. *)
+   OnQueryAction label whose (state, location, companion) guard all match -
+   source order, the branch Lua would show (state -1 / loc "" = any, gate
+   [] = ungated). [(qid, text tag)]; quests with no matching branch are
+   left out. *)
 let query_actions (player : player) (location : string) :
     (string * string) list =
   List.filter_map
     (fun (qid, st) ->
       let q = quest_by_id qid in
       match List.find_opt
-              (fun (st', loc', _) ->
-                 (st' = -1 || st' = st) && (loc' = "" || loc' = location))
+              (fun (st', loc', gate, _) ->
+                 (st' = -1 || st' = st)
+                 && (loc' = "" || loc' = location)
+                 && companion_ok player gate)
               q.query_actions
       with
-      | Some (_, _, tag) -> Some (qid, tag)
+      | Some (_, _, _, tag) -> Some (qid, tag)
       | None -> None)
     player.active_quests
 
