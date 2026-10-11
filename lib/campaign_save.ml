@@ -289,14 +289,14 @@ module SaveConvert = struct
       battle = s.battle; cunning = s.cunning; morale = s.morale }
 
   let equipment_from_save (e: save_equipment) : Campaign.equipment =
-    { weapon = (match e.weapon with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      armor = (match e.armor with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      helm = (match e.helm with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      gauntlets = (match e.gauntlets with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      ring1 = (match e.ring1 with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      ring2 = (match e.ring2 with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      mount = (match e.mount with Some id -> Some (Campaign_items.item_by_id id) | None -> None);
-      companion = (match e.companion with Some id -> Some (Campaign_items.item_by_id id) | None -> None); }
+    { weapon = (match e.weapon with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      armor = (match e.armor with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      helm = (match e.helm with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      gauntlets = (match e.gauntlets with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      ring1 = (match e.ring1 with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      ring2 = (match e.ring2 with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      mount = (match e.mount with Some id -> Some (Campaign.resolve_item id) | None -> None);
+      companion = (match e.companion with Some id -> Some (Campaign.resolve_item id) | None -> None); }
 
   let player_from_save (s: save_player) : Campaign.player =
     let prof = Campaign_professions.profession_by_id s.profession_id in
@@ -305,7 +305,7 @@ module SaveConvert = struct
       mana = 0; max_mana = 0;
       skills = skill_affinities_from_save s.skills;
       equipment = equipment_from_save s.equipment;
-      inventory = List.map (fun id -> Campaign_items.item_by_id id) s.inventory;
+      inventory = List.map (fun id -> Campaign.resolve_item id) s.inventory;
       known_spells = s.known_spells; active_quests = s.active_quests;
       completed_quests = s.completed_quests; companions = s.companions;
       recruited_companions = s.recruited_companions;

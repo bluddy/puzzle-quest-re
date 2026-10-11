@@ -747,47 +747,251 @@ type forge_spec = {
   difficulty: int;
 }
 
+let forge_spec_of ~(base: string) ~(modifier: string) ~(power: string) :
+    forge_spec option =
+  match
+    ( (try Some (Campaign_runes.base_by_id base) with Not_found -> None),
+      (try Some (Campaign_runes.modifier_by_id modifier)
+           with Not_found -> None),
+      (try Some (Campaign_runes.power_by_id power) with Not_found -> None),
+      Campaign_runes.forged_name_of base modifier )
+  with
+  | Some b, Some m, Some pw, Some n ->
+    let base_data =
+      int_of_float (float_of_int b.Campaign_runes.data
+                    *. m.Campaign_runes.data_mult)
+      + m.Campaign_runes.data_add
+    in
+    let power_data =
+      int_of_float
+        (Float.round (float_of_int pw.Campaign_runes.data
+                      *. m.Campaign_runes.power_mult))
+      + m.Campaign_runes.power_add
+    in
+    let difficulty =
+      int_of_float
+        (Float.round
+           (float_of_int
+              (b.Campaign_runes.diff_add + m.Campaign_runes.diff_add)
+            *. m.Campaign_runes.diff_mult))
+    in
+    Some
+      { name_text = n.Campaign_runes.name_text;
+        icon = n.Campaign_runes.icon;
+        position = b.Campaign_runes.position;
+        base_data;
+        power_data;
+        difficulty }
+  | _ -> None
+
+(* The held-rune gate over the same arithmetic. *)
 let forge_rune (p: player) ~(base: string) ~(modifier: string)
     ~(power: string) : forge_spec option =
   if
     List.mem base p.runes && List.mem modifier p.runes
     && List.mem power p.runes
-  then
-    match
-      ( (try Some (Campaign_runes.base_by_id base) with Not_found -> None),
-        (try Some (Campaign_runes.modifier_by_id modifier)
-             with Not_found -> None),
-        (try Some (Campaign_runes.power_by_id power) with Not_found -> None),
-        Campaign_runes.forged_name_of base modifier )
-    with
-    | Some b, Some m, Some pw, Some n ->
-      let base_data =
-        int_of_float (float_of_int b.Campaign_runes.data
-                      *. m.Campaign_runes.data_mult)
-        + m.Campaign_runes.data_add
-      in
-      let power_data =
-        int_of_float
-          (Float.round (float_of_int pw.Campaign_runes.data
-                        *. m.Campaign_runes.power_mult))
-        + m.Campaign_runes.power_add
-      in
-      let difficulty =
-        int_of_float
-          (Float.round
-             (float_of_int
-                (b.Campaign_runes.diff_add + m.Campaign_runes.diff_add)
-              *. m.Campaign_runes.diff_mult))
-      in
-      Some
-        { name_text = n.Campaign_runes.name_text;
-          icon = n.Campaign_runes.icon;
-          position = b.Campaign_runes.position;
-          base_data;
-          power_data;
-          difficulty }
-    | _ -> None
+  then forge_spec_of ~base ~modifier ~power
   else None
+
+(* Fill one %d in a shipped string; the descs carry %% where the display
+   wants a single percent. Printf.sprintf will not take a tag that only
+   becomes a format after Text_data resolves it. *)
+let fill_int (pat: string) (n: int) : string =
+  let filled =
+    match String.index_opt pat '%' with
+    | Some i when i + 1 < String.length pat && pat.[i + 1] = 'd' ->
+      String.sub pat 0 i ^ string_of_int n
+      ^ String.sub pat (i + 2) (String.length pat - i - 2)
+    | _ -> pat
+  in
+  let b = Buffer.create (String.length filled) in
+  let i = ref 0 in
+  while !i < String.length filled do
+    if
+      !i + 1 < String.length filled && filled.[!i] = '%'
+      && filled.[!i + 1] = '%'
+    then begin
+      Buffer.add_char b '%';
+      i := !i + 2
+    end
+    else begin
+      Buffer.add_char b filled.[!i];
+      incr i
+    end
+  done;
+  Buffer.contents b
+
+(* What the battle's runtime hooks read for a minted item: JXXX's codes
+   and the modifier-edited data, plus the panel facts the item view and
+   the loadout need. The r_ prefix keeps the labels clear of forge_spec's
+   (name_text, icon, position) and the item table's. *)
+type rune_item_params = {
+  r_base_code: string;
+  r_base_data: int;
+  r_power_code: string;
+  r_power_data: int;
+  r_position: string;
+  r_icon: int;
+}
+
+(* The in-session registry of minted items, keyed by id. The id encodes
+   the triple ("R" ^ base ^ modifier ^ power), so a save's inventory can
+   rebuild one without this table - see [rebuild_rune_item] - and the
+   table is what the loadout's runtime builder and Item_hooks' start
+   payoffs read while the session runs. *)
+let rune_item_specs : (string, rune_item_params) Hashtbl.t = Hashtbl.create 32
+
+let rune_minted_id (base: string) (modifier: string) (power: string) : string
+    =
+  "R" ^ base ^ modifier ^ power
+
+(* The minted item, computed from the triple alone: the same arithmetic
+   as [forge_rune], then the [Campaign_items.item] view - name and icon
+   from the (base, modifier) table, the slot from the base, and the power
+   text both abilities with their data filled, base first
+   (port.rune_item_mint). *)
+let rune_item_of_triple ~(base: string) ~(modifier: string)
+    ~(power: string) : (item * rune_item_params) option =
+  match forge_spec_of ~base ~modifier ~power with
+  | None -> None
+  | Some s ->
+    let b = Campaign_runes.base_by_id base in
+    let pw = Campaign_runes.power_by_id power in
+    let params =
+      { r_base_code = b.Campaign_runes.code;
+        r_base_data = s.base_data;
+        r_power_code = pw.Campaign_runes.code;
+        r_power_data = s.power_data;
+        r_position = s.position;
+        r_icon = s.icon }
+    in
+    let it =
+      { id = rune_minted_id base modifier power;
+        name_text = s.name_text;
+        power_text =
+          fill_int
+            (String.trim (Text_data.text b.Campaign_runes.desc_text))
+            s.base_data
+          ^ " "
+          ^ fill_int
+              (String.trim (Text_data.text pw.Campaign_runes.desc_text))
+              s.power_data;
+        location = s.position;
+        cost = 0;
+        rarity = 0;
+        icon = s.icon;
+        restriction_type = "none";
+        lua_file = "Assets\\Runes\\JXXX.lua";
+        lua_object = "JXXX";
+        lua_source = "" }
+    in
+    Some (it, params)
+
+(* Publish a mint: the session registry plus the start payoffs JXXX's
+   OnStartBattle runs - powers 0-3 credit POWERDATA of that mana, 4
+   raises max life and life (ceiling first, the way the walls do). *)
+let register_rune_item (id: string) (p: rune_item_params) : unit =
+  Hashtbl.replace rune_item_specs id p;
+  let payoffs =
+    match p.r_power_code with
+    | "0" -> [ Item_hooks.AddMana (Combat.Fire, p.r_power_data) ]
+    | "1" -> [ Item_hooks.AddMana (Combat.Earth, p.r_power_data) ]
+    | "2" -> [ Item_hooks.AddMana (Combat.Air, p.r_power_data) ]
+    | "3" -> [ Item_hooks.AddMana (Combat.Water, p.r_power_data) ]
+    | "4" ->
+      [ Item_hooks.AddMaxLife p.r_power_data; Item_hooks.AddLife p.r_power_data ]
+    | _ -> []
+  in
+  Hashtbl.replace Item_hooks.rune_start_payoffs id payoffs
+
+(* Forge for keeps: the item joins the inventory (once - [RUNEDUP_TEXT]:
+   a duplicate yields no extra copy) and the session registry. *)
+let forge_item (p: player) ~(base: string) ~(modifier: string)
+    ~(power: string) : (player * item) option =
+  if
+    List.mem base p.runes && List.mem modifier p.runes
+    && List.mem power p.runes
+  then
+    match rune_item_of_triple ~base ~modifier ~power with
+    | None -> None
+    | Some (it, params) ->
+      register_rune_item it.id params;
+      let p =
+        if List.exists (fun (i: item) -> i.id = it.id) p.inventory then p
+        else { p with inventory = it :: p.inventory }
+      in
+      Some (p, it)
+  else None
+
+(* Rebuild a minted item from its id, the way a loaded save does: the id
+   encodes the triple, so the arithmetic and the registry come back
+   without the session that minted it. *)
+let rebuild_rune_item (id: string) : item option =
+  if String.length id = 13 && id.[0] = 'R' then
+    let base = String.sub id 1 4 in
+    let modifier = String.sub id 5 4 in
+    let power = String.sub id 9 4 in
+    match rune_item_of_triple ~base ~modifier ~power with
+    | Some (it, params) ->
+      register_rune_item it.id params;
+      Some it
+    | None -> None
+  else None
+
+(* An inventory or slot id back to its item: the fixed table first, then
+   a minted rune rebuilt from the id. Unknown ids still raise. *)
+let resolve_item (id: string) : item =
+  try item_by_id id
+  with Not_found -> (
+    match rebuild_rune_item id with
+    | Some it -> it
+    | None -> raise Not_found)
+
+(* A minted item as the battle's runtime item: JXXX's OnGiveDamage reads
+   the base code (0/1 add BASEDATA on hits of 3+, 9 on hits of 6+) and
+   the start payoffs ride Item_hooks' rune table. Base D (damage per full
+   mana pool) needs the max-mana caps the loop does not model, base E's
+   reflect damages the attacker outside the damage-transform signature,
+   and powers 9/A want a per-event percentile - the same three absences
+   [Item_hooks] documents for the fixed items, so those runes forge but
+   their bodies stay quiet. *)
+let runtime_rune_item (id: string) : Item.item option =
+  match Hashtbl.find_opt rune_item_specs id with
+  | None -> None
+  | Some p ->
+    let location =
+      match p.r_position with
+      | "weapon" -> Item.Weapon
+      | "head" -> Item.Head
+      | "body" -> Item.Body
+      | _ -> Item.Misc
+    in
+    let d =
+      { Item.id;
+        location;
+        shop_cost = 0;
+        rarity = 0;
+        icon = p.r_icon;
+        restriction = Item.NoRequirement;
+        on_start_battle =
+          (match p.r_power_code with "0" | "1" | "2" | "3" | "4" -> true | _ -> false) }
+    in
+    let give =
+      match p.r_base_code with
+      | "0" | "1" ->
+        Some
+          (fun (_ctx: Item.item_context) dmg _src _tgt ->
+            if dmg >= 3 then dmg + p.r_base_data else dmg)
+      | "9" ->
+        Some
+          (fun (_ctx: Item.item_context) dmg _src _tgt ->
+            if dmg >= 6 then dmg + p.r_base_data else dmg)
+      | _ -> None
+    in
+    Some
+      (Item.make_item
+         ~hooks:{ Item.no_hooks with Item.on_give_damage = give }
+         d)
 
 (* ------------------------------------------------------------------ *)
 (* Battle Integration *)
@@ -873,7 +1077,11 @@ let loadout_of_equipment (e: equipment) : Item.loadout =
       match slot with
       | None -> ()
       | Some ci ->
-        (match Item_hooks.item_of_id ci.Campaign_items.id with
+        (match
+           (match runtime_rune_item ci.Campaign_items.id with
+           | Some it -> Some it
+           | None -> Item_hooks.item_of_id ci.Campaign_items.id)
+         with
          | None -> ()
          | Some i -> ignore (Item.equip l i)))
     [ e.weapon; e.armor; e.helm; e.gauntlets; e.ring1; e.ring2;

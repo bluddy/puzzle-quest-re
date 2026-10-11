@@ -4213,3 +4213,39 @@ port_decisions:
       claim the Rune").
     supersedes: null
     date: 2026-10-10
+
+  - id: port.rune_item_mint
+    decision: >
+      forge_item mints the spec into a real inventory item: id "R" ^ base
+      ^ modifier ^ power, name and icon from the (base, modifier) table,
+      the slot from the base's position, and the power text carries both
+      abilities with their data filled. The loadout resolves minted ids
+      into runtime items whose JXXX hooks ride the existing machinery -
+      OnGiveDamage for bases 0/1/9 and per-item OnStartBattle payoffs for
+      powers 0-4 - and a loaded save rebuilds a mint from its id alone. A
+      duplicate triple yields no extra copy.
+    rationale: >
+      The id encodes the triple, so nothing has to persist but the id:
+      campaign_save's inventory and equipment restore through
+      resolve_item, which falls back from the fixed table to a rebuild
+      that recomputes the arithmetic and re-registers the session hooks -
+      the same trick that lets old saves load without a rune field. cost
+      and rarity stay 0: no shipped data prices a forged item, and the
+      shop's selling flow is unported, so inventing a price would be a
+      number with nothing to read it. [RUNEDUP_TEXT] states the dupe rule
+      verbatim - "you will not receive an extra item" - so the inventory
+      holds one copy and a reforge is a no-op that still answers with the
+      item. Of JXXX's bodies, the wired set is exactly what the port's
+      battle already invokes for fixed items: OnGiveDamage (bases 0/1 add
+      BASEDATA on hits of 3+, 9 on hits of 6+) through the damage pass,
+      and OnStartBattle (powers 0-3 credit POWERDATA of that mana, 4
+      raises max life and life) through Item_hooks' payoff walker, which
+      gained a per-item table for the purpose. The quiet bodies each hit
+      an absence item_hooks already documents: base D reads max-mana caps
+      the loop does not model, base E's reflect damages the attacker from
+      outside the damage-transform signature, powers 9/A want a
+      per-event percentile (the IBSH absence), and the skill, resistance,
+      victory, match and cast hooks are kinds battle never invokes for
+      any item. The [MAXRUNEITEM] cap and the forge UI stay open with it.
+    supersedes: null
+    date: 2026-10-10

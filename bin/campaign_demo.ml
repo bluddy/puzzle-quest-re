@@ -390,7 +390,10 @@ let () =
            s.Campaign.position s.Campaign.base_data s.Campaign.power_data
            s.Campaign.difficulty)
   | None -> print_endline "  forge failed");
-  let rich = { player5 with Campaign.runes = [ "UDAG"; "UCHA"; "UGRE" ] } in
+  let rich =
+    { player5 with
+      Campaign.runes = [ "UDAG"; "UCRA"; "UFIR"; "UCHA"; "UGRE" ] }
+  in
   (match
      Campaign.forge_rune rich ~base:"UDAG" ~modifier:"UCHA" ~power:"UGRE"
    with
@@ -398,6 +401,35 @@ let () =
       print_endline
         (Printf.sprintf "  UCHA edit: base +%d, power +%d, difficulty %d"
            s.Campaign.base_data s.Campaign.power_data s.Campaign.difficulty)
+  | None -> print_endline "  forge failed");
+  (* The mint for keeps: the item joins the inventory, wears the base's
+     slot, and its JXXX hooks ride into the next battle. *)
+  (match
+     Campaign.forge_item rich ~base:"UDAG" ~modifier:"UCRA" ~power:"UFIR"
+   with
+  | Some (pw, it) ->
+      print_endline
+        ("  minted " ^ it.Campaign_items.id ^ ": " ^ it.Campaign_items.power_text);
+      let worn =
+        { pw with
+          Campaign.equipment =
+            { pw.Campaign.equipment with Campaign.weapon = Some it } }
+      in
+      let road =
+        List.find
+          (fun (e : Campaign_encounters.encounter) ->
+            try
+              ignore
+                (Campaign_monsters.monster_by_sprite
+                   e.Campaign_encounters.sprite);
+              true
+            with Not_found -> false)
+          Campaign_encounters.encounters
+      in
+      let b = Campaign.run_encounter_battle worn road in
+      print_endline
+        ("  into battle with it: fire mana at the start "
+         ^ string_of_int (Combat.mana b.Battle.hero Combat.Fire))
   | None -> print_endline "  forge failed");
   print_endline "";
 

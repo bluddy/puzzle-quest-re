@@ -137,24 +137,36 @@ let item_of_id (id : string) : item option =
     of its own - and the mana credit is uncapped, the same reading
     [Campaign_companion_hooks]'s ManaBonus already makes.
 
-    The rune JXXX declares OnStartBattle too, and is deliberately absent: its
-    body reads the equipped rune's power code and data at fire time, state the
-    forge that produces runes does not model yet. A fixed stand-in would be a
-    rune that never rolls what the game rolls. *)
+    The rune JXXX declares OnStartBattle too: its body reads the equipped
+    rune's power code and data at fire time, so its payoffs are per-item
+    data rather than a fixed table entry - [rune_start_payoffs] below,
+    registered by [Campaign] when an item is forged or rebuilt from a
+    save. The six fixed items stay static. *)
 type start_payoff =
   | AddMana of Combat.element * int
   | AddLife of int
   | AddMaxLife of int
 
+(* The forge's minted rune items: JXXX's OnStartBattle reads the power
+   code - 0-3 credit POWERDATA of that mana pool, 4 raises max life and
+   life - so the payoffs carry per-item data, registered at forge/load
+   time. An id absent from the table falls through to the six fixed
+   entries below. *)
+let rune_start_payoffs : (string, start_payoff list) Hashtbl.t =
+  Hashtbl.create 32
+
 let start_payoffs_of (id : string) : start_payoff list =
-  match id with
-  | "IDHE" -> [ AddMana (Combat.Water, 10) ]
-  | "IFLH" -> [ AddMana (Combat.Fire, 8) ]
-  | "IWLB" -> [ AddMaxLife 100; AddLife 100 ]
-  | "IWLM" -> [ AddMaxLife 200; AddLife 200 ]
-  | "IWLR" -> [ AddMaxLife 20; AddLife 20 ]
-  | "IWLS" -> [ AddMaxLife 50; AddLife 50 ]
-  | _ -> []
+  match Hashtbl.find_opt rune_start_payoffs id with
+  | Some ps -> ps
+  | None -> (
+      match id with
+      | "IDHE" -> [ AddMana (Combat.Water, 10) ]
+      | "IFLH" -> [ AddMana (Combat.Fire, 8) ]
+      | "IWLB" -> [ AddMaxLife 100; AddLife 100 ]
+      | "IWLM" -> [ AddMaxLife 200; AddLife 200 ]
+      | "IWLR" -> [ AddMaxLife 20; AddLife 20 ]
+      | "IWLS" -> [ AddMaxLife 50; AddLife 50 ]
+      | _ -> [])
 
 let apply_start_payoff (who : Combat.combatant) (p : start_payoff) : unit =
   match p with

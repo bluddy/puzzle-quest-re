@@ -198,6 +198,119 @@ let () =
   let p3, _, _, _, _, _ = Campaign_save.apply_save old in
   check "an old save loads no runes" (p3.Campaign.runes = [])
 
+(* ------------------------------------------------------------------ *)
+(* 5. Forged items: the mint, the loadout, the JXXX hooks            *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  let rich =
+    { (fresh ()) with
+      Campaign.runes = [ "UDAG"; "UCRA"; "UFIR" ] }
+  in
+  let p2, it =
+    match
+      Campaign.forge_item rich ~base:"UDAG" ~modifier:"UCRA" ~power:"UFIR"
+    with
+    | Some pair -> pair
+    | None -> failwith "forge_item refused the gifted triple"
+  in
+  check "forging adds the minted item to the inventory"
+    (List.exists
+       (fun (i : Campaign_items.item) -> i.Campaign_items.id = "RUDAGUCRAUFIR")
+       p2.Campaign.inventory
+    && it.Campaign_items.id = "RUDAGUCRAUFIR");
+  check "the power text carries both abilities with their data"
+    (it.Campaign_items.power_text
+    = "Adds +1 to damage whenever you do 3 or more damage. Gives +2 to Red Mana at the beginning of each combat.");
+  check "the minted item wears the base's slot"
+    (it.Campaign_items.location = "weapon");
+  let p3 =
+    match
+      Campaign.forge_item p2 ~base:"UDAG" ~modifier:"UCRA" ~power:"UFIR"
+    with
+    | Some (p, _) -> p
+    | None -> failwith "reforging failed"
+  in
+  check "reforging the same triple yields no extra copy"
+    (List.length
+       (List.filter
+          (fun (i : Campaign_items.item) ->
+            i.Campaign_items.id = it.Campaign_items.id)
+          p3.Campaign.inventory)
+    = 1);
+  check "the forge refuses runes the hero does not hold"
+    (Campaign.forge_item (fresh ()) ~base:"UAXE" ~modifier:"UMAS"
+       ~power:"UTRO"
+    = None);
+
+  (* The loadout resolves the mint: the item lands in its slot and JXXX's
+     OnGiveDamage reads the base code - UDAG adds BASEDATA on hits of 3+. *)
+  let worn =
+    { p3 with
+      Campaign.equipment =
+        { p3.Campaign.equipment with Campaign.weapon = Some it } }
+  in
+  let l = Campaign.loadout_of_equipment worn.Campaign.equipment in
+  check "the minted item lands in the weapon loadout slot"
+    (List.exists
+       (fun (i : Item.item) -> Item.item_id i = it.Campaign_items.id)
+       (Item.equipped l));
+  (match Campaign.runtime_rune_item it.Campaign_items.id with
+  | Some rt ->
+      let hero = Combat.make_combatant ~cunning:5 ~max_life:30 ~life:30 1 "Hero" in
+      let foe = Combat.make_combatant ~cunning:5 ~max_life:10 ~life:10 2 "Foe" in
+      let ctx =
+        { Item.ic_board = None; ic_percentile = 0; ic_roll = (fun _ -> 0);
+          ic_attacker = None; ic_defender = None; ic_hero = hero;
+          ic_enemy = foe }
+      in
+      check "UDAG adds +1 on a hit of 3 or more"
+        (Item.give_damage rt ctx ~damage:4 ~source:1 ~target:2 = 5
+        && Item.give_damage rt ctx ~damage:2 ~source:1 ~target:2 = 2)
+  | None -> check "UDAG adds +1 on a hit of 3 or more" false);
+
+  (* The start payoff rides the real road setup: UFIR credits +2 Red Mana
+     before the first turn. *)
+  let road =
+    List.find
+      (fun (e : Campaign_encounters.encounter) ->
+        try
+          ignore (Campaign_monsters.monster_by_sprite e.Campaign_encounters.sprite);
+          true
+        with Not_found -> false)
+      Campaign_encounters.encounters
+  in
+  let b = Campaign.run_encounter_battle worn road in
+  check "UFIR's start payoff credits fire mana in a real battle"
+    (Combat.mana b.Battle.hero Combat.Fire >= 2);
+
+  (* The save rebuilds a mint from its id alone. *)
+  let path = Filename.temp_file "pq_runeitem_test" ".json" in
+  let save = Campaign_save.create_save_data worn [] "CGAL" 0 in
+  Campaign_save.save_to_file path save;
+  let loaded = Campaign_save.load_from_file path in
+  let p4, _, _, _, _, _ = Campaign_save.apply_save loaded in
+  Sys.remove path;
+  check "the minted item survives the save round-trip"
+    (List.exists
+       (fun (i : Campaign_items.item) -> i.Campaign_items.id = it.Campaign_items.id)
+       p4.Campaign.inventory
+    &&
+    match p4.Campaign.equipment.Campaign.weapon with
+    | Some w -> w.Campaign_items.id = it.Campaign_items.id
+    | None -> false);
+  check "the runtime registry rebuilds from the id alone"
+    (match Campaign.runtime_rune_item it.Campaign_items.id with
+    | Some rt -> Item.item_id rt = it.Campaign_items.id
+    | None -> false);
+  check "an ordinary id still resolves through the fixed table"
+    ((Campaign.resolve_item "IADO").Campaign_items.id = "IADO");
+  check "an unknown id still raises"
+    (try
+       ignore (Campaign.resolve_item "ZZZZZ");
+       false
+     with Not_found -> true)
+
 let () =
   if !failures = 0 then print_endline "all rune tests passed"
   else begin
