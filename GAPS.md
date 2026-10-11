@@ -46,7 +46,7 @@
 | ~~Quest rewards~~ | ✅ gold/XP/items/awards/companions from the quest script (`run_quest_on_end`), not the 200/200 default |
 | ~~Quest failure paths~~ | `quest_abandon` runs OnAbandon (releases + state reset) and respects the `abandonable` flag; `run_quest_on_fail` still has no caller — no OnFail hook |
 | ~~Conversation battle callbacks~~ | ✅ the 13 conversation pairs in the 33-row `callback_battles` table fire through `Campaign.execute_callback` from `pq_conv_gfx`'s scriptcall step — headless fight, stage/capture/spoils settle, Victory/Defeat banner |
-| Conversation callbacks | ✅ every scriptcall applies its extracted `callback_effects` first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then its 33-row-table fight; reward reattribution keeps callback grants out of the turn-in buckets. Still open: the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5, QU02) have no arrival event to run under, and the 94 OnExecuteAction / 50 OnCompleteAction conversation sites now run through the location-action API (map Actions tab + demo driver) |
+| Conversation callbacks | ✅ every scriptcall applies its extracted `callback_effects` first (state writes, grants, nested conversations, `QUEST_COMPLETE` = OnEnd) and then its 33-row-table fight; reward reattribution keeps callback grants out of the turn-in buckets. The two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5's CallbackConvE, QU02's CallbackConvB) fire from `execute_callback`; the 94 OnExecuteAction / 50 OnCompleteAction conversation sites run through the location-action API (map Actions tab + demo driver) |
 
 ### 2. Ruins & Companion Capture
 | Gap | Details |
@@ -54,7 +54,7 @@
 | ~~Ruin registration~~ | ✅ refcount table (`register_ruin` / `set_ruin_done`): shared ruins hold until every quest releases; releases bucketed by hook (battle / turn-in / abandon), saved and restored |
 | ~~Ruin mini-game~~ | ✅ `lib/capture.ml`: grid parse, no-refill settle, win/lose, auto-play; gates, captives and save in `campaign.ml` |
 | ~~Quest battle capture flag~~ | `QUEST_BATTLE` passes capture=1 and `QUEST_BATTLE_NOCAPTURE` capture=0 to `QUEST_ENCOUNTER_ADD`; the stage's own primitive now decides capture (primitive over the Lua string check), so a quest kill of a non-capturable variant no longer counts |
-| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); `QUEST_REMOVE_COMPANION` arrival rules run through `enter_location` (six: Q3S0 x5, QS00 x1); companion equip landed (roster + party, home-gated pickup); the two callback-site removals (Q3Q5, QU02) still open; the rune start hooks register per minted item |
+| Companion system | Party hooks ✅ (`OnStartBattle` rule table, party dispatch, 8-slot cap); `QUEST_REMOVE_COMPANION` arrival rules run through `enter_location` (six: Q3S0 x5, QS00 x1) and the two callback sites (Q3Q5 CallbackConvE, QU02 CallbackConvB) through `execute_callback`; companion equip landed (roster + party, home-gated pickup); the rune start hooks register per minted item |
 | Ruin visibility | Ruins reveal through `ruin_reveals` at quest accept; no unlock-by-city-entry |
 
 ### 3. Map Progression & Visibility

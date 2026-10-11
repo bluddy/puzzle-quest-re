@@ -660,6 +660,7 @@ def analyze_lua(src, qid, stats):
     stage_advances = {}
     stage_fails = {}
     enter_removes = []
+    cb_removes = []
     conv_buckets = {'begin': [], 'abandon': []}
     conv_callbacks = {}
     cb_events = {}
@@ -870,16 +871,19 @@ def analyze_lua(src, qid, stats):
         # rule - the questState and idLocation guards in the surrounding if,
         # the companion id as the argument. The nearest preceding guard of
         # each kind is the branch the call sits in (the elseif chain puts
-        # them in the header just above). A site in any other hook - a
-        # conversation callback - is recognised but has no arrival event to
-        # run under, so it is counted and listed rather than attributed.
+        # them in the header just above). A site in a conversation callback
+        # fires when that callback runs, so it is attributed to the hook by
+        # name; any other On* hook has no port event and stays listed.
         for hit in CALL_PATTERNS['remove_companion'].finditer(body):
             stats['extracted']['remove_companion'] += 1
             stats['hooks'][('remove_companion', hook)] += 1
             comp = resolve(hit.group(1), consts)
             if hook != 'OnEnterLocation':
-                stats['remove_elsewhere'].append(
-                    (qid, hook, comp if comp else hit.group(1)))
+                if is_callback and comp is not None:
+                    cb_removes.append((hook, comp))
+                else:
+                    stats['remove_elsewhere'].append(
+                        (qid, hook, comp if comp else hit.group(1)))
                 continue
             st = None
             for g in STATE_EQ.finditer(body[:hit.start()]):
@@ -983,6 +987,7 @@ def analyze_lua(src, qid, stats):
         'battle_stage_advances': list(stage_advances.items()),
         'battle_stage_fails': list(stage_fails.items()),
         'enter_removes': enter_removes,
+        'remove_companion_on_callbacks': dedup(cb_removes),
         'conversations_begin': conv_buckets['begin'],
         'conversations_abandon': conv_buckets['abandon'],
         'conversation_callbacks': [(cb, cs) for cb, cs in conv_callbacks.items()],
@@ -1044,6 +1049,7 @@ def parse_quest(xml_path, stats):
         'reward_awards': [], 'reward_companions': [],
         'battle_actions': [], 'battle_stage_advances': [],
         'battle_stage_fails': [], 'enter_removes': [],
+        'remove_companion_on_callbacks': [],
         'conversations_begin': [], 'conversations_abandon': [],
         'conversation_callbacks': [],
         'callback_effects': [],
@@ -1101,6 +1107,13 @@ def ocaml_list(items):
     if not items:
         return "[]"
     return "[" + "; ".join('"%s"' % ocaml_str(i) for i in items) + "]"
+
+
+def ocaml_str_pairs(pairs):
+    if not pairs:
+        return "[]"
+    parts = ['("%s", "%s")' % (ocaml_str(a), ocaml_str(b)) for a, b in pairs]
+    return "[" + "; ".join(parts) + "]"
 
 
 def ocaml_battles(battles):
@@ -1248,9 +1261,13 @@ def main():
         for kind in CALL_PATTERNS:
             print(f"  {kind}: {stats['raw'][kind]} -> {stats['extracted'][kind]}")
         n_enter = sum(len(q["enter_removes"]) for q in quests)
+        n_cb = sum(len(q["remove_companion_on_callbacks"]) for q in quests)
         print(f"remove_companion: {stats['raw']['remove_companion']} raw -> "
-              f"{n_enter} enter-location rules, "
+              f"{n_enter} enter-location rules, {n_cb} callback hooks, "
               f"{len(stats['remove_elsewhere'])} in other hooks")
+        for q in quests:
+            for row in q["remove_companion_on_callbacks"]:
+                print(f"  callback: {(q['id'],) + row}")
         for row in stats['remove_elsewhere']:
             print(f"  elsewhere: {row}")
         n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
@@ -1331,6 +1348,8 @@ def main():
                       f"adv={q['battle_stage_advances']} fail={q['battle_stage_fails']}")
             if q['enter_removes']:
                 print(f"    enter_removes={q['enter_removes']}")
+            if q['remove_companion_on_callbacks']:
+                print(f"    cb_removes={q['remove_companion_on_callbacks']}")
             if q['query_actions']:
                 print(f"    query={q['query_actions']}")
             if (q['conversations_begin'] or q['conversations_abandon']
@@ -1457,6 +1476,7 @@ def main():
     lines.append("  battle_stage_advances: (int * int) list;")
     lines.append("  battle_stage_fails: (int * int) list;")
     lines.append("  enter_removes: (int * string * string) list;")
+    lines.append("  remove_companion_on_callbacks: (string * string) list;")
     lines.append("  reveal_on_begin: string list;")
     lines.append("  reveal_on_end: string list;")
     lines.append("  ruin_reveals: string list;")
@@ -1522,6 +1542,8 @@ def main():
         lines.append(f'    battle_stage_advances = {ocaml_int_pairs(q["battle_stage_advances"])};')
         lines.append(f'    battle_stage_fails = {ocaml_int_pairs(q["battle_stage_fails"])};')
         lines.append(f'    enter_removes = {ocaml_state_triples(q["enter_removes"])};')
+        lines.append(f'    remove_companion_on_callbacks = '
+                     f'{ocaml_str_pairs(q["remove_companion_on_callbacks"])};')
         lines.append(f'    reveal_on_begin = {ocaml_list(q["reveal_on_begin"])};')
         lines.append(f'    reveal_on_end = {ocaml_list(q["reveal_on_end"])};')
         lines.append(f'    ruin_reveals = {ocaml_list(q["ruin_reveals"])};')

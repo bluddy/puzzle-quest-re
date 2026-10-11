@@ -2641,8 +2641,10 @@ claims:
       the arrival, and enter_location folds the results over the active
       quests. The other two sites live inside conversation callbacks
       (Q3Q5's CallbackConvE removes NDKH, QU02's CallbackConvB removes
-      NSUN) where no arrival event exists; they are counted, not
-      attributed.
+      NSUN) where no arrival event exists; the scanner attributes each to
+      its callback by name (remove_companion_on_callbacks), and
+      execute_callback drops the companion when that callback fires -
+      before the effects fold, matching the Lua body's source order.
     evidence:
       - kind: lua
         ref: game/Assets.zip!Assets/Quests/Q3S0.lua
@@ -2650,12 +2652,21 @@ claims:
       - kind: lua
         ref: game/Assets.zip!Assets/Quests/QS00.lua
         note: state 1 at CENM drops NSER
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/Q3Q5.lua
+        note: CallbackConvE removes NDKH, then posts the DHLEAVE message with CallbackMsgE
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/QU02.lua
+        note: CallbackConvB removes NSUN, sets the +7-day timer, then posts COMPLEFT
       - kind: code
         ref: tools/extract_quests.py
-        note: the removal scan - state, location and companion out of each guarded call
+        note: the removal scan - state, location and companion out of each guarded call; callback-hook sites attributed by name
       - kind: code
         ref: lib/campaign.ml
         fn: enter_location
+      - kind: code
+        ref: lib/campaign.ml
+        fn: execute_callback
       - kind: code
         ref: test/test_campaign.ml
     affects:
@@ -2663,12 +2674,15 @@ claims:
     notes: >
       The QUEST_HERO_HAS_COMPANION_SELECTED guard needs no check of its own:
       dropping someone who is not in the party is the no-op the guard would
-      have made, which is what RemoveCompanion does. The leave messages
-      (QUEST_Q3S0_LEAVE0..4, QUEST_Q3Q5_DHLEAVE) ride no campaign event, so
-      they are recorded here rather than rendered. enter_location walks
-      active_quests in list order; the shipped rules never share a location,
-      so the order cannot matter, and nothing in the port calls it yet -
-      there is no travel step - only the tests drive it.
+      have made, which is what RemoveCompanion does - the same holds on the
+      callback path, where a second fire finds the companion already gone.
+      The Q3S0 leave messages ride no campaign effect; the two callback
+      sites' messages do - they are extracted ShowMessage rows queued as
+      pending messages. enter_location walks active_quests in list order;
+      the shipped arrival rules never share a location, so the order cannot
+      matter. CallbackConvF of Q3Q5 is a separate function (city status +
+      complete) and removes nobody - only the attributed callback name
+      drops the companion.
 
   - id: campaign.quest_battle_flow
     title: A quest stage picks the fight, and the fight runs through the battle engine

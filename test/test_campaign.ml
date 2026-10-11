@@ -576,8 +576,8 @@ let () =
   (* QUEST_REMOVE_COMPANION: a companion leaves the party when the hero
      arrives at a quest stage's location - Q3S0's five sword points and
      QS00's at CENM are the six rules the scanner attributes to
-     OnEnterLocation; the two conversation-callback sites (Q3Q5, QU02) have
-     no arrival event to run under and stay out of the table. *)
+     OnEnterLocation - or when the conversation callback that drops them
+     fires: Q3Q5's CallbackConvE takes NDKH, QU02's CallbackConvB NSUN. *)
   let with_rules =
     List.filter (fun (q : Campaign_quests.quest) -> q.enter_removes <> [])
       Campaign_quests.quests
@@ -592,8 +592,21 @@ let () =
        (5, "WHVA", "NFLI"); (6, "WBSP", "NELI") ]);
   check_int "QS00 has one rule"
     (List.length (Campaign_quests.quest_by_id "QS00").enter_removes) 1;
+  let q3q5 = Campaign_quests.quest_by_id "Q3Q5" in
   check "Q3Q5's callback site stays out of the arrival table"
-    ((Campaign_quests.quest_by_id "Q3Q5").enter_removes = []);
+    (q3q5.enter_removes = []);
+  check "Q3Q5's callback rule carries its hook and companion"
+    (q3q5.remove_companion_on_callbacks = [ ("CallbackConvE", "NDKH") ]);
+  let qu02 = Campaign_quests.quest_by_id "QU02" in
+  check "QU02's callback rule carries its hook and companion"
+    (qu02.remove_companion_on_callbacks = [ ("CallbackConvB", "NSUN") ]);
+  check_int "exactly two quests carry callback removals"
+    (List.length
+       (List.filter
+          (fun (q : Campaign_quests.quest) ->
+            q.remove_companion_on_callbacks <> [])
+          Campaign_quests.quests))
+    2;
 
   let base = Campaign.create_player "Leaver" "PWAR" 0 1 in
   let active =
@@ -625,7 +638,35 @@ let () =
     ((Campaign.enter_location s0 "CENM").Campaign.companions = [ "NFLI" ]);
   check "removing someone not in the party is a no-op"
     ((Campaign.apply_quest_effect active (Campaign.RemoveCompanion "NKHA"))
-     .Campaign.companions = [ "NSER"; "NWIN" ])
+     .Campaign.companions = [ "NSER"; "NWIN" ]);
+
+  (* the callback sites: the companion leaves when that conversation
+     callback fires, not on any other callback of the same quest. *)
+  let cbp =
+    { base with
+      Campaign.companions = [ "NDKH"; "NWIN" ];
+      Campaign.active_quests = [ ("Q3Q5", 2) ] }
+  in
+  let player_of p qid cb =
+    match Campaign.execute_callback p qid cb with
+    | None -> p
+    | Some r -> r.Campaign.cb_player
+  in
+  check "Q3Q5's CallbackConvE drops NDKH from the party"
+    ((player_of cbp "Q3Q5" "CallbackConvE").Campaign.companions = [ "NWIN" ]);
+  check "a different callback of the same quest leaves the party alone"
+    ((player_of cbp "Q3Q5" "CallbackMsgE").Campaign.companions
+     = [ "NDKH"; "NWIN" ]);
+  check "dropping someone already gone is a no-op"
+    ((player_of { cbp with Campaign.companions = [ "NWIN" ] }
+        "Q3Q5" "CallbackConvE").Campaign.companions = [ "NWIN" ]);
+  let qu =
+    { base with
+      Campaign.companions = [ "NSUN" ];
+      Campaign.active_quests = [ ("QU02", 1) ] }
+  in
+  check "QU02's CallbackConvB drops NSUN from the party"
+    ((player_of qu "QU02" "CallbackConvB").Campaign.companions = [])
 ;;
 
 let () =

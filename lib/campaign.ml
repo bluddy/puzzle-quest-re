@@ -1757,11 +1757,26 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
   match effects, callback_battles (qid, callback_name) with
   | None, None -> None
   | _, cbrow ->
+    (* Lua runs the body in source order; the two extracted
+       QUEST_REMOVE_COMPANION callback sites (Q3Q5 CallbackConvE drops
+       NDKH, QU02 CallbackConvB drops NSUN) sit above the message, so the
+       companion leaves before the effects fold. Absent from the party the
+       removal is the no-op QUEST_REMOVE_COMPANION's own absent-id check
+       would have made of it. *)
+    let p =
+      match q_opt with
+      | None -> player
+      | Some q ->
+        List.fold_left
+          (fun acc (cb, cid) ->
+            if cb = callback_name then remove_companion acc cid else acc)
+          player q.remove_companion_on_callbacks
+    in
     let p =
       match effects with
-      | None -> player
+      | None -> p
       | Some effs ->
-        List.fold_left (fun acc e -> apply_callback_effect acc qid e) player effs
+        List.fold_left (fun acc e -> apply_callback_effect acc qid e) p effs
     in
     match cbrow with
     | None -> Some { cb_player = p; cb_battle = None; cb_capture_offer = None }
