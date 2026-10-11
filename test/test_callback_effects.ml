@@ -109,14 +109,14 @@ check "Q0I2's callback effects: a state write and a complete"
 let q3q1 = quest "Q3Q1" in
 check "Q3Q1's arrivals are attributed to state+location"
   (q3q1.Campaign_quests.enter_effects =
-   [ (1, "WETO", [], [ Campaign_quests.Conversation "Conv_Q3Q1b" ]);
-     (2, "CYLA", [], [ Campaign_quests.Conversation "Conv_Q3Q1c" ]) ]);
+   [ (1, "WETO", [], [ Campaign_quests.Conversation "Conv_Q3Q1b" ], false);
+     (2, "CYLA", [], [ Campaign_quests.Conversation "Conv_Q3Q1c" ], false) ]);
 
 let q0q5 = quest "Q0Q5" in
 check "Q0Q5's wildcard-state arrival carries its companion gate"
   (q0q5.Campaign_quests.enter_effects =
    [ (-1, "WHPS", [ ("NDKH", true) ],
-       [ Campaign_quests.Conversation "Conv_Q0Q5b" ]) ]);
+       [ Campaign_quests.Conversation "Conv_Q0Q5b" ], false) ]);
 
 let q3q7 = quest "Q3Q7" in
 check "Q3Q7's branch keeps both trees (first source order fires)"
@@ -132,8 +132,8 @@ check "callback rewards left the turn-in buckets"
    text and queued a box Lua never shows. *)
 let q3q6 = quest "Q3Q6" in
 check "Q3Q6's success group carries one box - the callback one"
-  (List.map (fun (_, _, _, _, e) -> e)
-     (List.filter (fun (st, suc, _, _, _) -> st = 1 && suc = 1)
+  (List.map (fun (_, _, _, _, e, _) -> e)
+     (List.filter (fun (st, suc, _, _, _, _) -> st = 1 && suc = 1)
         q3q6.Campaign_quests.complete_effects)
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", "CallbackMsgA");
@@ -141,15 +141,36 @@ check "Q3Q6's success group carries one box - the callback one"
 
 let q1q0 = quest "Q1Q0" in
 check "Q1Q0 keeps its failure box and only at the wildcard state"
-  (List.filter (fun (_, suc, _, _, _) -> suc = 0)
+  (List.filter (fun (_, suc, _, _, _, _) -> suc = 0)
      q1q0.Campaign_quests.complete_effects
   = [ (-1, 0, "", [],
         [ Campaign_quests.ShowMessage
-            ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "") ]) ]);
+            ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "") ], false) ]);
+
+(* The terminates flag: a bare `return;` in the Lua body stops the fold
+   after that row - Q2Q7's NDRO branch is the only one in the corpus. *)
+let term_quests =
+  List.filter
+    (fun (q : Campaign_quests.quest) ->
+      List.exists (fun (_, _, _, _, _, t) -> t)
+        q.Campaign_quests.complete_effects
+      || List.exists (fun (_, _, _, _, t) -> t)
+           q.Campaign_quests.enter_effects
+      || List.exists (fun (_, _, _, _, t) -> t)
+           q.Campaign_quests.execute_effects
+      || List.exists (fun (_, _, _, _, t) -> t)
+           q.Campaign_quests.end_effects)
+    Campaign_quests.quests
+in
+check "only Q2Q7's NDRO complete row terminates its hook"
+  (List.map (fun q -> q.Campaign_quests.id) term_quests = [ "Q2Q7" ]
+   && List.exists (fun (_, _, _, gate, _, t) ->
+          gate = [ ("NDRO", true) ] && t)
+        (quest "Q2Q7").Campaign_quests.complete_effects);
 
 let qk06 = quest "QK06" in
 check "QK06's execute groups split the NOCOMP / BUTTON arms by NKHA"
-  (List.map (fun (_, _, _, e) -> e) qk06.Campaign_quests.execute_effects
+  (List.map (fun (_, _, _, e, _) -> e) qk06.Campaign_quests.execute_effects
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "") ];
       [ Campaign_quests.ShowMessage
@@ -157,7 +178,7 @@ check "QK06's execute groups split the NOCOMP / BUTTON arms by NKHA"
 
 let qs00 = quest "QS00" in
 check "QS00's arrival keeps one box per arm, no NOCOMP twin"
-  (List.map (fun (_, _, _, e) -> e) qs00.Campaign_quests.enter_effects
+  (List.map (fun (_, _, _, e, _) -> e) qs00.Campaign_quests.enter_effects
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "") ];
       [ Campaign_quests.ShowMessage
@@ -168,17 +189,17 @@ check "QS00's arrival keeps one box per arm, no NOCOMP twin"
 check "location-action conversations live in the execute/complete groups"
   (List.exists
      (fun (q : Campaign_quests.quest) ->
-       List.exists (fun (_, _, _, effs) ->
+       List.exists (fun (_, _, _, effs, _) ->
            List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
              effs)
          q.Campaign_quests.execute_effects)
      Campaign_quests.quests
    && List.exists
         (fun (q : Campaign_quests.quest) ->
-          List.exists (fun (_, _, _, _, effs) ->
+          List.exists (fun (_, _, _, _, effs, _) ->
               List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
                 effs)
-              q.Campaign_quests.complete_effects)
+            q.Campaign_quests.complete_effects)
         Campaign_quests.quests);
 
 check "no OnAbandon conversations ship (the queue path is completeness only)"

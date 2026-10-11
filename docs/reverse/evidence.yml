@@ -3969,7 +3969,13 @@ port_decisions:
       CallbackMsgs gate on their companions), and the 15 battle_actions
       stage actions decide fight-versus-box by companion (QA00 fights with
       NDKH along and posts the NOCOMP box otherwise, QK00/QU00 the same
-      shape for NKHA/NSUN, Q3D4's flipped chain fights first). enter_location folds
+      shape for NKHA/NSUN, Q3D4's flipped chain fights first). Group rows
+      also carry a terminates flag: a bare `return;` at the site's own
+      nesting level ends the hook body, so the runtime's fold stops once
+      the row applies - Q2Q7's OnCompleteAction is the only hit in the
+      corpus (a win with NDRO along queues Conv_Q2Q7b and returns, so
+      the fall-through KILL box and questState = 2 never run; without
+      her the fall-through fires as extracted). enter_location folds
       the groups before the remove rules apply: Lua tests companions at
       if-entry while the removes sit inside the chosen arm (Q3S0 messages
       then removes, QS00 removes then messages), so the gates must read

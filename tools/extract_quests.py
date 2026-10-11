@@ -323,6 +323,7 @@ STATE_ASSIGN = re.compile(r'questState\s*=\s*(\d+)')
 STATE_EQ = re.compile(r'questState\s*==\s*(\d+)')
 IDLOC_EQ = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
 LUA_KW = re.compile(r'\b(if|then|else|elseif|end|do|function|repeat|until)\b')
+BARE_RETURN = re.compile(r'\breturn\s*;')
 
 
 def success_side(header):
@@ -504,7 +505,15 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
     comp is the QUEST_HERO_HAS_COMPANION_SELECTED conjunction the open
     arms sit under - [(cid, must-be-present)] over the open frames, []
     when no open frame tests a companion. Closed blocks do not leak -
-    unlike nearest-preceding scans."""
+    unlike nearest-preceding scans.
+
+    Also returns terminates_after(pos): a bare `return;` at pos's own
+    nesting level before the innermost open block closes (or a sibling
+    arm starts) - the site, when it fires, exits the hook, so later
+    groups of the same event are dead. A return nested deeper is
+    conditional on ifs this row cannot see and is skipped (conservative;
+    Q2Q7's OnCompleteAction Conv site is the only bare return in an
+    action hook across the corpus)."""
     kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
     idloc = re.compile(r'idLocation\s*==\s*("[^"\n]*"|[A-Za-z_]\w*)')
 
@@ -602,7 +611,27 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
     def lookup(pos):
         return changes[bisect.bisect_right(poses, pos) - 1][1]
 
-    return lookup
+    rets = [('return', m.start()) for m in BARE_RETURN.finditer(body_ns)]
+    flow = sorted(kws + rets, key=lambda t: t[1])
+
+    def terminates_after(pos):
+        rel = 0
+        for k, p in flow:
+            if p <= pos:
+                continue
+            if k in ('if', 'do', 'function', 'repeat'):
+                rel += 1
+            elif k in ('end', 'until'):
+                rel -= 1
+                if rel < 0:
+                    return False
+            elif k in ('elseif', 'else') and rel == 0:
+                return False
+            elif k == 'return' and rel == 0:
+                return True
+        return False
+
+    return lookup, terminates_after
 
 
 def guard_keys(stages, locs, comp):
@@ -800,12 +829,16 @@ def analyze_lua(src, qid, stats):
         # Engine hooks fire from the quest lifecycle; everything else is a
         # conversation/message callback (or a helper only they call).
         is_callback = not hook.startswith('On')
-        lookup = make_guard_lookup(body_ns, body, consts, s_max)
+        lookup, terminates_after = make_guard_lookup(
+            body_ns, body, consts, s_max)
         msg_assigns = build_msg_assigns(body)
         ev = ACTION_HOOKS.get(hook)
 
         def add_group(evk, key, pos, eff):
-            eff_groups[evk].setdefault(key, []).append((pos, eff))
+            # the terminates bit: a bare return straight after the site
+            # (same nesting level) exits the hook when this row fires
+            eff_groups[evk].setdefault(key, []).append(
+                (pos, eff, terminates_after(pos)))
 
         def cb_gate(hit):
             """Companion conjunction around a flat-list site (callback
@@ -1094,9 +1127,12 @@ def analyze_lua(src, qid, stats):
         return out
 
     def finalize_groups(evk):
-        """[(guard key, effects)] for one event: dedup identical rows,
-        effects in source order, groups by first-effect position (Lua's
-        evaluation order - the runtime takes the first match)."""
+        """[(guard key, effects, terminates)] for one event: dedup
+        identical rows, effects in source order, groups by first-effect
+        position (Lua's evaluation order - the runtime takes the first
+        match). terminates folds true when any of the group's sites is
+        followed by a bare `return;` at its own nesting level: the
+        runtime stops the fold after applying such a row."""
         d = eff_groups[evk]
         rows = []
         for key, members in d.items():
@@ -1110,10 +1146,11 @@ def analyze_lua(src, qid, stats):
                     seen_m.add(m)
                     ordered.append(m)
             uniq = sorted(ordered, key=lambda t: t[0])
-            rows.append((min(p for p, _ in members), key,
-                         [eff for _, eff in uniq]))
+            rows.append((min(p for p, _, _ in members), key,
+                         [eff for _, eff, _ in uniq],
+                         any(t for _, _, t in members)))
         rows.sort(key=lambda r: r[0])
-        return [(key, effs) for _first, key, effs in rows]
+        return [(key, effs, term) for _first, key, effs, term in rows]
 
     return {
         'reveal_on_begin': dedup(reveals['begin']),
@@ -1360,26 +1397,30 @@ def ocaml_query_actions(rows):
 
 
 def ocaml_loc_groups(rows):
-    """[((state, loc, comp), effects)] -> [(state, loc, comp, effects)];
-    state -1 / loc "" = wildcard, comp [] = ungated."""
+    """[((state, loc, comp), effects, terminates)] -> [(state, loc,
+    comp, effects, terminates)]; state -1 / loc "" = wildcard, comp []
+    = ungated, terminates = the row's body ends in a bare `return;`."""
     if not rows:
         return "[]"
-    parts = ['(%d, "%s", %s, [%s])'
+    parts = ['(%d, "%s", %s, [%s], %s)'
              % (st, ocaml_str(loc), ocaml_comp(cnd),
-                "; ".join(ocaml_effect(k, v) for k, v in effs))
-             for (st, loc, cnd), effs in rows]
+                "; ".join(ocaml_effect(k, v) for k, v in effs),
+                'true' if term else 'false')
+             for (st, loc, cnd), effs, term in rows]
     return "[" + "; ".join(parts) + "]"
 
 
 def ocaml_complete_groups(rows):
-    """[((state, success, loc, comp), effects)] -> [(state, success, loc,
-    comp, effects)]; -1 fields = wildcard, comp [] = ungated."""
+    """[((state, success, loc, comp), effects, terminates)] -> [(state,
+    success, loc, comp, effects, terminates)]; -1 fields = wildcard,
+    comp [] = ungated, terminates as in ocaml_loc_groups."""
     if not rows:
         return "[]"
-    parts = ['(%d, %d, "%s", %s, [%s])'
+    parts = ['(%d, %d, "%s", %s, [%s], %s)'
              % (st, suc, ocaml_str(loc), ocaml_comp(cnd),
-                "; ".join(ocaml_effect(k, v) for k, v in effs))
-             for (st, suc, loc, cnd), effs in rows]
+                "; ".join(ocaml_effect(k, v) for k, v in effs),
+                'true' if term else 'false')
+             for (st, suc, loc, cnd), effs, term in rows]
     return "[" + "; ".join(parts) + "]"
 
 
@@ -1444,10 +1485,16 @@ def main():
         print(f"message rows dropped (sibling-arm assignments): "
               f"{stats['msg_arm_drops']}")
         n_gated = 0
+        n_term = 0
+        term_sites = []
         for q in quests:
             for field in ('enter_effects', 'execute_effects',
                           'complete_effects', 'end_effects'):
-                n_gated += sum(1 for k, _e in q[field] if k[-1])
+                n_gated += sum(1 for k, _e, _t in q[field] if k[-1])
+                for k, _e, t in q[field]:
+                    if t:
+                        n_term += 1
+                        term_sites.append((q['id'], field))
         n_gated_q = sum(1 for q in quests for r in q["query_actions"]
                         if r[2])
         n_gated_battle = sum(1 for q in quests for r in q["battle_actions"]
@@ -1457,6 +1504,10 @@ def main():
               f"{n_gated_battle} battle actions; "
               f"{stats['comp_merge_drops']} message rows dropped "
               f"(contradictory gates)")
+        print(f"terminating groups (bare `return;` in the body): "
+              f"{n_term}")
+        for row in term_sites:
+            print(f"  {row}")
         n_conv = {b: sum(len(q[f"conversations_{b}"]) for q in quests)
                   for b in ('begin', 'abandon')}
         n_conv_cb = sum(len(v) for q in quests for _, v in q["conversation_callbacks"])
@@ -1475,7 +1526,7 @@ def main():
             groups = sum(len(q[field]) for q in quests)
             kinds = Counter()
             for q in quests:
-                for _k, effs in q[field]:
+                for _k, effs, _t in q[field]:
                     for k, _v in effs:
                         kinds[k] += 1
             print(f"  {evk:8s}: {groups} groups, "
@@ -1567,8 +1618,9 @@ def main():
                                    ('exec', 'execute_effects'),
                                    ('comp', 'complete_effects'),
                                    ('end', 'end_effects')):
-                    for k, effs in q[field]:
-                        print(f"    {lbl} {k}: {effs}")
+                    for k, effs, term in q[field]:
+                        print(f"    {lbl} {k}: {effs}"
+                              + (" [returns]" if term else ""))
             if q['texts']:
                 for tag, txt in list(q['texts'].items())[:2]:
                     print(f"    {tag}: {txt[:60]}")
@@ -1697,22 +1749,24 @@ def main():
     lines.append("  callback_effects:")
     lines.append("    (string * ((string * bool) list * callback_effect) list)")
     lines.append("    list;")
-    lines.append("  (* (state, location, companion gate, ...): -1 / \"\" =")
-    lines.append("     wildcard, gate [] = no companion test *)")
+    lines.append("  (* (state, location, companion gate, effects,")
+    lines.append("     terminates): -1 / \"\" = wildcard, gate [] = no")
+    lines.append("     companion test, terminates = a bare `return;`")
+    lines.append("     ends the hook body when this row fires *)")
     lines.append("  query_actions:")
     lines.append("    (int * string * (string * bool) list * string) list;")
     lines.append("  enter_effects:")
     lines.append("    (int * string * (string * bool) list *")
-    lines.append("     callback_effect list) list;")
+    lines.append("     callback_effect list * bool) list;")
     lines.append("  execute_effects:")
     lines.append("    (int * string * (string * bool) list *")
-    lines.append("     callback_effect list) list;")
+    lines.append("     callback_effect list * bool) list;")
     lines.append("  complete_effects:")
     lines.append("    (int * int * string * (string * bool) list *")
-    lines.append("     callback_effect list) list;")
+    lines.append("     callback_effect list * bool) list;")
     lines.append("  end_effects:")
     lines.append("    (int * string * (string * bool) list *")
-    lines.append("     callback_effect list) list;")
+    lines.append("     callback_effect list * bool) list;")
     lines.append("}")
     lines.append("")
 

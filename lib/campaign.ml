@@ -1653,28 +1653,34 @@ let quest_turn_in (player: player) (qid: string) : player =
     (* end_effects first: their guards test the live stage, which CompleteQuest
        (inside run_quest_on_end) would otherwise have removed. *)
     let p =
-      List.fold_left
-        (fun acc (st, _loc, gate, effs) ->
+      let rec go acc rows =
+        match rows with
+        | [] -> acc
+        | (st, _loc, gate, effs, term) :: rest ->
           let cur =
             match List.assoc_opt qid acc.active_quests with
             | Some s -> s
             | None -> -2
           in
           if (st = -1 || st = cur) && companion_ok acc gate then
-            List.fold_left
-              (fun a e ->
-                match e with
-                | SetQuestState n ->
-                  { a with active_quests =
-                             List.map (fun (id, s) ->
-                                 if id = qid then (id, n) else (id, s))
-                               a.active_quests }
-                | ShowMessage (title, text, cb) ->
-                  queue_message ~qid ~callback:cb title text; a
-                | _ -> a)
-              acc effs
-          else acc)
-        player q.end_effects
+            let acc' =
+              List.fold_left
+                (fun a e ->
+                  match e with
+                  | SetQuestState n ->
+                    { a with active_quests =
+                               List.map (fun (id, s) ->
+                                   if id = qid then (id, n) else (id, s))
+                                 a.active_quests }
+                  | ShowMessage (title, text, cb) ->
+                    queue_message ~qid ~callback:cb title text; a
+                  | _ -> a)
+                acc effs
+            in
+            if term then acc' else go acc' rest
+          else go acc rest
+      in
+      go player q.end_effects
     in
     let _qi, effects = run_quest_on_end qi in
     List.fold_left apply_quest_effect p effects
@@ -1860,29 +1866,46 @@ let complete_encounter (player: player) (enc: encounter) : player =
    if-blocks, and Q0Q0 writes questState = 2 at state 1 before a state-2
    turn-in test in the same body. The pre-event stage is the fallback once a
    group Completes the quest: Lua's questState variable outlives the
-   CompleteQuest bookkeeping, so later guards still see it. *)
+   CompleteQuest bookkeeping, so later guards still see it. A row that
+   carries the terminates flag ends the fold once applied: its Lua body
+   stopped in a bare `return;` (Q2Q7's Conv_Q2Q7b branch), so the groups
+   after it never ran in the script either. *)
 let apply_loc_groups (player : player) (qid : string)
     (rows :
-       (int * string * (string * bool) list * callback_effect list) list)
+       (int * string * (string * bool) list * callback_effect list * bool)
+         list)
     (matches : int -> string -> player -> bool) : player =
-  List.fold_left
-    (fun acc (st, loc, gate, effs) ->
+  let rec go acc rows =
+    match rows with
+    | [] -> acc
+    | (st, loc, gate, effs, term) :: rest ->
       if matches st loc acc && companion_ok acc gate then
-        List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
-      else acc)
-    player rows
+        let acc' =
+          List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
+        in
+        if term then acc' else go acc' rest
+      else go acc rest
+  in
+  go player rows
 
 let apply_complete_groups (player : player) (qid : string)
     (rows :
-       (int * int * string * (string * bool) list * callback_effect list)
-       list)
+       (int * int * string * (string * bool) list * callback_effect list *
+        bool)
+         list)
     (matches : int -> int -> string -> player -> bool) : player =
-  List.fold_left
-    (fun acc (st, suc, loc, gate, effs) ->
+  let rec go acc rows =
+    match rows with
+    | [] -> acc
+    | (st, suc, loc, gate, effs, term) :: rest ->
       if matches st suc loc acc && companion_ok acc gate then
-        List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
-      else acc)
-    player rows
+        let acc' =
+          List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
+        in
+        if term then acc' else go acc' rest
+      else go acc rest
+  in
+  go player rows
 
 (* A hero arrived at [location]: every active quest gets its OnEnterLocation
    rules evaluated against the arrival (effects applying in active-quest

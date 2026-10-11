@@ -104,11 +104,12 @@ check "Q0I2's query rows carry stage, node, gate and label"
      (2, "CENM", [], "[QUEST_Q0I2_ACTION2]") ]);
 let q0q0 = quest "Q0Q0" in
 check "Q0Q0's complete groups are success, failure, then the live chain"
-  (List.map (fun (st, suc, loc, _, _) -> (st, suc, loc))
+  (List.map (fun (st, suc, loc, _, _, _) -> (st, suc, loc))
      q0q0.Campaign_quests.complete_effects
    = [ (1, 1, ""); (1, 0, ""); (1, -1, ""); (2, -1, "") ]);
 check "Q0I3 turns in straight from execute at stage 2"
-  ((quest "Q0I3").Campaign_quests.execute_effects = [ (2, "", [], [ Campaign_quests.Complete ]) ]);
+  ((quest "Q0I3").Campaign_quests.execute_effects
+   = [ (2, "", [], [ Campaign_quests.Complete ], false) ]);
 
 (* ---------------------------------------------------------------- *)
 (* query: first match wins                                          *)
@@ -284,18 +285,34 @@ check "QP01 offers nothing with NPAT away (the gate holds the label)"
   (Campaign.query_actions (active "QP01" 1) "WPIK" = []);
 
 drain ();
-let _g3 =
+let g3 =
   Campaign.complete_action ~success:true
     { (active "Q2Q7" 1) with Campaign.companions = [ "NDRO" ] }
     "Q2Q7" "" in
 check "Q2Q7's win queues its conversation with NDRO along"
   (take_conv () = Some "Conv_Q2Q7b" && take_conv () = None);
+check "Q2Q7's NDRO branch returns: no fall-through box, stage stays 1"
+  (state_of g3 "Q2Q7" = Some 1 && take_msg () = None);
 
 drain ();
-let _g4 =
+let g4 =
   Campaign.complete_action ~success:true (active "Q2Q7" 1) "Q2Q7" "" in
 check "Q2Q7's win skips the conversation with NDRO away"
   (take_conv () = None);
+check "Q2Q7 without NDRO falls through: KILL box and stage 2"
+  ((match take_msg () with
+    | Some m -> m.Campaign.pmsg_text = "[QUEST_Q2Q7_KILL]"
+    | None -> false)
+   && state_of g4 "Q2Q7" = Some 2);
+
+drain ();
+let g4f =
+  Campaign.complete_action ~success:false (active "Q2Q7" 1) "Q2Q7" "" in
+check "Q2Q7's failure keeps the FAILURE box at stage 1"
+  ((match take_msg () with
+    | Some m -> m.Campaign.pmsg_text = "[QUEST_Q2Q7_FAILURE]"
+    | None -> false)
+   && state_of g4f "Q2Q7" = Some 1);
 
 drain ();
 let g5 =
