@@ -40722,7 +40722,7 @@ let quests = [
     callback_effects = [("CallbackConvA", [SetQuestState 1]); ("CallbackConvB", [Complete])];
     query_actions = [(1, "CKUN", "[QUEST_QK06_ACTION]")];
     enter_effects = [];
-    execute_effects = [(1, "", [ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "MsgCallbackA"); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", ""); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA")])];
+    execute_effects = [(1, "", [ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", ""); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "MsgCallbackA"); ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_BUTTON]", "MsgCallbackA")])];
     complete_effects = [(1, 1, "", [Conversation "Conv_QK05b"]); (1, 0, "", [ShowMessage ("[QUEST_QK06_NAME]", "[QUEST_QK06_FAILURE]", "")])];
     end_effects = [(-1, "", [SetQuestState 2])];
   };
@@ -42674,7 +42674,7 @@ let quests = [
     query_actions = [];
     enter_effects = [(-1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_BATTLE]", "Battle")])];
     execute_effects = [];
-    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", ""); ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", "ConvB")]); (1, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")]); (2, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "ConvC"); ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "")]); (2, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")])];
+    complete_effects = [(1, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", "ConvB"); ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS1]", "")]); (1, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")]); (2, 1, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "ConvC"); ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_SUCCESS2]", "")]); (2, 0, "", [ShowMessage ("[QUEST_QS02_NAME]", "[QUEST_QS02_FAILURE1]", "")])];
     end_effects = [(-1, "", [SetQuestState 4])];
   };
   {

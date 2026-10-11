@@ -952,7 +952,16 @@ def analyze_lua(src, qid, stats):
         d = eff_groups[evk]
         rows = []
         for key, members in d.items():
-            uniq = sorted(set(members), key=lambda t: t[0])
+            # dedup preserving insertion order, then a stable sort by
+            # position - effects sharing an assignment position keep the
+            # sites' processing order (a bare set() would tie-break by
+            # hash seed and flip rows between runs)
+            seen_m, ordered = set(), []
+            for m in members:
+                if m not in seen_m:
+                    seen_m.add(m)
+                    ordered.append(m)
+            uniq = sorted(ordered, key=lambda t: t[0])
             rows.append((min(p for p, _ in members), key,
                          [eff for _, eff in uniq]))
         rows.sort(key=lambda r: r[0])
