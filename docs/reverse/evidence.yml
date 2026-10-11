@@ -4285,3 +4285,42 @@ port_decisions:
       line tells the player the keeper is there.
     supersedes: null
     date: 2026-10-10
+
+  - id: port.mount_training
+    decision: >
+      Training lives on the player as mount_levels (absent = level 1, the
+      level a capture starts at). The challenge fights the mount's own
+      kind at the next level for seconds = max 20 (60 - 5 * (next - 2)),
+      read as a turn budget of three turns a second; a win inside the
+      budget writes the new level, and the city's Training tab runs the
+      confirm-through-the-console flow ([TRAINMOUNTS_DETAIL], second
+      click, [TRAINMOUNTS_SUCCESS]). The training level - not the
+      rider's - feeds mount_skill_bonus, superseding
+      port.mount_skill_formula's level source, and each level adds ten
+      percent departure avoidance capped at fifty.
+    rationale: >
+      [TRAINMOUNTS_DESC], [TRAINMOUNTS_DETAIL] and
+      [TRAINMOUNTS_SUCCESS] state the flow verbatim - defeat "this
+      creature" (the mount's own kind) at "level %d" with "%d second
+      time limit", success adds +1 - but the exe's numbers appear in no
+      text, Lua or screen XML, so both curves are port choices: the
+      clock shrinks with level as "the higher the level, the faster you
+      will need to be" demands, and three turns a second exists because
+      the port battles headless under the auto-AI, which needs roughly
+      a hundred turns to finish what a human matching gems quickly does
+      inside the original's minute (the first reading, five seconds a
+      turn, made every training unwinnable in play). SELECTMOUNTMENU_TEXT
+      settles the formula's level: training "helps to improve your
+      skills in combat", so the (level - 1) / addlevel steps read the
+      mount's training level - a fresh capture stays 1, which keeps the
+      verbatim +N at level 1 the original formula decision pinned.
+      YOURCITY_MOUNTS_TEXT separately ties avoidance to levels gained
+      "through training" ("they also begin to let you avoid some
+      encounters on the map"), which is where ten percent a level,
+      capped at half, comes from: no shipped number states a chance, and
+      a capped ramp makes level 1 matter while keeping half as the
+      ceiling a low-level rider can reach. [TRAINMOUNTS_HELP0]'s Stable
+      gate rides the unported citadel buildings, the way the Forge tab
+      skips [FORGEITEMS_HELP0].
+    supersedes: port.mount_skill_formula
+    date: 2026-10-10

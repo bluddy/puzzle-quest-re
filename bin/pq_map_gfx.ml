@@ -63,7 +63,15 @@ let load_segments () : ((int * int) * Gl.texture option) list =
              in
              ((r, c), tex))))
 
-type city_tab = Shop | Spells | Tavern | Actions | Companions | Pets | Forge
+type city_tab =
+  | Shop
+  | Spells
+  | Tavern
+  | Actions
+  | Companions
+  | Pets
+  | Forge
+  | Training
 
 type city_view = {
   cid : string;
@@ -72,6 +80,9 @@ type city_view = {
   mutable forge_base : string option;  (** the triple the forge tab holds *)
   mutable forge_mod : string option;
   mutable forge_pow : string option;
+  mutable train_pending : string option;
+      (** the mount whose [TRAINMOUNTS_DETAIL] is on the console - a
+          second click on the same row starts the attempt *)
 }
 
 type ui = {
@@ -152,7 +163,8 @@ let next_tab (t : city_tab) : city_tab =
   | Actions -> Companions
   | Companions -> Pets
   | Pets -> Forge
-  | Forge -> Shop
+  | Forge -> Training
+  | Training -> Shop
 
 let tab_label (t : city_tab) : string =
   match t with
@@ -163,12 +175,13 @@ let tab_label (t : city_tab) : string =
   | Companions -> Text_data.text "[COMPANIONS]"
   | Pets -> Text_data.text "[PETS]"
   | Forge -> Text_data.text "[FORGEITEMS]"
+  | Training -> Text_data.text "[TRAINMOUNTS]"
 
 let open_city (ui : ui) (cid : string) : unit =
   ui.city <-
     Some
       { cid; tab = Shop; rumor = 0; forge_base = None; forge_mod = None;
-        forge_pow = None };
+        forge_pow = None; train_pending = None };
   Printf.printf "  entered %s\n"
     (Text_data.text (Campaign_map.city_by_id cid).Campaign_map.name_text);
   flush stdout
@@ -242,6 +255,17 @@ let rune_display (id : string) : string =
     | Some (Campaign_runes.Modifier_rune r) -> r.Campaign_runes.name_text
     | Some (Campaign_runes.Power_rune r) -> r.Campaign_runes.name_text
     | None -> id)
+
+(** The training tab's rows: the rideable captives, registry order -
+    [SELECTMOUNTMENU_TEXT]'s "list shows all of your mounts". *)
+let mount_rows (p : Campaign.player) : string list =
+  List.map
+    (fun (m : Campaign_monsters.monster) -> m.Campaign_monsters.id)
+    (List.filter
+       (fun (m : Campaign_monsters.monster) ->
+         m.Campaign_monsters.mount = 1
+         && List.mem m.Campaign_monsters.id p.Campaign.captives)
+       Campaign_monsters.monsters)
 
 (** Fill a recovered %s in a runtime string - Printf.sprintf will not take     a tag that only becomes a format after Text_data resolves it. *)
 let fill1 (pat : string) (arg : string) : string =
@@ -371,7 +395,54 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
                 (if cv.forge_mod = Some id then None else Some id)
           | Some (`Pwr id) ->
               cv.forge_pow <-
-                (if cv.forge_pow = Some id then None else Some id)))
+                (if cv.forge_pow = Some id then None else Some id))
+      | Training -> (
+          match List.nth_opt (mount_rows ui.player) i with
+          | None -> ()
+          | Some mid ->
+              if cv.train_pending = Some mid then begin
+                (* The second click is [TRAINMOUNTS_DETAIL]'s "Continue?"
+                   - run the attempt and report. *)
+                cv.train_pending <- None;
+                (match
+                   Campaign.train_mount ~rng:Random.int ui.player mid
+                 with
+                | Some (p', _b, true) ->
+                    ui.player <- p';
+                    Printf.printf "  %s\n"
+                      (fill1
+                         (Text_data.text "[TRAINMOUNTS_SUCCESS]")
+                         (string_of_int
+                            (Campaign.mount_level ui.player mid)));
+                    flush stdout
+                | Some (_, _b, false) ->
+                    let ch =
+                      match Campaign.training_challenge ui.player mid with
+                      | Some c -> c
+                      | None -> { Campaign.creature_level = 0; seconds = 0;
+                                  turn_limit = 0 }
+                    in
+                    Printf.printf
+                      "  training failed - the creature outlasted the clock \
+                       (%d turn limit)\n"
+                      ch.Campaign.turn_limit;
+                    flush stdout
+                | None ->
+                    Printf.printf "  cannot train %s\n" (monster_name mid);
+                    flush stdout)
+              end
+              else begin
+                cv.train_pending <- Some mid;
+                match Campaign.training_challenge ui.player mid with
+                | Some ch ->
+                    Printf.printf "  %s\n"
+                      (fill2
+                         (Text_data.text "[TRAINMOUNTS_DETAIL]")
+                         (string_of_int ch.Campaign.creature_level)
+                         (string_of_int ch.Campaign.seconds));
+                    flush stdout
+                | None -> ()
+              end))
   | City_layout.Forge ->
       if cv.tab <> Forge then ()
       else (
@@ -396,7 +467,7 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
   | City_layout.Elsewhere -> (
       match cv.tab with
       | Tavern -> advance_rumor cv
-      | Shop | Spells | Actions | Companions | Pets | Forge -> ())
+      | Shop | Spells | Actions | Companions | Pets | Forge | Training -> ())
 
 (** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
 let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
@@ -593,7 +664,37 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
           City_layout.row_x
           (City_layout.row_y0
           + ((City_layout.max_rows + 1) * City_layout.row_step)
-          + 8));
+          + 8)
+  | Training ->
+      List.iteri
+        (fun i mid ->
+          if i < City_layout.max_rows then begin
+            let selected = cv.train_pending = Some mid in
+            let col =
+              if selected then Layout.rgb 240 210 90
+              else Layout.rgb 230 230 230
+            in
+            text ~colour:col
+              (monster_name mid)
+              (City_layout.row_x + 30) (row_y i + 3);
+            let lvl =
+              "level "
+              ^ string_of_int (Campaign.mount_level ui.player mid)
+            in
+            let w = measure lvl in
+            text ~colour:col lvl
+              (City_layout.row_x + City_layout.row_w - w - 8) (row_y i + 3)
+          end)
+        (mount_rows ui.player);
+      let status =
+        match cv.train_pending with
+        | Some _ -> "second click starts the timed battle"
+        | None -> Text_data.text "[TRAINMOUNTS_HELP1]"
+      in
+      text ~colour:(Layout.rgb 150 150 160) status City_layout.row_x
+        (City_layout.row_y0
+        + (City_layout.max_rows * City_layout.row_step)
+        + 8));
   solid rs gl City_layout.mode_btn (Layout.rgb 44 48 60);
   solid rs gl City_layout.done_btn (Layout.rgb 44 48 60);
   if cv.tab = Forge then
@@ -956,7 +1057,16 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                     ui.journey <- Some journey;
                     Printf.printf "  walking to %s\n" id;
                     flush stdout;
-                    (* The departure roll: the port asks the road once, here. *)
+                    (* The departure roll: the port asks the road once,
+                       here - unless the trained mount slips past it
+                       (port.mount_training). *)
+                    if Campaign.mount_avoids ui.player then begin
+                      Printf.printf
+                        "  your mount avoids the encounter (%d%% chance)\n"
+                        (Campaign.mount_avoid_chance ui.player);
+                      flush stdout
+                    end
+                    else
                     (match Campaign.road_encounter ui.player here id with
                     | Some enc ->
                         ui.popup <- Some enc;

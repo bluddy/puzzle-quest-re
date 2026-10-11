@@ -433,6 +433,48 @@ let () =
   | None -> print_endline "  forge failed");
   print_endline "";
 
+  (* Mount training: the challenge fights the mount's own kind at the
+     next level under the clock, a win adds the training level the skill
+     formula reads, and levels add departure avoidance. *)
+  print_endline "=== Mount training ===";
+  let cadet =
+    Campaign.set_mount
+      { player5 with Campaign.captives = [ "MWLF" ] }
+      (Some "MWLF")
+  in
+  (match Campaign.training_challenge cadet "MWLF" with
+  | Some ch ->
+      print_endline
+        (Printf.sprintf "  challenge: level %d creature, %d seconds (%d turns)"
+           ch.Campaign.creature_level ch.Campaign.seconds
+           ch.Campaign.turn_limit)
+  | None -> print_endline "  no challenge");
+  let rec try_train k : (Campaign.player * Battle.battle) option =
+    if k > 100 then None
+    else begin
+      let st = ref (k * 31) in
+      let rng n =
+        st := (!st * 75 + 74) mod 65537;
+        if n <= 0 then 0 else !st mod n
+      in
+      match Campaign.train_mount ~rng cadet "MWLF" with
+      | Some (p', b, true) -> Some (p', b)
+      | Some _ -> try_train (k + 1)
+      | None -> None
+    end
+  in
+  (match try_train 1 with
+  | Some (p', b) ->
+      print_endline
+        (Printf.sprintf "  trained: MWLF is level %d after %d turns"
+           (Campaign.mount_level p' "MWLF")
+           b.Battle.turns_elapsed)
+  | None -> print_endline "  training failed - the clock ran out");
+  print_endline
+    (Printf.sprintf "  departure avoidance chance: %d%%"
+       (Campaign.mount_avoid_chance cadet));
+  print_endline "";
+
   (* Test save/load *)
   print_endline "=== Testing Save/Load ===";
   let save_file = "pq_save_test.json" in

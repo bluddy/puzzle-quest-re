@@ -348,7 +348,8 @@ let () =
       Campaign.awards = [ "AMME" ];
       Campaign.current_city = Some "CBAR";
       Campaign.captives = [ "MWLF" ];
-      Campaign.mount = Some "MWLF" } in
+      Campaign.mount = Some "MWLF";
+      Campaign.mount_levels = [ ("MWLF", 4) ] } in
 
   (* Visibility as it is *now*, not as the data shipped: one node hidden. *)
   Campaign.set_location_visible "WSIR" false;
@@ -385,6 +386,8 @@ let () =
     (location = "CBAR" && p2.Campaign.current_city = Some "CBAR");
   check "load restores the chosen mount"
     (p2.Campaign.mount = Some "MWLF");
+  check "load restores the mount's training level"
+    (p2.Campaign.mount_levels = [ ("MWLF", 4) ]);
 
   check "load puts a hidden node back behind the save"
     (not (Campaign.node_visible "WSIR"));
@@ -791,11 +794,15 @@ let () =
 
   (* Mount combat bonuses: the capture strings are the formula - "+N (+M
      more per K levels)" - and mount_stat is the engine's 0-based skill
-     index. The delta alone is asserted here; the combatant and the spell
-     are checked on the road fight above. *)
+     index. The level the steps read is the mount's training level
+     ([SELECTMOUNTMENU_TEXT]: training "helps to improve your skills in
+     combat"), starting at 1 for a fresh capture. The delta alone is
+     asserted here; the combatant and the spell are checked on the road
+     fight above. *)
   let at mid lvl =
     Campaign.set_mount
-      { (fresh ()) with Campaign.level = lvl; Campaign.captives = [ mid ] }
+      { (fresh ()) with Campaign.mount_levels = [ (mid, lvl) ];
+                         Campaign.captives = [ mid ] }
       (Some mid)
   in
   let bonus p =
@@ -819,7 +826,85 @@ let () =
      s.Combat.fire = 0 && s.Combat.battle = 0);
   check "the ridden mount's spell rides along"
     (Campaign.mount_spell_ids (at "MWLF" 1) = [ "SHWL" ]
-     && Campaign.mount_spell_ids (fresh ()) = [])
+     && Campaign.mount_spell_ids (fresh ()) = []);
+
+  (* Mount training ([TRAINMOUNTS_DETAIL], [YOURCITY_MOUNTS_TEXT]): the
+     challenge fights the mount's own kind at the next level, the clock
+     lands as the turn budget, and the trained level is what the skill
+     formula then reads (port.mount_training). *)
+  let stable = at "MWLF" 1 in
+  check_int "a fresh mount sits at training level 1"
+    (Campaign.mount_level stable "MWLF") 1;
+  (match Campaign.training_challenge stable "MWLF" with
+  | Some ch ->
+      check_int "training fights the next level's creature"
+        ch.Campaign.creature_level 2;
+      check_int "the first challenge allows sixty seconds"
+        ch.Campaign.seconds 60;
+      check_int "three turns a second of clock"
+        ch.Campaign.turn_limit 180
+  | None -> check "the challenge opens for a rideable captive" false);
+  check "an unheld mount has no challenge"
+    (Campaign.training_challenge (fresh ()) "MWLF" = None);
+  check "a non-rideable captive has no challenge"
+    (Campaign.training_challenge
+       { (fresh ()) with Campaign.captives = [ "MBAT" ] }
+       "MBAT"
+    = None);
+
+  (* The attempt: a hero stacked to finish fights wins one inside the
+     budget - the auto-AI loses most fights at the heroes the data hands
+     it, so the seeds are searched like the callback tests do. *)
+  let trainee =
+    { (fresh ()) with
+      Campaign.captives = [ "MWLF" ];
+      Campaign.life = 99999;
+      Campaign.max_life = 99999;
+      Campaign.skills =
+        { earth = 99; fire = 99; air = 99; water = 99; battle = 99;
+          cunning = 99; morale = 99 } }
+  in
+  let rec train k =
+    if k > 200 then None
+    else begin
+      (* a stateful die per attempt - a constant per-bound function would
+         hand the AI the same roll forever *)
+      let st = ref (k * 977) in
+      let rng n =
+        st := (!st * 75 + 74) mod 65537;
+        if n <= 0 then 0 else !st mod n
+      in
+      match Campaign.train_mount ~rng trainee "MWLF" with
+      | Some (p', b, true) -> Some (p', b)
+      | Some _ -> train (k + 1)
+      | None -> None
+    end
+  in
+  (match train 1 with
+  | Some (p', b) ->
+      check "a won, in-time training fight levels the mount"
+        (Campaign.mount_level p' "MWLF" = 2
+        && Campaign.mount_level trainee "MWLF" = 1
+        && Battle.log_of b <> [])
+  | None -> check "a won, in-time training fight levels the mount" false);
+
+  (* Avoidance: ten percent a training level, capped at half, rolled at
+     departure (port.mount_training). *)
+  check "on foot nothing is avoided"
+    (Campaign.mount_avoid_chance (fresh ()) = 0
+    && not (Campaign.mount_avoids ~rng:(fun _ -> 0) (fresh ())));
+  check "an untrained mount's chance is one in ten"
+    (Campaign.mount_avoid_chance stable = 10);
+  check "training adds ten percent a level, capped at half"
+    (Campaign.mount_avoid_chance
+       { stable with Campaign.mount_levels = [ ("MWLF", 3) ] }
+    = 30
+    && Campaign.mount_avoid_chance
+         { stable with Campaign.mount_levels = [ ("MWLF", 9) ] }
+       = 50);
+  check "the roll respects the chance"
+    (Campaign.mount_avoids ~rng:(fun _ -> 0) stable
+    && not (Campaign.mount_avoids ~rng:(fun _ -> 99) stable))
 ;;
 
 let () =

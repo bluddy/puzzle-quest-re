@@ -52,6 +52,8 @@ type player = {
   captives: string list;     (* monster ids captured *)
   mount: string option;      (* the chosen ride: a captured, rideable monster id *)
   runes: string list;        (* collected rune ids - forge ingredients *)
+  mount_levels: (string * int) list;
+      (* mount id -> training level; absent = the level 1 a capture starts at *)
 }
 
 let default_equipment = {
@@ -82,9 +84,10 @@ let create_player name prof_id sex age =
     captives = [];
     mount = None;
     (* [RUNESANDITEMS_HELP]: "To begin, you have been given the 3 most
-       common Runes" - the three with no guard and no map location, which
+       common Runes" - the three with no guard and no location, which
        cannot be claimed anywhere else. *)
     runes = [ "UDAG"; "UCRA"; "UFIR" ];
+    mount_levels = [];
   }
 
 (* ------------------------------------------------------------------ *)
@@ -270,18 +273,27 @@ let add_skill_affinities (a: skill_affinities) (b: skill_affinities)
     battle = a.battle + b.battle; cunning = a.cunning + b.cunning;
     morale = a.morale + b.morale }
 
-(* The ridden mount's skill delta at the rider's level. The capture strings
-   are the only statement of the formula - MDSP "increases your Fire Mastery
-   by +2 (+1 more per 2 levels)" - and the fields line up piecewise:
-   mount_addstat the printed +N, mount_addperlevel the "+M more",
-   mount_addlevel the "per K levels". The port reads the step as
-   (level - 1) / addlevel: level 1 shows exactly the printed +N, and every
-   K levels gained adds another M. mount_stat is the engine's 0-based
+(* A mount's training level: 1 until the Stable says otherwise
+   ([SELECTMOUNTMENU_TEXT] - training "adds +1 to its level"). *)
+let mount_level (p: player) (mid: string) : int =
+  match List.assoc_opt mid p.mount_levels with Some n -> n | None -> 1
+
+(* The ridden mount's skill delta at the mount's training level. The
+   capture strings are the only statement of the formula - MDSP
+   "increases your Fire Mastery by +2 (+1 more per 2 levels)" - and the
+   fields line up piecewise: mount_addstat the printed +N,
+   mount_addperlevel the "+M more", mount_addlevel the "per K levels".
+   The port reads the step as (level - 1) / addlevel: a freshly captured
+   mount (level 1) shows exactly the printed +N, and every K training
+   levels gained adds another M - [SELECTMOUNTMENU_TEXT] is what makes
+   the level the mount's rather than the rider's: training "helps to
+   improve your skills in combat". mount_stat is the engine's 0-based
    SKILL_ index (skill_of_index), which is why MSCO/MSWO read Earth and
-   MRAT Cunning - the same names their strings give. The delta is computed,
-   never stored: player.skills stays the profession base and the bonus
-   rides the combatant, like a companion's SkillBonus. A hand-built mount
-   field on a non-rideable monster grants nothing. (port.mount_skill_formula) *)
+   MRAT Cunning - the same names their strings give. The delta is
+   computed, never stored: player.skills stays the profession base and
+   the bonus rides the combatant, like a companion's SkillBonus. A
+   hand-built mount field on a non-rideable monster grants nothing.
+   (port.mount_training, which supersedes port.mount_skill_formula) *)
 let mount_skill_bonus (player: player) : skill_affinities =
   let zero : skill_affinities =
     { earth = 0; fire = 0; air = 0; water = 0; battle = 0;
@@ -294,7 +306,9 @@ let mount_skill_bonus (player: player) : skill_affinities =
        let m = Campaign_monsters.monster_by_id mid in
        if m.mount <> 1 then zero
        else
-         let steps = (player.level - 1) / max 1 m.mount_addlevel in
+         let steps =
+           (mount_level player mid - 1) / max 1 m.mount_addlevel
+         in
          let n = m.mount_addstat + (steps * m.mount_addperlevel) in
          if n = 0 then zero
          else
@@ -319,6 +333,45 @@ let mount_spell_ids (player: player) : string list =
        let m = Campaign_monsters.monster_by_id mid in
        if m.mount = 1 && m.mount_spell <> "" then [ m.mount_spell ] else []
      with Not_found -> [])
+
+(* [TRAINMOUNTS_DESC]: "You must defeat this creature in a timed battle
+   to train it to the next level. The higher the level, the faster you
+   will need to be!" - the fight is the mount's own kind at the next
+   level ([TRAINMOUNTS_DETAIL] prints both numbers before the
+   confirm). Both numbers are port choices (port.mount_training): sixty
+   seconds for the first training, five shorter each level down to
+   twenty, and the clock read as three turns a second - the port runs
+   the battle headless under the auto-AI, which needs the slack a human
+   matching gems quickly has. *)
+type training_challenge = {
+  creature_level : int;
+  seconds : int;
+  turn_limit : int;
+}
+
+let training_challenge (p: player) (mid: string) : training_challenge option =
+  match
+    (try Some (Campaign_monsters.monster_by_id mid) with Not_found -> None)
+  with
+  | Some m when m.mount = 1 && List.mem mid p.captives ->
+    let next = mount_level p mid + 1 in
+    let seconds = max 20 (60 - 5 * (next - 2)) in
+    Some
+      { creature_level = next; seconds; turn_limit = seconds * 3 }
+  | _ -> None
+
+(* [YOURCITY_MOUNTS_TEXT]: "As mounts gain levels through training, they
+   also begin to let you avoid some encounters on the map." The chance is
+   a port reading - ten percent a training level, capped at half - rolled
+   once at departure by the front end (port.mount_training). *)
+let mount_avoid_chance (p: player) : int =
+  match p.mount with
+  | None -> 0
+  | Some mid -> min 50 (10 * mount_level p mid)
+
+let mount_avoids ?(rng = Random.int) (p: player) : bool =
+  let chance = mount_avoid_chance p in
+  chance > 0 && rng 100 < chance
 
 let travel_time (player: player) (from_: string) (to_: string) : float =
   node_distance from_ to_ /. mounted_speed player
@@ -1214,6 +1267,48 @@ let run_encounter_battle (player: player) (enc: encounter) : battle =
       ~companions:player.companions ()
   in
   Battle.run battle
+
+(* The training attempt behind [TRAINMOUNTS_DETAIL]: the mount's own kind
+   at the next level, run as a normal headless fight - trained only when
+   the hero wins inside the turn budget the seconds translate to. The
+   level lands as the new mount level ([TRAINMOUNTS_SUCCESS] carries it);
+   a failure changes nothing but answers with the battle for the report.
+   None means the id is not one of your rideable mounts. *)
+let train_mount ?(rng = Random.int) (player: player) (mid: string)
+    : (player * battle * bool) option =
+  match training_challenge player mid with
+  | None -> None
+  | Some ch -> (
+    match
+      (try Some (Campaign_monsters.monster_by_id mid) with Not_found -> None)
+    with
+    | None -> None
+    | Some m ->
+      let hero = player_to_combatant player in
+      let enemy = monster_to_combatant m ch.creature_level in
+      let b =
+        Battle.run
+          (open_battle ~rng
+             ~rules:(rules_for_battle ~player ~task_level:ch.creature_level)
+             ~hero_spells:(spells_of_ids
+               (mount_spell_ids player @ player.known_spells))
+             ~enemy_spells:(spells_of_ids m.spells)
+             ~hero_items:(loadout_of_equipment player.equipment)
+             ~hero ~enemy
+             ~enemy_tags:(monster_type_tags m)
+             ~companions:player.companions ())
+      in
+      let trained =
+        Battle.hero_won b && b.Battle.turns_elapsed <= ch.turn_limit
+      in
+      let player =
+        if trained then
+          { player with mount_levels =
+              (mid, ch.creature_level)
+              :: List.filter (fun (id, _) -> id <> mid) player.mount_levels }
+        else player
+      in
+      Some (player, b, trained))
 
 (* Process battle result and update player/quest state *)
 type battle_result = {

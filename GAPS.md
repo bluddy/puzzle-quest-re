@@ -172,7 +172,7 @@
 1. ~~**Quest prerequisite checks**~~ ✅ wired to `is_quest_available`
 2. ~~**Road/ruin unlock on quest complete**~~ ✅ reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN`
 3. ~~**Global text tables**~~ ✅ `lib/text_data.ml`, 2,630 tags, `test_text_data`
-4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (178 assertions)
+4. ~~**Campaign tests**~~ ✅ `test_campaign.ml` — prerequisites, quest lifecycle, visibility reveal, ruin registry, save round-trip, travel, encounter appearance, income, level-up (188 assertions)
 5. ~~**Ruin capture board**~~ ✅ `lib/capture.ml` + campaign gates/captives/save (84 assertions); success adds the captive
 6. ~~**Companion equip**~~ — roster + party (`recruited_companions` / `companions`); add at home, leave anywhere; the ten OnStartBattle hooks are the passives and follow the party (companions ship no separate skill data)
 7. ~~**Mount speed**~~ — the chosen captive divides the road (`set_mount` gates on a captured, rideable monster); tiers 1.5 slow / 2.0 average / 2.5 fast from `mount_speed`, and `begin_travel` takes the player to time the crossing
@@ -243,10 +243,10 @@ campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, companion removal, cell selection, AI aiming, monster rosters,
 conversation triggers + per-callback effects, companion equip, grid-spell
 aim hover, mount speed, mount combat bonuses, capture UI, capture
-surfaces, banner slot, runes, rune items, forge UI), and the
+surfaces, banner slot, runes, rune items, forge UI, mount training), and the
 conversation UI now walks actions, renders portraits/backdrops, fires
 battle callbacks and applies each scriptcall's extracted body effects.
 Pick one:
 
 - **Forge minigame** - the skill game [FORGEITEMS_FAIL] expects (the ten Easy..Godlike bands become targets) and the [MAXRUNEITEM] cap
-- **Mount training** - the Stable's timed battles; mount levels buy map encounter avoidance (YOURCITY_MOUNTS_TEXT)
+- **Item hook invocation** - the mana/gold/xp, start-turn, match and victory hooks battle never calls

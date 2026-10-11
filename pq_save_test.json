@@ -40,7 +40,8 @@
     "monster_defeats": [],
     "captives": [],
     "mount": null,
-    "runes": [ "UDAG", "UCRA", "UFIR" ]
+    "runes": [ "UDAG", "UCRA", "UFIR" ],
+    "mount_levels": []
   },
   "quests": [ { "quest_id": "Q0Q0", "state": 1, "vars": [] } ],
   "map_visibility": {

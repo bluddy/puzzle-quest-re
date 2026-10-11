@@ -44,6 +44,7 @@ type save_player = {
   captives: string list;
   mount: string option;
   runes: string list;
+  mount_levels: (string * int) list;
 }
 
 type save_quest_state = {
@@ -114,6 +115,11 @@ let save_player_to_json (p: save_player) =
     "captives", `List (List.map (fun s -> `String s) p.captives);
     "mount", (match p.mount with Some s -> `String s | None -> `Null);
     "runes", `List (List.map (fun s -> `String s) p.runes);
+    "mount_levels",
+    `List
+      (List.map
+         (fun (id, n) -> `Assoc [("id", `String id); ("level", `Int n)])
+         p.mount_levels);
   ]
 
 let save_quest_state_to_json q =
@@ -197,7 +203,13 @@ let save_player_of_json json =
     (* saves written before runes existed hold none *)
     runes = (match json |> member "runes" with
       | `Null -> []
-      | j -> j |> to_list |> List.map to_string); }
+      | j -> j |> to_list |> List.map to_string);
+    (* saves written before training existed start every mount at level 1 *)
+    mount_levels = (match json |> member "mount_levels" with
+      | `Null -> []
+      | j -> j |> to_list
+             |> List.map (fun v -> (v |> member "id" |> to_string,
+                                    v |> member "level" |> to_int))); }
 
 let save_quest_state_of_json json =
   { quest_id = json |> member "quest_id" |> to_string;
@@ -282,7 +294,8 @@ module SaveConvert = struct
       monster_defeats = p.monster_defeats;
       captives = p.captives;
       mount = p.mount;
-      runes = p.runes }
+      runes = p.runes;
+      mount_levels = p.mount_levels }
 
   let skill_affinities_from_save (s: skill_affinities) : Campaign_types.skill_affinities =
     { earth = s.earth; fire = s.fire; air = s.air; water = s.water;
@@ -315,7 +328,8 @@ module SaveConvert = struct
       monster_defeats = s.monster_defeats;
       captives = s.captives;
       mount = s.mount;
-      runes = s.runes }
+      runes = s.runes;
+      mount_levels = s.mount_levels }
 end
 
 (* ------------------------------------------------------------------ *)

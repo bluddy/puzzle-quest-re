@@ -188,7 +188,11 @@ let () =
                  (k,
                   match v with
                   | `Assoc pfs ->
-                      `Assoc (List.filter (fun (n, _) -> n <> "runes") pfs)
+                      `Assoc
+                        (List.filter
+                           (fun (n, _) ->
+                             n <> "runes" && n <> "mount_levels")
+                           pfs)
                   | other -> other)
                else (k, v))
              fs)
@@ -196,7 +200,8 @@ let () =
   in
   let old = Campaign_save.save_campaign_of_json stripped in
   let p3, _, _, _, _, _ = Campaign_save.apply_save old in
-  check "an old save loads no runes" (p3.Campaign.runes = [])
+  check "an old save loads no runes and no mount training"
+    (p3.Campaign.runes = [] && p3.Campaign.mount_levels = [])
 
 (* ------------------------------------------------------------------ *)
 (* 5. Forged items: the mint, the loadout, the JXXX hooks            *)

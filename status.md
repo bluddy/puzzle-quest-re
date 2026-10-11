@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-09  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. The forge UI and the runekeeper surface landed (`port.forge_ui`). The city panel gained a **Forge** tab (`[FORGEITEMS]`, cycling after Pets): the held runes list with their kind tags, click fills or clears one of three slots, the status line shows the triple with its `[FORGEITEMS_TARGET*]` difficulty band (`forge_band` - ten equal sixty-point steps, the exe's thresholds unrecovered), and the centred forge button forges through `forge_item` ([FORGEITEMS_SUCCESS] + the minted name). Forging is instant - the skill game `[FORGEITEMS_FAIL]` expects is not ported, and the [FORGEITEMS_HELP0] citadel-building gate rides the unported buildings system. The world side: clicking the node you stand on when a rune's drop sits there opens the keeper popup ([RUNEKEEPER] as a synthetic encounter against the guard monster); winning claims through `claim_rune` ([RUNE_SUCCESS]), losing leaves it claimable. All 34 suites pass, extractor/validator checks verified green.
+**Sync:** working tree clean. Mount training landed (`port.mount_training`, superseding `port.mount_skill_formula`'s level source) - the last mount purpose. The city gained a **Training** tab (`[TRAINMOUNTS]`): the rideable captives with their levels, first click prints the filled `[TRAINMOUNTS_DETAIL]` (level-N creature, seconds), the second runs `train_mount` - the mount's own kind at the next level, won inside the clock's turn budget or nothing changes - and a success writes `player.mount_levels` ([TRAINMOUNTS_SUCCESS]). The training level now feeds `mount_skill_bonus` ([SELECTMOUNTMENU_TEXT]: training "helps to improve your skills in combat" - a fresh capture stays level 1, so the verbatim +N at level 1 still holds), and each level adds ten percent departure avoidance capped at half ([YOURCITY_MOUNTS_TEXT]), rolled by `mount_avoids` at the road popup. Both curves are port choices: sixty seconds shrinking by five a level, read as three turns a second because the port's auto-AI needs the slack a human's fast play has (five seconds a turn made the first training unwinnable - found by the test search hanging on a constant-valued rng). All 34 suites pass, extractor/validator checks verified green.
 
 ---
 
@@ -160,10 +160,10 @@
   companion pass; `loadout_of_equipment` folds the eight-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
-- **Tests:** `test/test_campaign.ml` (209), `test/test_capture.ml` (84),
+- **Tests:** `test/test_campaign.ml` (223), `test/test_capture.ml` (84),
   `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101),
   `test/test_callback_effects.ml` (24), `test/test_location_actions.ml` (30)
-  and `test/test_runes.ml` (59) - 580
+  and `test/test_runes.ml` (62) - 601
   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
@@ -193,7 +193,7 @@
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 90 | 10 (4 open) | 39 |
+| `docs/reverse/evidence.yml` | 90 | 10 (4 open) | 40 |
 
 Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
