@@ -97,26 +97,38 @@ let () =
 (* The extracted tables                                             *)
 (* ---------------------------------------------------------------- *)
 
+(* group rows carry the var / item / clause slots now, and callback rows
+   the whole arm conjunction; the compact builders keep the older
+   assertions readable, empty lists = unconstrained. *)
+let eg st loc effs = (st, loc, [], [], [], [], effs, false) in
+let egc st loc clauses effs = (st, loc, [], [], [], clauses, effs, false) in
+let cl2 st loc = ([ st ], [ loc ], None, [], [], []) in
+let cg st suc loc effs = (st, suc, loc, [], [], [], [], effs, false) in
+let ce e = ([], [], [], [], e) in
+
 let q0i2 = quest "Q0I2" in
 check "Q0I2's OnBegin intro conversation"
   (q0i2.Campaign_quests.conversations_begin = [ ("Conv_Q0I2a", []) ]);
 check "Q0I2's callback effects: a state write and a complete"
   (List.assoc_opt "CallbackConvB" q0i2.Campaign_quests.callback_effects
-   = Some [ ([], Campaign_quests.SetQuestState 2) ]
+   = Some [ ce (Campaign_quests.SetQuestState 2) ]
    && List.assoc_opt "CallbackConvC" q0i2.Campaign_quests.callback_effects
-      = Some [ ([], Campaign_quests.Complete) ]);
+      = Some [ ce Campaign_quests.Complete ]);
 
 let q3q1 = quest "Q3Q1" in
 check "Q3Q1's arrivals are attributed to state+location"
   (q3q1.Campaign_quests.enter_effects =
-   [ (1, "WETO", [], [ Campaign_quests.Conversation "Conv_Q3Q1b" ], false);
-     (2, "CYLA", [], [ Campaign_quests.Conversation "Conv_Q3Q1c" ], false) ]);
+   [ eg 1 "WETO" [ Campaign_quests.Conversation "Conv_Q3Q1b" ];
+     egc 2 "CYLA" [ cl2 1 "WETO" ]
+       [ Campaign_quests.Conversation "Conv_Q3Q1c" ] ]);
 
 let q0q5 = quest "Q0Q5" in
 check "Q0Q5's wildcard-state arrival carries its companion gate"
   (q0q5.Campaign_quests.enter_effects =
-   [ (-1, "WHPS", [ ("NDKH", true) ],
-       [ Campaign_quests.Conversation "Conv_Q0Q5b" ], false) ]);
+   [ (-1, "WHPS", [ ("NDKH", true) ], [ ("doneConversation", false, 0) ],
+       [], [],
+       [ Campaign_quests.SetVar ("doneConversation", 1);
+         Campaign_quests.Conversation "Conv_Q0Q5b" ], false) ]);
 
 let q3q7 = quest "Q3Q7" in
 check "Q3Q7's branch keeps both trees (first source order fires)"
@@ -132,8 +144,8 @@ check "callback rewards left the turn-in buckets"
    text and queued a box Lua never shows. *)
 let q3q6 = quest "Q3Q6" in
 check "Q3Q6's success group carries one box - the callback one"
-  (List.map (fun (_, _, _, _, e, _) -> e)
-     (List.filter (fun (st, suc, _, _, _, _) -> st = 1 && suc = 1)
+  (List.map (fun (_, _, _, _, _, _, _, e, _) -> e)
+     (List.filter (fun (st, suc, _, _, _, _, _, _, _) -> st = 1 && suc = 1)
         q3q6.Campaign_quests.complete_effects)
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_Q3Q6_NAME]", "[QUEST_Q3Q6_SUCCESS1]", "CallbackMsgA");
@@ -141,36 +153,37 @@ check "Q3Q6's success group carries one box - the callback one"
 
 let q1q0 = quest "Q1Q0" in
 check "Q1Q0 keeps its failure box and only at the wildcard state"
-  (List.filter (fun (_, suc, _, _, _, _) -> suc = 0)
+  (List.filter (fun (_, suc, _, _, _, _, _, _, _) -> suc = 0)
      q1q0.Campaign_quests.complete_effects
-  = [ (-1, 0, "", [],
+  = [ cg (-1) 0 ""
         [ Campaign_quests.ShowMessage
-            ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "") ], false) ]);
+            ("[QUEST_Q1Q0_NAME]", "[QUEST_Q1Q0_FAILURE]", "") ] ]);
 
 (* The terminates flag: a bare `return;` in the Lua body stops the fold
    after that row - Q2Q7's NDRO branch is the only one in the corpus. *)
 let term_quests =
   List.filter
     (fun (q : Campaign_quests.quest) ->
-      List.exists (fun (_, _, _, _, _, t) -> t)
+      List.exists (fun (_, _, _, _, _, _, _, _, t) -> t)
         q.Campaign_quests.complete_effects
-      || List.exists (fun (_, _, _, _, t) -> t)
+      || List.exists (fun (_, _, _, _, _, _, _, t) -> t)
            q.Campaign_quests.enter_effects
-      || List.exists (fun (_, _, _, _, t) -> t)
+      || List.exists (fun (_, _, _, _, _, _, _, t) -> t)
            q.Campaign_quests.execute_effects
-      || List.exists (fun (_, _, _, _, t) -> t)
+      || List.exists (fun (_, _, _, _, _, _, _, t) -> t)
            q.Campaign_quests.end_effects)
     Campaign_quests.quests
 in
 check "only Q2Q7's NDRO complete row terminates its hook"
   (List.map (fun q -> q.Campaign_quests.id) term_quests = [ "Q2Q7" ]
-   && List.exists (fun (_, _, _, gate, _, t) ->
+   && List.exists (fun (_, _, _, gate, _, _, _, _, t) ->
           gate = [ ("NDRO", true) ] && t)
         (quest "Q2Q7").Campaign_quests.complete_effects);
 
 let qk06 = quest "QK06" in
 check "QK06's execute groups split the NOCOMP / BUTTON arms by NKHA"
-  (List.map (fun (_, _, _, e, _) -> e) qk06.Campaign_quests.execute_effects
+  (List.map (fun (_, _, _, _, _, _, e, _) -> e)
+     qk06.Campaign_quests.execute_effects
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_QK06_NAME]", "[QUEST_QK06_NOCOMP]", "") ];
       [ Campaign_quests.ShowMessage
@@ -178,7 +191,8 @@ check "QK06's execute groups split the NOCOMP / BUTTON arms by NKHA"
 
 let qs00 = quest "QS00" in
 check "QS00's arrival keeps one box per arm, no NOCOMP twin"
-  (List.map (fun (_, _, _, e, _) -> e) qs00.Campaign_quests.enter_effects
+  (List.map (fun (_, _, _, _, _, _, e, _) -> e)
+     qs00.Campaign_quests.enter_effects
   = [ [ Campaign_quests.ShowMessage
           ("[QUEST_QS00_NAME]", "[QUEST_QS00_NOCOMP]", "") ];
       [ Campaign_quests.ShowMessage
@@ -189,14 +203,14 @@ check "QS00's arrival keeps one box per arm, no NOCOMP twin"
 check "location-action conversations live in the execute/complete groups"
   (List.exists
      (fun (q : Campaign_quests.quest) ->
-       List.exists (fun (_, _, _, effs, _) ->
+       List.exists (fun (_, _, _, _, _, _, effs, _) ->
            List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
              effs)
          q.Campaign_quests.execute_effects)
      Campaign_quests.quests
    && List.exists
         (fun (q : Campaign_quests.quest) ->
-          List.exists (fun (_, _, _, _, effs, _) ->
+          List.exists (fun (_, _, _, _, _, _, _, effs, _) ->
               List.exists (function Campaign_quests.Conversation _ -> true | _ -> false)
                 effs)
             q.Campaign_quests.complete_effects)

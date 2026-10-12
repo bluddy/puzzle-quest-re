@@ -82,6 +82,9 @@ let fresh () = Campaign.create_player "Tester" "PWAR" 0 0
 let active qid stage =
   { (fresh ()) with Campaign.active_quests = [ (qid, stage) ] }
 
+let active_with_vars qid stage vars =
+  { (active qid stage) with Campaign.quest_vars = [ (qid, vars) ] }
+
 let state_of (p : Campaign.player) qid = List.assoc_opt qid p.Campaign.active_quests
 
 let quest id : Campaign_quests.quest = Campaign_quests.quest_by_id id
@@ -97,19 +100,28 @@ let () =
 (* The extracted tables                                             *)
 (* ---------------------------------------------------------------- *)
 
+(* group / query rows carry the var, item and clause slots now; the
+   compact builders keep the older assertions readable, empty lists =
+   unconstrained. *)
+(* query rows carry the var / item / clause slots; the compact builder
+   keeps the older assertions readable, empty lists = unconstrained.
+   [cl st] is the stage-clause every elseif arm of a stage branch emits. *)
+let cl st = ([ st ], [], None, [], [], []) in
+let qr st loc ?(clauses = []) tag = (st, loc, [], [], [], clauses, tag) in
+
 let q0i2 = quest "Q0I2" in
 check "Q0I2's query rows carry stage, node, gate and label"
   (q0i2.Campaign_quests.query_actions =
-   [ (1, "CENM", [], "[QUEST_Q0I2_ACTION1]");
-     (2, "CENM", [], "[QUEST_Q0I2_ACTION2]") ]);
+   [ qr 1 "CENM" "[QUEST_Q0I2_ACTION1]";
+     qr 2 "CENM" ~clauses:[ cl 1 ] "[QUEST_Q0I2_ACTION2]" ]);
 let q0q0 = quest "Q0Q0" in
 check "Q0Q0's complete groups are success, failure, then the live chain"
-  (List.map (fun (st, suc, loc, _, _, _) -> (st, suc, loc))
+  (List.map (fun (st, suc, loc, _, _, _, _, _, _) -> (st, suc, loc))
      q0q0.Campaign_quests.complete_effects
    = [ (1, 1, ""); (1, 0, ""); (1, -1, ""); (2, -1, "") ]);
 check "Q0I3 turns in straight from execute at stage 2"
-  ((quest "Q0I3").Campaign_quests.execute_effects
-   = [ (2, "", [], [ Campaign_quests.Complete ], false) ]);
+  ((quest "Q0I3").Campaign_quests.execute_effects =
+   [ (2, "", [], [], [], [ cl 1 ], [ Campaign_quests.Complete ], false) ]);
 
 (* ---------------------------------------------------------------- *)
 (* query: first match wins                                          *)
@@ -154,19 +166,32 @@ check "execute at stage 2 queues the guardian box with its callback"
 
 drain ();
 let _p3 = Campaign.execute_action (active "Q0Q0" 2) "Q0Q0" "WSIR" in
-check "Q0Q0's stage-2 execute queues both conversations in order"
-  (take_conv () = Some "Conv_Q0Q0a" && take_conv () = Some "Conv_Q0Q0b"
-   && take_conv () = None);
+(* The Lua is an exclusive elseif on lostToThief: a fresh player (var
+   absent = 0) gets Q0Q0a only - the twin row fires when the thief won. *)
+check "Q0Q0's stage-2 execute queues the thief-lost conversation only"
+  (take_conv () = Some "Conv_Q0Q0a" && take_conv () = None);
 
 drain ();
+let _p3b = Campaign.execute_action (active_with_vars "Q0Q0" 2 [ ("lostToThief", 1) ]) "Q0Q0" "WSIR" in
+check "with lostToThief=1 the same execute queues the thief-won twin"
+  (take_conv () = Some "Conv_Q0Q0b" && take_conv () = None);
+
+(* Q1G3's OnExecuteAction is ONE if/elseif chain: the questState==1 arm
+   writes questState = 2, and Lua does not re-enter the chain afterwards,
+   so the questState==2 arms are siblings that cannot fire this call. The
+   nand clauses are what enforce that mutual exclusion. *)
+drain ();
 let p4 = Campaign.execute_action (active "Q1G3" 1) "Q1G3" "CGAL" in
-check "Q1G3 at CGAL writes state 2 then completes in the same call"
-  (state_of p4 "Q1G3" = None
-   && List.mem "Q1G3" p4.Campaign.completed_quests
+check "Q1G3's stage-1 arm fires alone: the box shows, the stage advances"
+  (state_of p4 "Q1G3" = Some 2
+   && not (List.mem "Q1G3" p4.Campaign.completed_quests)
    && (match take_msg () with
        | Some m -> m.Campaign.pmsg_text = "[QUEST_Q1G3_TRADE]"
        | None -> false)
-   && take_msg () = None);
+   && take_msg () = None && take_conv () = None);
+
+(* The stage-2 arm is reachable, but only on a later call once the stage
+   really is 2 - which p7 below pins. *)
 
 drain ();
 let _p5 = Campaign.execute_action (fresh ()) "Q0I2" "CENM" in
@@ -209,11 +234,16 @@ check "no complete group matches at stage 1 (Q0I2 stays put)"
   (state_of p10 "Q0I2" = Some 1
    && take_conv () = None && take_msg () = None);
 
+(* Q0Q0's OnCompleteAction at questState==1 is ONE arm: it writes
+   lostToThief, advances questState to 2 and posts the box. The
+   elseif (questState==2) then QUEST_COMPLETE arm is a sibling of that
+   chain, so it cannot fire in the same call - the nand clauses hold it
+   out. Success and failure differ only in which box posts. *)
 drain ();
 let p11 = Campaign.complete_action ~success:true (active "Q0Q0" 1) "Q0Q0" "WSIR" in
-check "Q0Q0's success writes state 2 then completes in the same call"
-  (state_of p11 "Q0Q0" = None
-   && List.mem "Q0Q0" p11.Campaign.completed_quests
+check "Q0Q0's success posts ACTION1 and advances to stage 2, no turn-in"
+  (state_of p11 "Q0Q0" = Some 2
+   && not (List.mem "Q0Q0" p11.Campaign.completed_quests)
    && (match take_msg () with
        | Some m -> m.Campaign.pmsg_text = "[QUEST_Q0Q0_ACTION1]"
        | None -> false)
@@ -221,9 +251,9 @@ check "Q0Q0's success writes state 2 then completes in the same call"
 
 drain ();
 let p12 = Campaign.complete_action ~success:false (active "Q0Q0" 1) "Q0Q0" "WSIR" in
-check "Q0Q0's failure takes the same live chain with the other box"
-  (state_of p12 "Q0Q0" = None
-   && List.mem "Q0Q0" p12.Campaign.completed_quests
+check "Q0Q0's failure posts ACTION2 instead, same stage, no turn-in"
+  (state_of p12 "Q0Q0" = Some 2
+   && not (List.mem "Q0Q0" p12.Campaign.completed_quests)
    && (match take_msg () with
        | Some m -> m.Campaign.pmsg_text = "[QUEST_Q0Q0_ACTION2]"
        | None -> false)
@@ -447,6 +477,112 @@ in
 let _p22, ts22 = Campaign.advance_travel_with_events (active "Q0Q0" 1) quiet 1.0 in
 check "a plain arrival queues nothing"
   (ts22 = Campaign.AtNode "CENM" && take_msg () = None && take_conv () = None);
+
+(* ---------------------------------------------------------------- *)
+(* the untracked chains: script vars drive the arms                  *)
+(* ---------------------------------------------------------------- *)
+
+(* Q1S0: OnExecuteAction at stage 2 is an if/elseif/else over NKHA and
+   triedToKeepKey - the three arms the old tables merged into one row. *)
+drain ();
+let q1s0_nkha =
+  { (active "Q1S0" 2) with Campaign.companions = [ "NKHA" ] }
+in
+let p_q1s0a = Campaign.execute_action q1s0_nkha "Q1S0" "ROTO" in
+check "Q1S0: NKHA + tried=0 queues the key conversation and writes tried=1"
+  (take_conv () = Some "Conv_Q1S0b" && take_conv () = None
+   && take_msg () = None
+   && Campaign.script_var_get p_q1s0a "Q1S0" "triedToKeepKey" = 1
+   && state_of p_q1s0a "Q1S0" = Some 2);
+
+drain ();
+let q1s0_tried =
+  { (active_with_vars "Q1S0" 2 [ ("triedToKeepKey", 1) ])
+    with Campaign.companions = [ "NKHA" ] }
+in
+let p_q1s0b = Campaign.execute_action q1s0_tried "Q1S0" "ROTO" in
+check "Q1S0: NKHA + tried=1 queues only Khalkusno's box"
+  (take_conv () = None
+   && (match take_msg () with
+       | Some m -> m.Campaign.pmsg_text = "[QUEST_Q1S0_KHALKUSNO]"
+       | None -> false)
+   && take_msg () = None
+   && Campaign.script_var_get p_q1s0b "Q1S0" "triedToKeepKey" = 1
+   && state_of p_q1s0b "Q1S0" = Some 2);
+
+drain ();
+let p_q1s0c = Campaign.execute_action (active "Q1S0" 2) "Q1S0" "ROTO" in
+check "Q1S0: NKHA away completes with keptHeirloom=1"
+  (take_conv () = None && take_msg () = None
+   && Campaign.script_var_get p_q1s0c "Q1S0" "keptHeirloom" = 1
+   && state_of p_q1s0c "Q1S0" = None
+   && List.mem "Q1S0" p_q1s0c.Campaign.completed_quests);
+
+drain ();
+let q1s0_cdko =
+  { (active_with_vars "Q1S0" 2 [ ("triedToKeepKey", 1) ])
+    with Campaign.companions = [ "NKHA" ] }
+in
+let p_q1s0d = Campaign.execute_action q1s0_cdko "Q1S0" "CDKO" in
+check "Q1S0: at Cdko the origin row wins over both companion arms"
+  (take_conv () = None && take_msg () = None
+   && Campaign.script_var_get p_q1s0d "Q1S0" "keptHeirloom" = 0
+   && state_of p_q1s0d "Q1S0" = None
+   && List.mem "Q1S0" p_q1s0d.Campaign.completed_quests);
+
+(* QA03: the stage action fights only with NDKH along and doneConv already
+   set by the conversation - the battle row's two clauses pin both else
+   arms out. *)
+drain ();
+let qa03_alone =
+  { (active_with_vars "QA03" 1 [ ("doneConv", 1) ]) with Campaign.companions = [] }
+in
+let _p_qa03a = Campaign.execute_action qa03_alone "QA03" "WSGK" in
+check "QA03: NDKH away queues only the NOCOMP box"
+  (take_conv () = None
+   && (match take_msg () with
+       | Some m -> m.Campaign.pmsg_text = "[QUEST_QA03_NOCOMP]"
+       | None -> false)
+   && take_msg () = None);
+
+drain ();
+let qa03_conv =
+  { (active_with_vars "QA03" 1 [ ("doneConv", 0) ])
+    with Campaign.companions = [ "NDKH" ] }
+in
+let p_qa03b = Campaign.execute_action qa03_conv "QA03" "WSGK" in
+check "QA03: NDKH + doneConv=0 queues the conversation"
+  (take_conv () = Some "Conv_QA03b" && take_conv () = None
+   && take_msg () = None
+   && Campaign.script_var_get p_qa03b "QA03" "doneConv" = 0);
+
+(* Q3Q5: the necropolis sites are per-arm script-var chains with an
+   inventory gate on the ISES rod - exactly the two dimensions the old
+   tables could not see. *)
+drain ();
+let q3q5_plain = active_with_vars "Q3Q5" 1 [ ("doneNecro1", 0) ] in
+let p_q3q5a = Campaign.execute_action q3q5_plain "Q3Q5" "WBBR" in
+check "Q3Q5: no ISES at the first necropolis queues the no-rod conversation"
+  (take_conv () = Some "Conv_Q3Q5b" && take_conv () = None && take_msg () = None
+   && state_of p_q3q5a "Q3Q5" = Some 1);
+
+drain ();
+let q3q5_ises =
+  { (active_with_vars "Q3Q5" 1 [ ("doneNecro1", 0) ])
+    with Campaign.inventory = [ Campaign_items.item_by_id "ISES" ] }
+in
+let _p_q3q5b = Campaign.execute_action q3q5_ises "Q3Q5" "WBBR" in
+check "Q3Q5: with ISES in the pack the rod conversation takes the arm"
+  (take_conv () = Some "Conv_Q3Q5bb" && take_conv () = None && take_msg () = None);
+
+drain ();
+let q3q5_tried =
+  active_with_vars "Q3Q5" 1
+    [ ("doneNecro1", 0); ("triedNecro1", 1) ]
+in
+let _p_q3q5c = Campaign.execute_action q3q5_tried "Q3Q5" "WBBR" in
+check "Q3Q5: tried=1 blocks both necropolis conversations"
+  (take_conv () = None && take_msg () = None);
 
 (* ---------------------------------------------------------------- *)
 (* Global state cleanup                                              *)

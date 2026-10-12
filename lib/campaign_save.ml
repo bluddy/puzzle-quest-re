@@ -45,6 +45,7 @@ type save_player = {
   mount: string option;
   runes: string list;
   mount_levels: (string * int) list;
+  quest_vars: (string * (string * int) list) list;
 }
 
 type save_quest_state = {
@@ -120,6 +121,19 @@ let save_player_to_json (p: save_player) =
       (List.map
          (fun (id, n) -> `Assoc [("id", `String id); ("level", `Int n)])
          p.mount_levels);
+    "quest_vars",
+    `List
+      (List.map
+         (fun (qid, vars) ->
+            `Assoc
+              [("quest_id", `String qid);
+               ("vars",
+                `List
+                  (List.map
+                     (fun (k, v) ->
+                        `Assoc [("key", `String k); ("value", `Int v)])
+                     vars))])
+         p.quest_vars);
   ]
 
 let save_quest_state_to_json q =
@@ -209,7 +223,17 @@ let save_player_of_json json =
       | `Null -> []
       | j -> j |> to_list
              |> List.map (fun v -> (v |> member "id" |> to_string,
-                                    v |> member "level" |> to_int))); }
+                                    v |> member "level" |> to_int)));
+    (* saves written before the script sandbox existed hold no quest vars *)
+    quest_vars = (match json |> member "quest_vars" with
+      | `Null -> []
+      | j -> j |> to_list
+             |> List.map (fun v ->
+                (v |> member "quest_id" |> to_string,
+                 (v |> member "vars" |> to_list)
+                 |> List.map (fun w ->
+                    (w |> member "key" |> to_string,
+                     w |> member "value" |> to_int))))); }
 
 let save_quest_state_of_json json =
   { quest_id = json |> member "quest_id" |> to_string;
@@ -295,7 +319,8 @@ module SaveConvert = struct
       captives = p.captives;
       mount = p.mount;
       runes = p.runes;
-      mount_levels = p.mount_levels }
+      mount_levels = p.mount_levels;
+      quest_vars = p.quest_vars }
 
   let skill_affinities_from_save (s: skill_affinities) : Campaign_types.skill_affinities =
     { earth = s.earth; fire = s.fire; air = s.air; water = s.water;
@@ -329,7 +354,8 @@ module SaveConvert = struct
       captives = s.captives;
       mount = s.mount;
       runes = s.runes;
-      mount_levels = s.mount_levels }
+      mount_levels = s.mount_levels;
+      quest_vars = s.quest_vars }
 end
 
 (* ------------------------------------------------------------------ *)

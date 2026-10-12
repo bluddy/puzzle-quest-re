@@ -41,7 +41,8 @@
     "captives": [],
     "mount": null,
     "runes": [ "UDAG", "UCRA", "UFIR" ],
-    "mount_levels": []
+    "mount_levels": [],
+    "quest_vars": []
   },
   "quests": [ { "quest_id": "Q0Q0", "state": 1, "vars": [] } ],
   "map_visibility": {

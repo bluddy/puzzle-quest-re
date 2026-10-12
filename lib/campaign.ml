@@ -54,6 +54,9 @@ type player = {
   runes: string list;        (* collected rune ids - forge ingredients *)
   mount_levels: (string * int) list;
       (* mount id -> training level; absent = the level 1 a capture starts at *)
+  quest_vars: (string * (string * int) list) list;
+      (* quest id -> persisted script vars (triedToKeepKey, doneConv, ...):
+         the engine's per-quest sandbox, absent var = 0 *)
 }
 
 let default_equipment = {
@@ -88,6 +91,7 @@ let create_player name prof_id sex age =
        cannot be claimed anywhere else. *)
     runes = [ "UDAG"; "UCRA"; "UFIR" ];
     mount_levels = [];
+    quest_vars = [];
   }
 
 (* ------------------------------------------------------------------ *)
@@ -1487,6 +1491,75 @@ let companion_ok (p : player) (gate : (string * bool) list) : bool =
     (fun (cid, present) -> List.mem cid p.companions = present)
     gate
 
+(* The engine's per-quest script sandbox: the locals OnSave/OnLoad persist
+   (triedToKeepKey, doneConv, doneNecro1, ...). player.quest_vars maps the
+   quest id to its var store; an absent var reads 0, the value the scripts
+   initialize to before OnBegin resets. quest_accept clears the store -
+   a (re)accepted quest runs OnBegin against a fresh script instance. *)
+let script_var_get (p : player) (qid : string) (name : string) : int =
+  match List.assoc_opt qid p.quest_vars with
+  | None -> 0
+  | Some vars -> (match List.assoc_opt name vars with None -> 0 | Some v -> v)
+
+let script_var_set (p : player) (qid : string) (name : string) (value : int) :
+    player =
+  let vars =
+    match List.assoc_opt qid p.quest_vars with None -> [] | Some vars -> vars
+  in
+  let vars = (name, value) :: List.filter (fun (n, _) -> n <> name) vars in
+  { p with quest_vars =
+             (qid, vars) :: List.filter (fun (q, _) -> q <> qid) p.quest_vars }
+
+(* QUEST_HERO_HAS_ITEM: the traveling inventory, tag by item id. *)
+let has_item_tag (p : player) (tag : string) : bool =
+  List.exists (fun (it : item) -> it.id = tag) p.inventory
+
+(* One extracted script-var test (name, ~=, value) against the store. *)
+let var_test_ok (p : player) (qid : string)
+    ((name, neg, value) : string * bool * int) : bool =
+  let cur = script_var_get p qid name in
+  if neg then cur <> value else cur = value
+
+(* One extracted inventory test (tag, must-have). *)
+let item_test_ok (p : player) ((tag, want) : string * bool) : bool =
+  has_item_tag p tag = want
+
+(* One nand clause: an earlier arm of an if/elseif/else chain the row sits
+   past. The clause "fires" when every dimension it tested holds against
+   the event - empty state/location lists mean that dimension was untested
+   (matches any), side None no success test (Some _ against a context
+   without an outcome cannot fire). A row applies only when NO clause
+   fires: the elseif arm runs when the earlier arms did not. *)
+let clause_ok (p : player) (qid : string) ~(st : int) ~(loc : string)
+    ~(suc : bool option)
+    ((stages, locs, side, cnd, vnd, ind) : clause) : bool =
+  (match stages with [] -> true | l -> List.mem st l)
+  && (match locs with [] -> true | l -> List.mem loc l)
+  && (match side, suc with
+      | None, _ -> true
+      | Some _, None -> false
+      | Some want, Some got -> want = got)
+  && companion_ok p cnd
+  && List.for_all (var_test_ok p qid) vnd
+  && List.for_all (item_test_ok p) ind
+
+(* A row's whole arm conjunction: the pretty companion gate plus the
+   script-var / inventory tests its header carried against the LIVE
+   accumulator, and every earlier-arm clause failing (clause_ok = the
+   clause fires = the row is blocked). The clauses test the fold-ENTRY
+   snapshot [snap]: they re-check the predecessor arm's key as the chain
+   saw it, so an earlier arm's SetQuestState / remove_companion cannot
+   unblock a sibling arm of its own if/elseif chain (Q1S0, Q1G3, Q3S0). *)
+let cond_ok (p : player) (snap : player) (qid : string) ~(st : int)
+    ~(loc : string) ~(suc : bool option)
+    ((cnd, vnd, ind, ncl) :
+       (string * bool) list * (string * bool * int) list *
+       (string * bool) list * clause list) : bool =
+  companion_ok p cnd
+  && List.for_all (var_test_ok p qid) vnd
+  && List.for_all (item_test_ok p) ind
+  && List.for_all (fun cl -> not (clause_ok snap qid ~st ~loc ~suc cl)) ncl
+
 (* Accept a quest: runs OnBegin (node reveals + ruin registration) and adds
    it to active_quests at state 1. The OnBegin intro conversation queues for
    the UI - the first begin row whose companion gate holds against the
@@ -1507,7 +1580,9 @@ let quest_accept (player: player) (qid: string) : player =
                q.conversations_begin with
        | Some (conv, _) -> queue_conversation conv
        | None -> ());
-      { p with active_quests = (qid, 1) :: p.active_quests }
+      { p with active_quests = (qid, 1) :: p.active_quests;
+               (* re-accept = fresh script instance: the sandbox resets *)
+               quest_vars = List.filter (fun (q, _) -> q <> qid) p.quest_vars }
     end
 
 (* Resolve the quest's battle at its current stage. On success the stage
@@ -1553,10 +1628,13 @@ let quest_battle_complete ?capture ?monster (player: player) (qid: string)
         | Some c, Some m -> c, m
         | _ ->
           (match List.find_opt
-                   (fun (st, _, _, gate) ->
-                      st = stage && companion_ok player gate)
+                   (fun (st, _, _, cnd, vnd, ind, ncl) ->
+                      st = stage
+                      && cond_ok player player qid ~st:stage ~loc:""
+                           ~suc:(Some true)
+                           (cnd, vnd, ind, ncl))
                    q.battle_actions with
-           | Some (_, idx, cap, _) ->
+           | Some (_, idx, cap, _, _, _, _) ->
              let m = match List.nth_opt q.battles idx with
                | Some (mid, _) -> mid
                | None -> q.battle_monster
@@ -1605,10 +1683,13 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
   | Some stage ->
     let q = quest_by_id qid in
     match List.find_opt
-            (fun (st, _, _, gate) -> st = stage && companion_ok player gate)
+            (fun (st, _, _, cnd, vnd, ind, ncl) ->
+               st = stage
+               && cond_ok player player qid ~st:stage ~loc:"" ~suc:None
+                    (cnd, vnd, ind, ncl))
             q.battle_actions with
     | None -> None
-    | Some (_, idx, _, _) ->
+    | Some (_, idx, _, _, _, _, _) ->
       match List.nth_opt q.battles idx with
       | None -> None
       | Some (monster_id, hero_spell_ids) ->
@@ -1650,19 +1731,23 @@ let quest_turn_in (player: player) (qid: string) : player =
   else
     let q = quest_by_id qid in
     let qi = { quest = q; state = Active 2; vars = quest_var_set [] "questState" "2" } in
-    (* end_effects first: their guards test the live stage, which CompleteQuest
-       (inside run_quest_on_end) would otherwise have removed. *)
+    (* end_effects first: their guards test the stage the fold STARTED at
+        (a CompleteQuest inside run_quest_on_end would otherwise have removed
+        it); a clause reads the stage as of the last row that fired, so a
+        later chain re-testing a state an earlier one wrote still sees it. *)
     let p =
-      let rec go acc rows =
+      let rec go snap acc rows =
         match rows with
         | [] -> acc
-        | (st, _loc, gate, effs, term) :: rest ->
+        | (st, _loc, cnd, vnd, ind, ncl, effs, term) :: rest ->
           let cur =
             match List.assoc_opt qid acc.active_quests with
             | Some s -> s
             | None -> -2
           in
-          if (st = -1 || st = cur) && companion_ok acc gate then
+          if (st = -1 || st = cur)
+             && cond_ok acc snap qid ~st:cur ~loc:"" ~suc:None
+                  (cnd, vnd, ind, ncl) then
             let acc' =
               List.fold_left
                 (fun a e ->
@@ -1677,10 +1762,10 @@ let quest_turn_in (player: player) (qid: string) : player =
                   | _ -> a)
                 acc effs
             in
-            if term then acc' else go acc' rest
-          else go acc rest
+            if term then acc' else go acc acc' rest
+          else go snap acc rest
       in
-      go player q.end_effects
+      go player player q.end_effects
     in
     let _qi, effects = run_quest_on_end qi in
     List.fold_left apply_quest_effect p effects
@@ -1740,6 +1825,9 @@ let apply_callback_effect (p : player) (qid : string) (e : callback_effect) : pl
        { p with active_quests =
                   List.map (fun (id, s) -> if id = qid then (id, n) else (id, s))
                       p.active_quests })
+  (* the engine's per-quest sandbox write (triedToKeepKey = 1 and friends);
+     questState writes ride SetQuestState above, never this arm *)
+  | SetVar (name, value) -> script_var_set p qid name value
   | Complete -> quest_turn_in p qid
   | GiveGold n -> apply_quest_effect p (RewardGold n)
   | GiveXp n -> apply_quest_effect p (RewardXP n)
@@ -1773,7 +1861,9 @@ type callback_result = {
 let execute_callback ?(rng = Random.int) (player: player) (qid: string)
     (callback_name: string) : callback_result option =
   let q_opt = (try Some (quest_by_id qid) with Not_found -> None) in
-  let effects : ((string * bool) list * callback_effect) list option =
+  let effects :
+      ((string * bool) list * (string * bool * int) list *
+       (string * bool) list * clause list * callback_effect) list option =
     match q_opt with
     | None -> None
     | Some q -> List.assoc_opt callback_name q.callback_effects
@@ -1800,11 +1890,23 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
       match effects with
       | None -> p
       | Some effs ->
-        (* each row carries its companion gate (Lua tests at the if in the
-           body, so the fold's accumulator is the party those tests see) *)
+        (* each row carries its whole arm conjunction (Lua tests at the if
+           in the body, so the fold's accumulator is the party and var
+           store those tests see); callbacks have no location and no
+           battle outcome yet, so clauses evaluate against loc "" / no
+           success - a side-tested clause cannot fire there, which keeps
+           the row live as the pre-clause behaviour did. The clause guards
+           re-check a predecessor arm's key, so they read the fold-ENTRY
+           snapshot [p]; the row's own header reads the live accumulator. *)
+        let cur =
+          match List.assoc_opt qid p.active_quests with
+          | Some s -> s
+          | None -> -2
+        in
         List.fold_left
-          (fun acc (gate, e) ->
-            if companion_ok acc gate then
+          (fun acc (cnd, vnd, ind, ncl, e) ->
+            if cond_ok acc p qid ~st:cur ~loc:"" ~suc:None
+                 (cnd, vnd, ind, ncl) then
               apply_callback_effect acc qid e
             else acc)
           p effs
@@ -1870,42 +1972,93 @@ let complete_encounter (player: player) (enc: encounter) : player =
    carries the terminates flag ends the fold once applied: its Lua body
    stopped in a bare `return;` (Q2Q7's Conv_Q2Q7b branch), so the groups
    after it never ran in the script either. *)
+(* [matches] tests the row's own key (state / success / location wildcards)
+   against the event; [~location] is the event's real node, which the nand
+   clauses test (a row's key may collapse location to "" while an earlier
+   arm's clause pins the node it excluded). *)
 let apply_loc_groups (player : player) (qid : string)
     (rows :
-       (int * string * (string * bool) list * callback_effect list * bool)
+       (int * string * (string * bool) list * (string * bool * int) list *
+        (string * bool) list * clause list * callback_effect list * bool)
          list)
+    ~(location : string)
     (matches : int -> string -> player -> bool) : player =
-  let rec go acc rows =
+  (* A clause re-checks the key of an earlier arm of the SAME if/elseif
+     chain, so it must be tested against the stage the chain STARTED at -
+     the state as of the last row that actually fired. Two failure modes
+     pin this down:
+
+     - reading the LIVE accumulator unblocks a later arm once its own
+       predecessor writes the state it excluded (Q1G3's write-to-2, or
+       Q1S0's NKHA write) - the arm wrongly fires as a sibling of the
+       chain it was excluded by;
+     - reading the fold-entry stage breaks a later CHAIN that re-tests the
+       state a prior chain wrote (Q1G3 and Q0Q0 run a second `if` after
+       the first wrote state 2 - the second chain's clause must see 2, not
+       the fold's entry 1).
+
+     Advancing the snapshot on every fired row threads that needle: a
+     clause only ever names its own chain's predecessor, and a predecessor
+     that fired has already been consumed by it, while an unrelated chain
+     that fired earlier leaves the snapshot at its post-write stage. *)
+  let rec go snap acc rows =
     match rows with
     | [] -> acc
-    | (st, loc, gate, effs, term) :: rest ->
-      if matches st loc acc && companion_ok acc gate then
+    | (st, loc, cnd, vnd, ind, ncl, effs, term) :: rest ->
+      if matches st loc acc
+         && cond_ok acc snap qid
+              ~st:(match List.assoc_opt qid snap.active_quests with
+                   | Some s -> s
+                   | None -> -2)
+              ~loc:location ~suc:None
+              (cnd, vnd, ind, ncl)
+      then
         let acc' =
           List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
         in
-        if term then acc' else go acc' rest
-      else go acc rest
+        if term then acc' else go acc acc' rest
+      else go snap acc rest
   in
-  go player rows
+  go player player rows
 
 let apply_complete_groups (player : player) (qid : string)
     (rows :
-       (int * int * string * (string * bool) list * callback_effect list *
+       (int * int * string * (string * bool) list * (string * bool * int)
+        list * (string * bool) list * clause list * callback_effect list *
         bool)
          list)
-    (matches : int -> int -> string -> player -> bool) : player =
-  let rec go acc rows =
+  ~(location : string) ~(success : bool)
+  (matches : int -> int -> string -> player -> bool) : player =
+  (* The clause guards an earlier arm of the SAME if/elseif chain, so it is
+     tested against the stage the chain started at - the state as of the
+     last row that FIRED - not the live accumulator, and not the fold-entry
+     stage either. Reading the live accumulator lets a later arm fire once
+     its own predecessor writes the state it excluded (Q1G3's write-to-2,
+     Q1S0's NKHA write). Reading the fold-entry stage breaks a later chain
+     that re-tests a state a prior chain already wrote: Q1G3 and Q0Q0 run a
+     second `if` after the first wrote state 2, and that chain's clause must
+     see 2. A clause only ever names its own chain's predecessor, and a
+     predecessor that fired has been consumed by it, so advancing the
+     snapshot on every fired row threads the needle. *)
+  let rec go snap acc rows =
     match rows with
     | [] -> acc
-    | (st, suc, loc, gate, effs, term) :: rest ->
-      if matches st suc loc acc && companion_ok acc gate then
+    | (st, suc, loc, cnd, vnd, ind, ncl, effs, term) :: rest ->
+      if matches st suc loc acc
+         && cond_ok acc snap qid
+              ~st:(match List.assoc_opt qid snap.active_quests with
+                   | Some s -> s
+                   | None -> -2)
+              ~loc:location ~suc:(Some success)
+              (cnd, vnd, ind, ncl)
+      then
         let acc' =
           List.fold_left (fun a e -> apply_callback_effect a qid e) acc effs
         in
-        if term then acc' else go acc' rest
-      else go acc rest
+        if term then acc' else go acc acc' rest
+      else go snap acc rest
   in
-  go player rows
+  go player player rows
 
 (* A hero arrived at [location]: every active quest gets its OnEnterLocation
    rules evaluated against the arrival (effects applying in active-quest
@@ -1929,7 +2082,7 @@ let enter_location (player: player) (location: string) : player =
                  vars = quest_var_set [] "questState" (string_of_int st) } in
       let _, removes = run_quest_on_enter_location qi location in
       let p =
-        apply_loc_groups p qid q.enter_effects
+        apply_loc_groups p qid q.enter_effects ~location
           (fun st' loc' p' ->
             let cur =
               match List.assoc_opt qid p'.active_quests with
@@ -1942,23 +2095,25 @@ let enter_location (player: player) (location: string) : player =
     player player.active_quests
 
 (* What the hero can do at [location]: for each active quest, the first
-   OnQueryAction label whose (state, location, companion) guard all match -
-   source order, the branch Lua would show (state -1 / loc "" = any, gate
-   [] = ungated). [(qid, text tag)]; quests with no matching branch are
-   left out. *)
+   OnQueryAction label whose whole arm conjunction (state, location,
+   companion, script vars, inventory, earlier-arm clauses) all match -
+   source order, the branch Lua would show (state -1 / loc "" = any, empty
+   lists = unconstrained). [(qid, text tag)]; quests with no matching
+   branch are left out. *)
 let query_actions (player : player) (location : string) :
     (string * string) list =
   List.filter_map
     (fun (qid, st) ->
       let q = quest_by_id qid in
       match List.find_opt
-              (fun (st', loc', gate, _) ->
+              (fun (st', loc', cnd, vnd, ind, ncl, _) ->
                  (st' = -1 || st' = st)
                  && (loc' = "" || loc' = location)
-                 && companion_ok player gate)
+                 && cond_ok player player qid ~st ~loc:location ~suc:None
+                      (cnd, vnd, ind, ncl))
               q.query_actions
       with
-      | Some (_, _, _, tag) -> Some (qid, tag)
+      | Some (_, _, _, _, _, _, tag) -> Some (qid, tag)
       | None -> None)
     player.active_quests
 
@@ -1975,7 +2130,7 @@ let execute_action (player : player) (qid : string) (location : string) :
   | None -> player
   | Some st0 ->
     let q = quest_by_id qid in
-    apply_loc_groups player qid q.execute_effects
+    apply_loc_groups player qid q.execute_effects ~location
       (fun st loc p ->
         let cur =
           match List.assoc_opt qid p.active_quests with
@@ -1997,6 +2152,7 @@ let complete_action ?(success = true) (player : player) (qid : string)
   | Some st0 ->
     let q = quest_by_id qid in
     apply_complete_groups player qid q.complete_effects
+      ~location ~success
       (fun st suc loc p ->
         let cur =
           match List.assoc_opt qid p.active_quests with

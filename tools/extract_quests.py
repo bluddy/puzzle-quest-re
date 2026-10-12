@@ -37,33 +37,44 @@ decompiled Engine_QUEST_SET_VISIBILITY_450e40.c):
     pairs. conversation_callbacks carries the sites inside callbacks
     (fired when the dialogue runs that scriptcall).
   * query_actions = OnQueryAction's menu label per branch: (state, location,
-    text tag), source order, first match wins at runtime; -1 / "" are the
-    wildcards for untested guards (Q3Q1 has no questState test).
+    companion gate, var slot, item slot, clause list, text tag), source order,
+    first match wins at runtime; -1 / "" are the wildcards for untested
+    guards (Q3Q1 has no questState test).
   * enter/execute/complete/end_effects = the location-action flow, one
     effect group per open-if guard key: OnEnterLocation (arrival),
     OnExecuteAction (the player starts the action here), OnCompleteAction
     (return from the action, keyed with the success side; -1 = either) and
     OnEnd (turn-in, state guard only). Groups carry Conversation,
-    ShowMessage, SetQuestState and Complete rows attributed by the branch
-    Lua would run - see make_guard_lookup / resolve_message. OnCancelAction
-    sites are counted but not stored (no cancel event in the port yet).
+    ShowMessage, SetQuestState, SetVar (a script-local assignment - saved
+    vars like triedToKeepKey / lostToThief / doneNecro*) and Complete rows
+    attributed by the branch Lua would run - see make_guard_lookup /
+    resolve_message. Each row's key carries the whole arm conjunction: the
+    companion gate, the header's script-var and QUEST_HERO_HAS_ITEM tests
+    (var slot / item slot), and a clause list pinning out the sibling arms
+    of the row's own if/elseif chain (a clause re-checks a predecessor's
+    full key: stages, locs, side, companion, vars, items - the runtime
+    applies the row only when no clause fires, evaluated against the
+    chain's entry snapshot). OnCancelAction sites are counted but not
+    stored (no cancel event in the port yet).
   * callback_effects = the non-battle half of each callback body, keyed
     (quest, callback): questState writes (first source order), QUEST_COMPLETE
     (ends the quest: OnEnd runs as at turn-in), reward calls, nested
-    QUEST_CONVERSATION, and QUEST_MESSAGE(_CALLBACK) as ShowMessage (title +
+    QUEST_CONVERSATION, script-local assignments (SetVar), and
+    QUEST_MESSAGE(_CALLBACK) as ShowMessage (title +
     text tags, callback name) - queued when the dialogue fires the scriptcall.
-    Each effect row carries the companion gate its branch sits under
-    (apply-time check against the party, like the group keys).
+    Each effect row carries the whole arm conjunction too (companion gate,
+    var/item slots, clauses), an apply-time check against the party, script
+    store and inventory, like the group keys.
     QUEST_UPDATE_MAP
     and QUEST_STOP_MOVEMENT are skipped (bookkeeping the port's own state
-    already carries), and other Lua locals (triedNecro, didShrine, ...) are
-    not tracked - their guards are unevaluated anyway.
+    already carries).
   * battles/battle_actions/battle_stage_advances/battle_stage_fails = the
     quest-battle loop. Every QUEST_BATTLE / _NOCAPTURE / _CUSTOM call, from
     any hook (OnExecuteAction for location actions, conversation callbacks
-    for script-driven fights), is attributed to its questState guard AND its
-    companion gate by a block scanner over if/elseif/else/end (see
-    scan_battle_branches); the
+    for script-driven fights), is attributed to its full arm conjunction -
+    questState guard, companion gate, script-var / item tests and the
+    clause list of sibling arms - by a block scanner over
+    if/elseif/else/end (see scan_battle_branches); the
     second argument indexes the quest's ordered Battle list, and capture
     comes from the primitive - the third argument disagrees on some sites
     (Q0Q2 passes 1 to QUEST_BATTLE_NOCAPTURE) and the primitive wins, per
@@ -343,6 +354,13 @@ COMP_RX = re.compile(
     r'QUEST_HERO_HAS_COMPANION_SELECTED\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'
     r'\s*\)\s*==\s*([01])')
 
+ITEM_RX = re.compile(
+    r'QUEST_HERO_HAS_ITEM\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)\s*==\s*([01])')
+
+VAR_EQ_RX = re.compile(r'\b([A-Za-z_]\w*)\s*(==|~=)\s*(\d+)')
+VAR_ASSIGN_RX = re.compile(r'\b([A-Za-z_]\w*)\s*=\s*(\d+)\s*;')
+SAVE_INT_RX = re.compile(r'QUEST_SAVE_INT\s*\(\s*([A-Za-z_]\w*)\s*\)')
+
 
 def header_comp(header, consts):
     """[(cid, present)] for each companion test in the header: the header
@@ -359,12 +377,52 @@ def header_comp(header, consts):
     return out
 
 
-def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
+SKIP_VAR_TESTS = {'questState', 'success', 'idLocation'}
+
+
+def header_vars(header, consts, saved):
+    """(var tests, item tests) in one arm header: persisted quest-script
+    vars tested with == / ~= -> (name, negated, value), and inventory
+    item tests -> (tag, must-have). Other ops (<, >=) and unknown vars
+    stay untracked (the row keeps the conjuncts it can evaluate);
+    questState / success / idLocation are handled elsewhere."""
+    vars_ = []
+    items = []
+    for g in VAR_EQ_RX.finditer(header):
+        name = g.group(1)
+        if name in SKIP_VAR_TESTS or name not in saved:
+            continue
+        vars_.append((name, g.group(2) == '~=', int(g.group(3))))
+    for g in ITEM_RX.finditer(header):
+        tok = g.group(1)
+        tag = tok[1:-1] if tok.startswith('"') else consts.get(tok)
+        if tag is None:
+            continue
+        items.append((tag, g.group(2) == '1'))
+    return vars_, items
+
+
+def var_conj(vnd):
+    """One arm's variable conjunction as a nand clause's part: a name
+    tested more than once with conflicting tests makes the arm
+    unreachable - represented as None (the clause is dropped, which is
+    sound: an unreachable arm constrains nothing)."""
+    out = {}
+    for name, neg, val in vnd:
+        if name in out and out[name] != (neg, val):
+            return None
+        out[name] = (neg, val)
+    return tuple(sorted((n, ng, v) for n, (ng, v) in out.items()))
+
+
+def scan_battle_branches(body_ns, body_nc, collect_assigns, consts, saved):
     """Returns (calls, assigns) in source order. calls are
-    (full_name, index_arg, third_arg, stages | None, comp); assigns are
-    (value, side, stage | None). stage is None when no questState== guard
-    covers the event; side is 'win' / 'fail' / 'none'; comp is the
-    companion conjunction the open arms sit under (see make_guard_lookup)."""
+    (full_name, index_arg, third_arg, stages | None, comp, vars, items,
+    clauses); assigns are (value, side, stage | None). stage is None when
+    no questState== guard covers the event; side is 'win' / 'fail' /
+    'none'; comp / vars / items are the conjunctive tests the open arm
+    sits under, clauses the nand clauses of the arms already passed in
+    the chain (see make_guard_lookup)."""
     kws = [(m.group(1), m.start()) for m in LUA_KW.finditer(body_ns)]
     events = [(m.start(), 'call', m) for m in BATTLE_CALL.finditer(body_ns)]
     if collect_assigns:
@@ -373,12 +431,14 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
 
     stack = []  # {'stages': [int] | None, 'side': 'win'|'fail'|None,
                 #  'chain': 'win'|'fail'|None, 'comp': [...],
-                #  'comp_chain': [...] | None, 'generic': bool}
+                #  'comp_chain': [...] | None, 'vars': [...],
+                #  'items': [...], 'clauses': [...], 'generic': bool}
                 # side is the branch currently open at this frame, chain the
                 # side of the last success test in the frame's if/elseif
-                # chain (later branches run under its negation); comp is the
-                # companion conjunction the open arm sits under, comp_chain
-                # the last non-empty header parse (an else flips it).
+                # chain (later branches run under its negation); comp/vars/
+                # items are the arm's own header tests, comp_chain the last
+                # non-empty companion parse (an else flips it), clauses the
+                # nand list an elseif/else arm inherits from its priors.
     calls, assigns = [], []
     ei = 0
 
@@ -401,6 +461,27 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
                 out = list(fr['comp']) + out
         return tuple(out)
 
+    def active_vars():
+        out = []
+        for fr in reversed(stack):
+            if not fr['generic'] and fr['vars']:
+                out = list(fr['vars']) + out
+        return tuple(out)
+
+    def active_items():
+        out = []
+        for fr in reversed(stack):
+            if not fr['generic'] and fr['items']:
+                out = list(fr['items']) + out
+        return tuple(out)
+
+    def active_clauses():
+        out = []
+        for fr in reversed(stack):
+            if not fr['generic']:
+                out = list(fr['clauses']) + out
+        return tuple(out)
+
     def header_at(pos):
         then = next((p for k, p in kws if k == 'then' and p > pos), len(body_ns))
         return body_nc[pos:then]
@@ -409,7 +490,8 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
         if kind == 'call':
             stages = active_stages()
             calls.append(("QUEST_BATTLE" + m.group(1), m.group(3),
-                          int(m.group(4)), stages, active_comp()))
+                          int(m.group(4)), stages, active_comp(),
+                          active_vars(), active_items(), active_clauses()))
         else:
             assigns.append((int(m.group(1)), side(), active_stages()))
 
@@ -421,17 +503,30 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
             header = header_at(pos)
             s = success_side(header)
             hc = header_comp(header, consts)
+            hv, hi = header_vars(header, consts, saved)
             stack.append({
                 'stages': [int(x) for x in STATE_EQ.findall(header)],
                 'side': s,
                 'chain': s,
                 'comp': hc,
                 'comp_chain': hc,
+                'vars': hv,
+                'items': hi,
+                'clauses': [],
                 'generic': False,
             })
         elif k == 'elseif' and stack and not stack[-1]['generic']:
             header = header_at(pos)
             fr = stack[-1]
+            old_st = list(fr['stages']) if fr['stages'] else []
+            hc = header_comp(header, consts)
+            hv, hi = header_vars(header, consts, saved)
+            vc = var_conj(fr['vars'])
+            if vc is not None and (old_st or fr['comp'] or fr['vars']
+                                   or fr['items'] or fr['side'] is not None):
+                fr['clauses'].append(
+                    (tuple(old_st), (), fr['side'], tuple(fr['comp']), vc,
+                     tuple(fr['items'])))
             fr['stages'] = [int(x) for x in STATE_EQ.findall(header)]
             s = success_side(header)
             if s is not None:
@@ -439,20 +534,31 @@ def scan_battle_branches(body_ns, body_nc, collect_assigns, consts):
                 fr['side'] = s
             else:
                 fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
-            hc = header_comp(header, consts)
             fr['comp'] = hc
+            fr['vars'] = hv
+            fr['items'] = hi
             if hc:
                 fr['comp_chain'] = hc
         elif k == 'else' and stack and not stack[-1]['generic']:
             fr = stack[-1]
+            old_st = list(fr['stages']) if fr['stages'] else []
+            vc = var_conj(fr['vars'])
+            if vc is not None and (old_st or fr['comp'] or fr['vars']
+                                   or fr['items'] or fr['side'] is not None):
+                fr['clauses'].append(
+                    (tuple(old_st), (), fr['side'], tuple(fr['comp']), vc,
+                     tuple(fr['items'])))
             fr['stages'] = []
             fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
             cc = fr['comp_chain']
             fr['comp'] = ([(cc[0][0], not cc[0][1])] if cc and len(cc) == 1
                           else [])
+            fr['vars'] = []
+            fr['items'] = []
         elif k in ('do', 'function', 'repeat'):
             stack.append({'stages': None, 'side': None, 'chain': None,
-                          'comp': [], 'comp_chain': None, 'generic': True})
+                          'comp': [], 'comp_chain': None, 'vars': [],
+                          'items': [], 'clauses': [], 'generic': True})
         elif k in ('end', 'until'):
             if stack:
                 stack.pop()
@@ -490,22 +596,28 @@ def header_states(header, s_max):
     return []
 
 
-def make_guard_lookup(body_ns, body_nc, consts, s_max):
+def make_guard_lookup(body_ns, body_nc, consts, s_max, saved):
     """Context lookup for effect attribution: lookup(pos) ->
-    (stages | None, locs | None, side, arms, comp) evaluated over the
-    if-chain OPEN at pos - the same frame walk as scan_battle_branches
-    (if/elseif/else over end, do/function/repeat opaque), plus
-    idLocation tests. stages is the innermost open header's questState
-    set (None = untested; an else-branch carries [] and falls through,
-    since it means "not these"); locs likewise from idLocation== resolved
-    through the file constants; side is 'win'/'fail'/'none' from the
-    success tests; arms is ((if-pos, 'then'|'elseif'|'else'), ...) over
+    (stages | None, locs | None, side, arms, comp, vars, items, clauses)
+    evaluated over the if-chain OPEN at pos - the same frame walk as
+    scan_battle_branches (if/elseif/else over end, do/function/repeat
+    opaque), plus idLocation tests. stages is the innermost open header's
+    questState set (None = untested; an else-branch carries [] and falls
+    through, since it means "not these"); locs likewise from idLocation==
+    resolved through the file constants; side is 'win'/'fail'/'none' from
+    the success tests; arms is ((if-pos, 'then'|'elseif'|'else'), ...) over
     the open non-generic frames, so two positions can be told to sit in
     sibling arms of a branch still open at both (see resolve_message);
     comp is the QUEST_HERO_HAS_COMPANION_SELECTED conjunction the open
     arms sit under - [(cid, must-be-present)] over the open frames, []
-    when no open frame tests a companion. Closed blocks do not leak -
-    unlike nearest-preceding scans.
+    when no open frame tests a companion; vars / items are the persisted
+    quest-script var tests (name, negated, value) and inventory item
+    tests (tag, must-have) the open arms sit under; clauses is the nand
+    list - one ((comp, vars, items) conjunction) per arm already passed
+    in an open chain, which the runtime must see fail (an elseif arm is
+    "not any earlier arm", an else arm likewise - Q1S0's triedToKeepKey
+    chain, QA03's doneConv chain, Q3Q5's necropolis chain). Closed
+    blocks do not leak - unlike nearest-preceding scans.
 
     Also returns terminates_after(pos): a bare `return;` at pos's own
     nesting level before the innermost open block closes (or a sibling
@@ -537,6 +649,9 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
         stages = locs = None
         side = 'none'
         comp = []
+        vars_ = []
+        items = []
+        clauses = []
         for fr in reversed(stack):
             if fr['generic']:
                 continue
@@ -548,15 +663,24 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 side = fr['side']
             if fr['comp']:
                 comp = list(fr['comp']) + comp
+            if fr['vars']:
+                vars_ = list(fr['vars']) + vars_
+            if fr['items']:
+                items = list(fr['items']) + items
+        for fr in reversed(stack):
+            if not fr['generic']:
+                clauses = list(fr['clauses']) + clauses
         arms = tuple((fr['id'], fr['arm']) for fr in stack
                      if not fr['generic'])
-        return (stages, locs, side, arms, comp)
+        return (stages, locs, side, arms, comp, vars_, items,
+                tuple(clauses))
 
     changes.append((-1, snap()))
     for k, pos in kws:
         if k == 'if':
             header = header_at(pos)
             s = success_side(header)
+            hv, hi = header_vars(header, consts, saved)
             stack.append({
                 'stages': header_states(header, s_max),
                 'locs': header_locs(header),
@@ -564,6 +688,9 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 'chain': s,
                 'comp': header_comp(header, consts),
                 'comp_chain': header_comp(header, consts),
+                'vars': hv,
+                'items': hi,
+                'clauses': [],
                 'id': pos,
                 'arm': 'then',
                 'generic': False,
@@ -571,11 +698,26 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
         elif k == 'elseif' and stack and not stack[-1]['generic']:
             header = header_at(pos)
             fr = stack[-1]
+            old_st = list(fr['stages']) if fr['stages'] else []
+            old_lx = list(fr['locs']) if fr['locs'] else []
             fr['stages'] = header_states(header, s_max)
             fr['locs'] = header_locs(header)
             fr['arm'] = 'elseif'
             hc = header_comp(header, consts)
+            hv, hi = header_vars(header, consts, saved)
+            vc = var_conj(fr['vars'])
+            # the clause is the arm being left, full key: only when it
+            # tested something (an untested arm never blocks the next),
+            # and never for an unreachable arm (vc None).
+            if vc is not None and (old_st or old_lx or fr['comp']
+                                   or fr['vars'] or fr['items']
+                                   or fr['side'] is not None):
+                fr['clauses'].append(
+                    (tuple(old_st), tuple(old_lx), fr['side'],
+                     tuple(fr['comp']), vc, tuple(fr['items'])))
             fr['comp'] = hc
+            fr['vars'] = hv
+            fr['items'] = hi
             if hc:
                 fr['comp_chain'] = hc
             s = success_side(header)
@@ -586,20 +728,34 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
                 fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
         elif k == 'else' and stack and not stack[-1]['generic']:
             fr = stack[-1]
+            old_st = list(fr['stages']) if fr['stages'] else []
+            old_lx = list(fr['locs']) if fr['locs'] else []
             fr['stages'] = []
             fr['locs'] = []
             fr['arm'] = 'else'
+            vc = var_conj(fr['vars'])
+            if vc is not None and (old_st or old_lx or fr['comp']
+                                   or fr['vars'] or fr['items']
+                                   or fr['side'] is not None):
+                fr['clauses'].append(
+                    (tuple(old_st), tuple(old_lx), fr['side'],
+                     tuple(fr['comp']), vc, tuple(fr['items'])))
             # else runs when the chain's tests all failed: a single
             # companion test flips cleanly (absent <-> along); a chain
             # that tested companions more than once has no conjunctive
-            # flip, and falls back to no gate (the pre-comp behaviour)
+            # flip, and falls back to no gate (the pre-comp behaviour).
+            # The nand clauses above still pin the arms exactly, so the
+            # fallback only widens the pretty gate, never the semantics.
             cc = fr['comp_chain']
             fr['comp'] = ([(cc[0][0], not cc[0][1])] if cc and len(cc) == 1
                           else [])
+            fr['vars'] = []
+            fr['items'] = []
             fr['side'] = flip_side(fr['chain']) if fr['chain'] else None
         elif k in ('do', 'function', 'repeat'):
             stack.append({'stages': None, 'locs': None, 'side': None,
-                          'chain': None, 'generic': True})
+                          'chain': None, 'vars': [], 'items': [],
+                          'clauses': [], 'generic': True})
         elif k in ('end', 'until'):
             if stack:
                 stack.pop()
@@ -634,15 +790,20 @@ def make_guard_lookup(body_ns, body_nc, consts, s_max):
     return lookup, terminates_after
 
 
-def guard_keys(stages, locs, comp):
-    """Expand a guard snapshot into the (state, loc, comp) key triples to
-    record: None = untested = the runtime wildcard (-1 / \"\") and comp
-    [] = no companion gate. An else-branch's [] never reaches here (snap()
-    skips falsy lists)."""
+def guard_keys(stages, locs, comp, vars_, items, clauses):
+    """Expand a guard snapshot into the (state, loc, comp, vars, items,
+    clauses) key sextuples to record: None = untested = the runtime
+    wildcard (-1 / \"\"), comp [] = no companion gate, vars / items []
+    = no script-var / inventory test, clauses () = no earlier arm to
+    exclude. An else-branch's [] never reaches here (snap() skips falsy
+    lists)."""
     sts = stages if stages is not None else [-1]
     lxs = locs if locs is not None else [""]
     cnd = tuple(comp)          # tuple: guard keys feed dict/dedup sets
-    return [(st, lx, cnd) for st in sts for lx in lxs]
+    vnd = tuple(sorted(vars_))
+    ind = tuple(sorted(items))
+    ncl = tuple(clauses)
+    return [(st, lx, cnd, vnd, ind, ncl) for st in sts for lx in lxs]
 
 
 def build_msg_assigns(body):
@@ -668,8 +829,9 @@ def arm_conflict(a, site):
 
 def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
     """One QUEST_MESSAGE(_CALLBACK) site -> (rows, err): rows are
-    [(pos, st, suc, loc, cnd, title, text, cb)] in assignment order, err
-    the unresolved text token when nothing resolves (rows empty then).
+    [(pos, st, suc, loc, cnd, vnd, ind, ncl, title, text, cb)] in
+    assignment order, err the unresolved text token when nothing resolves
+    (rows empty then).
 
     The text variable's each preceding assignment is its own row - the
     common shape
@@ -701,7 +863,8 @@ def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
         elif consts is not None:
             cb = consts.get(cb_tok, "")
     site_pos = hit.start()
-    site = lookup(site_pos) if lookup else (None, None, 'none', (), [])
+    site = (lookup(site_pos) if lookup
+            else (None, None, 'none', (), [], [], [], ()))
 
     def tags(tok, limit):
         if tok.startswith('"'):
@@ -773,15 +936,41 @@ def resolve_message(msg_assigns, hit, lookup, consts=None, stats=None):
                     dead = True
             else:
                 cnd.append((cid, want))
+        # script-var tests: union by name - the same name with
+        # contradictory tests (two values, or value with its negation)
+        # cannot both hold
+        vnd = list(a[5])
+        for name, neg, val in site[5]:
+            if any(n == name for n, _, _ in vnd):
+                if any(n == name and ((ng != neg and v == val)
+                                      or (not ng and not neg and v != val))
+                       for n, ng, v in vnd):
+                    dead = True
+            else:
+                vnd.append((name, neg, val))
+        # inventory item tests: union by tag, opposite wants conflict
+        ind = list(a[6])
+        for tag, have in site[6]:
+            if any(t == tag for t, _ in ind):
+                if any(t == tag and h != have for t, h in ind):
+                    dead = True
+            else:
+                ind.append((tag, have))
         if dead:
             if stats is not None:
                 stats['comp_merge_drops'] += 1
             continue
+        # nand clauses of arms already passed: both contexts' lists apply
+        ncl = list(a[7])
+        for cl in site[7]:
+            if cl not in ncl:
+                ncl.append(cl)
         for st in (stages if stages is not None else [-1]):
             for lx in (locs if locs is not None else [""]):
                 rows.append((tpos if tpos is not None else site_pos,
-                             st, suc, lx, tuple(cnd), title_for(tpos),
-                             ttag, cb))
+                             st, suc, lx, tuple(cnd), tuple(sorted(vnd)),
+                             tuple(sorted(ind)), tuple(ncl),
+                             title_for(tpos), ttag, cb))
     return rows, None
 
 
@@ -802,6 +991,17 @@ def analyze_lua(src, qid, stats):
     # file's own highest state value plus one.
     _sv = [int(x) for x in re.findall(r'questState\s*[^\dn]{0,3}(\d+)', src)]
     s_max = max(_sv + [5]) + 1
+
+    # persisted quest-script vars: OnSave's QUEST_SAVE_INT sequence (the
+    # engine sandboxes each quest script, so same-named globals in two
+    # scripts are separate - the runtime stores them per qid). questState
+    # is excluded: the stage machinery tracks it, not the var store.
+    saved = set()
+    if 'OnSave' in funcs:
+        s0, s1 = funcs['OnSave']
+        for m in SAVE_INT_RX.finditer(ns[s0:s1]):
+            saved.add(m.group(1))
+    saved.discard('questState')
 
     reveals = {'begin': [], 'end': []}
     ruins = []
@@ -830,7 +1030,7 @@ def analyze_lua(src, qid, stats):
         # conversation/message callback (or a helper only they call).
         is_callback = not hook.startswith('On')
         lookup, terminates_after = make_guard_lookup(
-            body_ns, body, consts, s_max)
+            body_ns, body, consts, s_max, saved)
         msg_assigns = build_msg_assigns(body)
         ev = ACTION_HOOKS.get(hook)
 
@@ -841,29 +1041,44 @@ def analyze_lua(src, qid, stats):
                 (pos, eff, terminates_after(pos)))
 
         def cb_gate(hit):
-            """Companion conjunction around a flat-list site (callback
-            effects, begin conversations) - carried on the row now."""
+            """Companion/var/item conjunction around a flat-list site
+            (callback effects, begin conversations) - carried on the
+            row now, with the nand clauses of earlier arms."""
             g = tuple(lookup(hit.start())[4])
-            if g:
+            v = tuple(sorted(lookup(hit.start())[5]))
+            i = tuple(sorted(lookup(hit.start())[6]))
+            n = lookup(hit.start())[7]
+            if g or v or i:
                 stats['comp_cb_gated'] += 1
-            return g
+            return g, v, i, n
 
         def keys_for(evk, pos, force_loc=None):
             """Guard keys for an effect site: expand the open-if snapshot
             at pos into the group's key form (complete keys carry the
             success side; OnEnd effects are turn-in events, not
             location-bound, so their loc guard collapses to wildcard)."""
-            stages, locs, side, _arms, comp = lookup(pos)
+            stages, locs, side, _arms, comp, vars_, items, clauses = \
+                lookup(pos)
             if evk == 'end':
                 locs = None
             if force_loc is not None:
                 locs = [force_loc]
             suc = 1 if side == 'win' else (0 if side == 'fail' else -1)
             out = []
-            for st, lx, cnd in guard_keys(stages, locs, comp):
-                out.append((st, suc, lx, cnd) if evk == 'complete'
-                           else (st, lx, cnd))
+            for st, lx, cnd, vnd, ind, ncl in guard_keys(
+                    stages, locs, comp, vars_, items, clauses):
+                out.append((st, suc, lx, cnd, vnd, ind, ncl)
+                           if evk == 'complete'
+                           else (st, lx, cnd, vnd, ind, ncl))
             return out
+
+        def cb_row(hit, kind, val):
+            """One callback effect site: (pos, kind, value, comp, vars,
+            items, clauses) - the full arm conjunction the site sits
+            under, checked at execute_callback time."""
+            g, v, i, n = cb_gate(hit)
+            cb_events.setdefault(hook, []).append(
+                (hit.start(), kind, val, g, v, i, n))
 
         m = CALL_PATTERNS['visibility'].finditer(body)
         for hit in m:
@@ -895,16 +1110,14 @@ def analyze_lua(src, qid, stats):
             stats['extracted']['gold'] += 1
             stats['hooks'][('gold', hook)] += 1
             if is_callback:
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'gold', int(hit.group(1)), cb_gate(hit)))
+                cb_row(hit, 'gold', int(hit.group(1)))
             elif gold == 0:
                 gold = int(hit.group(1))
         for hit in CALL_PATTERNS['xp'].finditer(body):
             stats['extracted']['xp'] += 1
             stats['hooks'][('xp', hook)] += 1
             if is_callback:
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'xp', int(hit.group(1)), cb_gate(hit)))
+                cb_row(hit, 'xp', int(hit.group(1)))
             elif xp == 0:
                 xp = int(hit.group(1))
         for hit in CALL_PATTERNS['item'].finditer(body):
@@ -915,8 +1128,7 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             if is_callback:
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'item', target, cb_gate(hit)))
+                cb_row(hit, 'item', target)
             else:
                 items.append(target)
         for hit in CALL_PATTERNS['award'].finditer(body):
@@ -927,8 +1139,7 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             if is_callback:
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'award', target, cb_gate(hit)))
+                cb_row(hit, 'award', target)
             else:
                 awards.append(target)
         for hit in CALL_PATTERNS['companion'].finditer(body):
@@ -939,8 +1150,7 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, hit.group(1)))
                 continue
             if is_callback:
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'companion', target, cb_gate(hit)))
+                cb_row(hit, 'companion', target)
             else:
                 companions.append(target)
         # QUEST_CONVERSATION: the hook that runs the call opens the tree.
@@ -959,7 +1169,8 @@ def analyze_lua(src, qid, stats):
             if hook in CONV_BUCKETS:
                 # begin conversations carry their gate: quest_accept queues
                 # the first whose companion test holds (Q0Q8, Q3Q6)
-                row = (cid, cb_gate(hit))
+                g, _v, _i, _n = cb_gate(hit)
+                row = (cid, g)
                 if cid not in [c for c, _g in
                                conv_buckets[CONV_BUCKETS[hook]]]:
                     conv_buckets[CONV_BUCKETS[hook]].append(row)
@@ -967,8 +1178,7 @@ def analyze_lua(src, qid, stats):
                 lst = conv_callbacks.setdefault(hook, [])
                 if cid not in lst:
                     lst.append(cid)
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'conversation', cid, cb_gate(hit)))
+                cb_row(hit, 'conversation', cid)
             elif ev is not None:
                 for key in keys_for(ev, hit.start()):
                     add_group(ev, key, hit.start(), ('conversation', cid))
@@ -977,8 +1187,11 @@ def analyze_lua(src, qid, stats):
                 # event of its own: noted, and kept as a wildcard execute
                 # entry rather than dropped.
                 stats['conv_other_hooks'].append((qid, hook, cid))
+                _s, _l, _sd, _a, comp, vars_, items, clauses = \
+                    lookup(hit.start())
                 add_group('execute',
-                          (-1, "", tuple(lookup(hit.start())[4])),
+                          (-1, "", tuple(comp), tuple(sorted(vars_)),
+                           tuple(sorted(items)), tuple(clauses)),
                           hit.start(), ('conversation', cid))
         # QUEST_COMPLETE / QUEST_MESSAGE: event hooks feed the groups,
         # callback sites keep their effect rows; anything else (CompleteQ's
@@ -987,8 +1200,7 @@ def analyze_lua(src, qid, stats):
             stats['extracted']['complete'] += 1
             stats['hooks'][('complete', hook)] += 1
             if is_callback:
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'complete', None, cb_gate(hit)))
+                cb_row(hit, 'complete', None)
             elif ev is not None:
                 for key in keys_for(ev, hit.start()):
                     add_group(ev, key, hit.start(), ('complete', None))
@@ -1003,15 +1215,19 @@ def analyze_lua(src, qid, stats):
                 stats['unresolved'].append((qid, hook, err))
                 continue
             if is_callback:
-                pos, _st, _suc, _lx, cnd, title, text, cb = rows[0]
-                if cnd:
+                pos, _st, _suc, _lx, cnd, vnd, ind, ncl, title, text, cb = \
+                    rows[0]
+                if cnd or vnd or ind:
                     stats['comp_cb_gated'] += 1
                 cb_events.setdefault(hook, []).append(
-                    (pos, 'message', (title, text, cb), tuple(cnd)))
+                    (pos, 'message', (title, text, cb), tuple(cnd),
+                     tuple(vnd), tuple(ind), tuple(ncl)))
             elif ev is not None:
-                for pos, st, suc, lx, cnd, title, text, cb in rows:
-                    key = ((st, suc, lx, cnd) if ev == 'complete'
-                           else (st, lx, cnd))
+                for pos, st, suc, lx, cnd, vnd, ind, ncl, title, text, cb \
+                        in rows:
+                    key = ((st, suc, lx, cnd, vnd, ind, ncl)
+                           if ev == 'complete'
+                           else (st, lx, cnd, vnd, ind, ncl))
                     add_group(ev, key, pos, ('message', (title, text, cb)))
         # OnQueryAction's menu label: the first branch Lua would show for
         # the hero's current (state, location).  GET_TEXT returns in other
@@ -1021,8 +1237,10 @@ def analyze_lua(src, qid, stats):
             for hit in CALL_PATTERNS['query'].finditer(body):
                 stats['extracted']['query'] += 1
                 stats['hooks'][('query', hook)] += 1
-                for st, lx, cnd in keys_for('query', hit.start()):
-                    query_actions.append((st, lx, cnd, hit.group(1)))
+                for st, lx, cnd, vnd, ind, ncl in keys_for(
+                        'query', hit.start()):
+                    query_actions.append(
+                        (st, lx, cnd, vnd, ind, ncl, hit.group(1)))
         else:
             for _hit in CALL_PATTERNS['query'].finditer(body):
                 stats['extracted']['query'] += 1
@@ -1034,13 +1252,26 @@ def analyze_lua(src, qid, stats):
         # there, as before).
         if is_callback:
             for hit in STATE_ASSIGN.finditer(body):
-                cb_events.setdefault(hook, []).append(
-                    (hit.start(), 'state', int(hit.group(1)), cb_gate(hit)))
+                cb_row(hit, 'state', int(hit.group(1)))
         elif ev is not None:
             for hit in STATE_ASSIGN.finditer(body):
                 for key in keys_for(ev, hit.start()):
                     add_group(ev, key, hit.start(),
                               ('state', int(hit.group(1))))
+        # persisted script-var writes: the port's var store mirrors the
+        # engine's per-quest sandbox (triedToKeepKey = 1 and friends) -
+        # bare `name = <digits>;` on a var the script saves. questState
+        # writes ride the stage machinery above, not this effect.
+        for hit in VAR_ASSIGN_RX.finditer(body):
+            name = hit.group(1)
+            if name not in saved:
+                continue
+            if is_callback:
+                cb_row(hit, 'setvar', (name, int(hit.group(2))))
+            elif ev is not None:
+                for key in keys_for(ev, hit.start()):
+                    add_group(ev, key, hit.start(),
+                              ('setvar', (name, int(hit.group(2)))))
         # QUEST_REMOVE_COMPANION: the OnEnterLocation sites carry the whole
         # rule - the questState and idLocation guards in the surrounding if,
         # the companion id as the argument. The nearest preceding guard of
@@ -1072,8 +1303,8 @@ def analyze_lua(src, qid, stats):
             enter_removes.append((st, loc, comp))
         calls, assigns = scan_battle_branches(
             body_ns, body, collect_assigns=(hook == 'OnCompleteAction'),
-            consts=consts)
-        for full_name, idx_arg, third, stages, cnd in calls:
+            consts=consts, saved=saved)
+        for full_name, idx_arg, third, stages, cnd, vnd, ind, ncl in calls:
             if stages is None:
                 stats['battle_unattributed'].append(
                     (qid, hook, 'no questState guard', full_name))
@@ -1085,7 +1316,8 @@ def analyze_lua(src, qid, stats):
             stats['extracted']['battle_call'] += 1
             capture = full_name != 'QUEST_BATTLE_NOCAPTURE' and third == 1
             for st in stages:
-                battle_actions.append((st, int(idx_arg), capture, cnd))
+                battle_actions.append(
+                    (st, int(idx_arg), capture, cnd, vnd, ind, ncl))
         for value, sd, stages in assigns:
             if stages is None:
                 stats['battle_unattributed'].append(
@@ -1106,13 +1338,14 @@ def analyze_lua(src, qid, stats):
     battle_actions = dedup(battle_actions)
 
     def finalize_cb(effs):
-        """(kind, val, gate) rows for one callback, source order: first
-        source-order value wins for state/gold/xp (the reward
-        convention); value-carrying grants dedup preserving order; Message
-        keeps one entry per site. The gate travels with its row - the
-        same call under two companion arms is two rows."""
+        """(kind, val, comp, vars, items, clauses) rows for one callback,
+        source order: first source-order value wins for state/gold/xp (the
+        reward convention); value-carrying grants dedup preserving order;
+        Message keeps one entry per site. The arm conjunction travels with
+        its row - the same call under two script-var arms is two rows."""
         out, first, seen = [], set(), set()
-        for _, kind, val, gate in sorted(effs, key=lambda t: t[0]):
+        for _, kind, val, gate, vnd, ind, ncl in sorted(effs,
+                                                        key=lambda t: t[0]):
             if kind in ('state', 'gold', 'xp'):
                 if kind in first:
                     continue
@@ -1120,10 +1353,10 @@ def analyze_lua(src, qid, stats):
             elif kind == 'message':
                 pass
             else:
-                if (kind, val, gate) in seen:
+                if (kind, val, gate, vnd, ind, ncl) in seen:
                     continue
-                seen.add((kind, val, gate))
-            out.append((kind, val, gate))
+                seen.add((kind, val, gate, vnd, ind, ncl))
+            out.append((kind, val, gate, vnd, ind, ncl))
         return out
 
     def finalize_groups(evk):
@@ -1305,13 +1538,14 @@ def ocaml_battles(battles):
 
 
 def ocaml_battle_actions(actions):
-    """[(stage, battle index, captures, companion gate)] - gate [] =
-    ungated."""
+    """[(stage, battle index, captures, comp gate, vars, items, clauses)]
+    - every list [] = unconstrained."""
     if not actions:
         return "[]"
-    parts = ['(%d, %d, %s, %s)'
-             % (st, idx, "true" if cap else "false", ocaml_comp(cnd))
-             for st, idx, cap, cnd in actions]
+    parts = ['(%d, %d, %s, %s, %s, %s, %s)'
+             % (st, idx, "true" if cap else "false", ocaml_comp(cnd),
+                ocaml_vars(vnd), ocaml_items(ind), ocaml_clauses(ncl))
+             for st, idx, cap, cnd, vnd, ind, ncl in actions]
     return "[" + "; ".join(parts) + "]"
 
 
@@ -1339,6 +1573,9 @@ def ocaml_state_triples(rows):
 def ocaml_effect(kind, val):
     if kind == 'state':
         return f'SetQuestState {val}'
+    if kind == 'setvar':
+        name, value = val
+        return f'SetVar ("{ocaml_str(name)}", {value})'
     if kind == 'complete':
         return 'Complete'
     if kind == 'gold':
@@ -1354,14 +1591,54 @@ def ocaml_effect(kind, val):
     return f'{ctor} "{ocaml_str(val)}"'
 
 
+def ocaml_vars(vnd):
+    """[(name, negated, value)] script-var tests -> OCaml."""
+    if not vnd:
+        return "[]"
+    return "[" + "; ".join(
+        '("%s", %s, %d)' % (ocaml_str(n), 'true' if ng else 'false', v)
+        for n, ng, v in vnd) + "]"
+
+
+def ocaml_items(ind):
+    """[(item tag, must-have)] inventory tests -> OCaml."""
+    if not ind:
+        return "[]"
+    return "[" + "; ".join(
+        '("%s", %s)' % (ocaml_str(t), 'true' if h else 'false')
+        for t, h in ind) + "]"
+
+
+def ocaml_clauses(ncl):
+    """nand clauses: one (stages, locs, side, comp, vars, items)
+    conjunction per earlier arm - the runtime must see each fail. Empty
+    stages/locs = that dimension untested = matches any; side None =
+    no success test."""
+    if not ncl:
+        return "[]"
+    parts = []
+    for st, lx, sd, c, v, i in ncl:
+        sts = "[" + "; ".join(str(s) for s in st) + "]"
+        lxs = "[" + "; ".join('"%s"' % ocaml_str(x) for x in lx) + "]"
+        sds = ('Some true' if sd == 'win'
+               else 'Some false' if sd == 'fail' else 'None')
+        parts.append('(%s, %s, %s, %s, %s, %s)'
+                     % (sts, lxs, sds, ocaml_comp(c), ocaml_vars(v),
+                        ocaml_items(i)))
+    return "[" + "; ".join(parts) + "]"
+
+
 def ocaml_callback_effects(pairs):
-    """[(callback, [(companion gate, effect)])] - gate [] = ungated."""
+    """[(callback, [(comp, vars, items, clauses, effect)])] - every list
+    empty = unconstrained."""
     if not pairs:
         return "[]"
     parts = ['("%s", [%s])'
              % (ocaml_str(cb),
-                "; ".join('(%s, %s)' % (ocaml_comp(g), ocaml_effect(k, v))
-                          for k, v, g in effs))
+                "; ".join('(%s, %s, %s, %s, %s)'
+                          % (ocaml_comp(g), ocaml_vars(v), ocaml_items(i),
+                             ocaml_clauses(n), ocaml_effect(k, val))
+                          for k, val, g, v, i, n in effs))
              for cb, effs in pairs]
     return "[" + "; ".join(parts) + "]"
 
@@ -1386,41 +1663,46 @@ def ocaml_comp(cond):
 
 
 def ocaml_query_actions(rows):
-    """[(state, location, comp gate, label tag)] - state -1 / loc "" =
-    wildcard, comp [] = ungated."""
+    """[(state, location, comp, vars, items, clauses, label tag)] -
+    state -1 / loc "" = wildcard, lists [] = unconstrained."""
     if not rows:
         return "[]"
     return "[" + "; ".join(
-        '(%d, "%s", %s, "%s")'
-        % (st, ocaml_str(loc), ocaml_comp(cnd), ocaml_str(tag))
-        for st, loc, cnd, tag in rows) + "]"
+        '(%d, "%s", %s, %s, %s, %s, "%s")'
+        % (st, ocaml_str(loc), ocaml_comp(cnd), ocaml_vars(vnd),
+           ocaml_items(ind), ocaml_clauses(ncl), ocaml_str(tag))
+        for st, loc, cnd, vnd, ind, ncl, tag in rows) + "]"
 
 
 def ocaml_loc_groups(rows):
-    """[((state, loc, comp), effects, terminates)] -> [(state, loc,
-    comp, effects, terminates)]; state -1 / loc "" = wildcard, comp []
-    = ungated, terminates = the row's body ends in a bare `return;`."""
+    """[((state, loc, comp, vars, items, clauses), effects, terminates)]
+    -> [(state, loc, comp, vars, items, clauses, effects, terminates)];
+    state -1 / loc "" = wildcard, lists [] = unconstrained, terminates =
+    the row's body ends in a bare `return;`."""
     if not rows:
         return "[]"
-    parts = ['(%d, "%s", %s, [%s], %s)'
-             % (st, ocaml_str(loc), ocaml_comp(cnd),
+    parts = ['(%d, "%s", %s, %s, %s, %s, [%s], %s)'
+             % (st, ocaml_str(loc), ocaml_comp(cnd), ocaml_vars(vnd),
+                ocaml_items(ind), ocaml_clauses(ncl),
                 "; ".join(ocaml_effect(k, v) for k, v in effs),
                 'true' if term else 'false')
-             for (st, loc, cnd), effs, term in rows]
+             for (st, loc, cnd, vnd, ind, ncl), effs, term in rows]
     return "[" + "; ".join(parts) + "]"
 
 
 def ocaml_complete_groups(rows):
-    """[((state, success, loc, comp), effects, terminates)] -> [(state,
-    success, loc, comp, effects, terminates)]; -1 fields = wildcard,
-    comp [] = ungated, terminates as in ocaml_loc_groups."""
+    """[((state, success, loc, comp, vars, items, clauses), effects,
+    terminates)] -> [(state, success, loc, comp, vars, items, clauses,
+    effects, terminates)]; -1 fields = wildcard, lists [] =
+    unconstrained, terminates as in ocaml_loc_groups."""
     if not rows:
         return "[]"
-    parts = ['(%d, %d, "%s", %s, [%s], %s)'
-             % (st, suc, ocaml_str(loc), ocaml_comp(cnd),
+    parts = ['(%d, %d, "%s", %s, %s, %s, %s, [%s], %s)'
+             % (st, suc, ocaml_str(loc), ocaml_comp(cnd), ocaml_vars(vnd),
+                ocaml_items(ind), ocaml_clauses(ncl),
                 "; ".join(ocaml_effect(k, v) for k, v in effs),
                 'true' if term else 'false')
-             for (st, suc, loc, cnd), effs, term in rows]
+             for (st, suc, loc, cnd, vnd, ind, ncl), effs, term in rows]
     return "[" + "; ".join(parts) + "]"
 
 
@@ -1485,18 +1767,33 @@ def main():
         print(f"message rows dropped (sibling-arm assignments): "
               f"{stats['msg_arm_drops']}")
         n_gated = 0
+        n_var = n_item = n_clause = 0
         n_term = 0
         term_sites = []
         for q in quests:
             for field in ('enter_effects', 'execute_effects',
                           'complete_effects', 'end_effects'):
-                n_gated += sum(1 for k, _e, _t in q[field] if k[-1])
+                for k, _e, _t in q[field]:
+                    cnd = k[2] if field != 'complete_effects' else k[3]
+                    vnd = k[3] if field != 'complete_effects' else k[4]
+                    ind = k[4] if field != 'complete_effects' else k[5]
+                    ncl = k[5] if field != 'complete_effects' else k[6]
+                    if cnd:
+                        n_gated += 1
+                    if vnd:
+                        n_var += 1
+                    if ind:
+                        n_item += 1
+                    if ncl:
+                        n_clause += 1
                 for k, _e, t in q[field]:
                     if t:
                         n_term += 1
                         term_sites.append((q['id'], field))
         n_gated_q = sum(1 for q in quests for r in q["query_actions"]
                         if r[2])
+        n_var_q = sum(1 for q in quests for r in q["query_actions"]
+                      if r[3])
         n_gated_battle = sum(1 for q in quests for r in q["battle_actions"]
                              if r[3])
         print(f"companion-gated keys: {n_gated} groups, {n_gated_q} query "
@@ -1504,6 +1801,8 @@ def main():
               f"{n_gated_battle} battle actions; "
               f"{stats['comp_merge_drops']} message rows dropped "
               f"(contradictory gates)")
+        print(f"var/item-gated keys: {n_var} groups, {n_var_q} query rows; "
+              f"{n_item} item-gated, {n_clause} clause-gated groups")
         print(f"terminating groups (bare `return;` in the body): "
               f"{n_term}")
         for row in term_sites:
@@ -1537,18 +1836,23 @@ def main():
         print(f"query actions: {n_query} rows across {n_query_q} quests")
         eff_kinds = Counter()
         n_eff = 0
+        n_var_cb = 0
         for q in quests:
             for _, effs in q["callback_effects"]:
                 n_eff += 1
-                for k, _v, _g in effs:
+                for k, _val, _g, vnd, _i, _n in effs:
                     eff_kinds[k] += 1
+                    if vnd:
+                        n_var_cb += 1
         print(f"callback effects: {n_eff} callbacks, "
               + (", ".join(f"{k}={n}" for k, n in sorted(eff_kinds.items()))
-                 or "none"))
-        gated_cb = [(q['id'], cb, kind, gate)
+                 or "none")
+              + f"; {n_var_cb} var-gated sites")
+        gated_cb = [(q['id'], cb, kind, gate, vnd)
                     for q in quests
                     for cb, effs in q["callback_effects"]
-                    for kind, _v, gate in effs if gate]
+                    for kind, _val, gate, vnd, _i, _n in effs
+                    if gate or vnd]
         gated_begin = [(q['id'], cid, gate)
                        for q in quests
                        for cid, gate in q["conversations_begin"] if gate]
@@ -1685,6 +1989,7 @@ def main():
     # the same effect carries the location-action hooks' message sites.
     lines.append("type callback_effect =")
     lines.append("  | SetQuestState of int")
+    lines.append("  | SetVar of string * int")
     lines.append("  | Complete")
     lines.append("  | GiveGold of int")
     lines.append("  | GiveXp of int")
@@ -1693,6 +1998,18 @@ def main():
     lines.append("  | GiveCompanion of string")
     lines.append("  | Conversation of string")
     lines.append("  | ShowMessage of string * string * string")
+    lines.append("")
+    lines.append("(* one script-var test: (name, ~=, value) - absent = 0 *)")
+    lines.append("type var_test = string * bool * int")
+    lines.append("(* one inventory test: (tag, must-have) *)")
+    lines.append("type item_test = string * bool")
+    lines.append("(* a failed earlier arm: (states, locations, success side,")
+    lines.append("   comp, vars, items) conjunction - empty state/location")
+    lines.append("   lists mean that dimension was untested (matches any),")
+    lines.append("   side None no success test *)")
+    lines.append("type clause =")
+    lines.append("  int list * string list * bool option *")
+    lines.append("  (string * bool) list * var_test list * item_test list")
     lines.append("")
     lines.append("type quest = {")
     lines.append("  id: string;")
@@ -1726,7 +2043,9 @@ def main():
     lines.append("  battle_monster: string;")
     lines.append("  battle_spells: string list;")
     lines.append("  battles: (string * string list) list;")
-    lines.append("  battle_actions: (int * int * bool * (string * bool) list) list;")
+    lines.append("  battle_actions:")
+    lines.append("    (int * int * bool * (string * bool) list *")
+    lines.append("     var_test list * item_test list * clause list) list;")
     lines.append("  battle_stage_advances: (int * int) list;")
     lines.append("  battle_stage_fails: (int * int) list;")
     lines.append("  enter_removes: (int * string * string) list;")
@@ -1746,26 +2065,35 @@ def main():
     lines.append("    (string * (string * bool) list) list;")
     lines.append("  conversations_abandon: string list;")
     lines.append("  conversation_callbacks: (string * string list) list;")
+    lines.append("  (* each row: (comp, vars, items, clauses, effect) - the")
+    lines.append("     whole arm conjunction the site sits under, checked at")
+    lines.append("     execute_callback time; empty lists = unconstrained *)")
     lines.append("  callback_effects:")
-    lines.append("    (string * ((string * bool) list * callback_effect) list)")
+    lines.append("    (string * ((string * bool) list * var_test list *")
+    lines.append("     item_test list * clause list * callback_effect) list)")
     lines.append("    list;")
-    lines.append("  (* (state, location, companion gate, effects,")
-    lines.append("     terminates): -1 / \"\" = wildcard, gate [] = no")
-    lines.append("     companion test, terminates = a bare `return;`")
-    lines.append("     ends the hook body when this row fires *)")
+    lines.append("  (* (state, location, comp, vars, items, clauses, label,")
+    lines.append("     effects, terminates): -1 / \"\" = wildcard, empty")
+    lines.append("     lists = no test of that kind, terminates = a bare")
+    lines.append("     `return;` ends the hook body when this row fires *)")
     lines.append("  query_actions:")
-    lines.append("    (int * string * (string * bool) list * string) list;")
+    lines.append("    (int * string * (string * bool) list * var_test list *")
+    lines.append("     item_test list * clause list * string) list;")
     lines.append("  enter_effects:")
-    lines.append("    (int * string * (string * bool) list *")
+    lines.append("    (int * string * (string * bool) list * var_test list *")
+    lines.append("     item_test list * clause list *")
     lines.append("     callback_effect list * bool) list;")
     lines.append("  execute_effects:")
-    lines.append("    (int * string * (string * bool) list *")
+    lines.append("    (int * string * (string * bool) list * var_test list *")
+    lines.append("     item_test list * clause list *")
     lines.append("     callback_effect list * bool) list;")
     lines.append("  complete_effects:")
     lines.append("    (int * int * string * (string * bool) list *")
+    lines.append("     var_test list * item_test list * clause list *")
     lines.append("     callback_effect list * bool) list;")
     lines.append("  end_effects:")
-    lines.append("    (int * string * (string * bool) list *")
+    lines.append("    (int * string * (string * bool) list * var_test list *")
+    lines.append("     item_test list * clause list *")
     lines.append("     callback_effect list * bool) list;")
     lines.append("}")
     lines.append("")

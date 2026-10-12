@@ -3950,44 +3950,61 @@ port_decisions:
     decision: >
       The driver calls query_actions, execute_action, complete_action and
       enter_location around dialogue and battles. Query is first-match in
-      source order (the elseif chain Lua showed); the other events apply
-      every matching group in source order, each guard re-reading the live
-      quest state, so a body that writes questState = 2 before a stage-2
-      CompleteQuest test finishes in one call. Group keys are the guarded
-      (questState, idLocation) pairs with -1/"" wildcards; complete groups
-      carry the success/failure bit; every key also carries the
-      QUEST_HERO_HAS_COMPANION_SELECTED conjunction it sits under - the
-      (companion id, must-be-present) pairs the extractor parsed from the
-      open if-headers (an else-arm flips the single test) - checked at
-      apply time against player.companions by companion_ok, so QS00 queues
-      NOCOMP or PRELUDE, QK06 NOCOMP or BUTTON, and QP01's first-match
-      query skips a label whose companion is away. The three flat lists
-      carry the same conjunction: OnBegin conversations (Q0Q8, Q3Q6 - both
-      gated NKHA) queue only when their pair holds, callback_effects rows
-      fold under the gate at execute_callback time (12 sites - Q3Q7's
-      CallbackConvC posts its HUNGRY box only with NDRO along, Q3S0's five
-      CallbackMsgs gate on their companions), and the 15 battle_actions
-      stage actions decide fight-versus-box by companion (QA00 fights with
-      NDKH along and posts the NOCOMP box otherwise, QK00/QU00 the same
-      shape for NKHA/NSUN, Q3D4's flipped chain fights first). Group rows
-      also carry a terminates flag: a bare `return;` at the site's own
-      nesting level ends the hook body, so the runtime's fold stops once
-      the row applies - Q2Q7's OnCompleteAction is the only hit in the
-      corpus (a win with NDRO along queues Conv_Q2Q7b and returns, so
-      the fall-through KILL box and questState = 2 never run; without
-      her the fall-through fires as extracted). enter_location folds
-      the groups before the remove rules apply: Lua tests companions at
-      if-entry while the removes sit inside the chosen arm (Q3S0 messages
-      then removes, QS00 removes then messages), so the gates must read
-      the party the arrival started with. ShowMessage effects queue
-      through pending_messages; pq_conv_gfx pops them as a modal box whose
-      OK click fires the box's callback.
+      source order; the other events apply every matching group in source
+      order against the live accumulator, each group's full arm
+      conjunction holding - the companion gate the extractor parsed from
+      the open if-headers ((companion id, must-be-present) pairs, an
+      else-arm flipping the single test), the script-var and inventory
+      tests the header carried (var_test / item_test slots checked at
+      apply time against player.quest_vars by var_test_ok and the
+      traveling inventory by item_test_ok), and the nand clauses that pin
+      out the sibling arms of the row's own if/elseif chain: a clause
+      re-checks a predecessor arm's key (its stages, locations, success
+      side, companion, vars and items - empty list = that dimension was
+      untested), and a row applies only when no clause fires. Clauses
+      evaluate against the chain's ENTRY snapshot - the fold-start player,
+      advanced past a fired row - never the live accumulator, because an
+      arm's own SetQuestState or remove_companion must not unblock a
+      sibling of its chain: Q1G3's and Q0Q0's OnCompleteAction post one
+      box, write questState = 2 and stop; the elseif questState==2 turn-in
+      arm waits for the next call, exactly the single-entry if the Lua
+      writes. Group keys keep the (questState, idLocation) pairs with
+      -1/"" wildcards, complete groups the success/failure bit, and every
+      key carries the same conjunction; QS00 queues NOCOMP or PRELUDE,
+      QK06 NOCOMP or BUTTON, QP01's first-match query skips a label whose
+      companion is away, Q1S0's three triedToKeepKey arms (conversation /
+      Khalkusno box / heirloom complete) split by NKHA x the local,
+      QA03's stage action fights only with NDKH along and doneConv set,
+      Q3Q5's necropolis sites gate per-site done-flags, the tried-flags
+      and the ISES rod in the inventory, Q0Q0's lostToThief twins queue
+      one conversation. The three flat lists carry the same conjunction:
+      OnBegin conversations (Q0Q8, Q3Q6 - both gated NKHA) queue only
+      when their pair holds, callback_effects rows fold under the gate at
+      execute_callback time with their clauses, and the 15 battle_actions
+      stage actions decide fight-versus-box by companion and clause
+      (QA00/QA03 NDKH, QK00/QU00 families NKHA/NSUN). Group rows also
+      carry a terminates flag: a bare `return;` at the site's own nesting
+      level ends the hook body, so the fold stops once the row applies -
+      Q2Q7's OnCompleteAction is the only hit in the corpus. enter_location
+      folds the groups before the remove rules apply: Lua tests companions
+      at if-entry while the removes sit inside the chosen arm (Q3S0
+      messages then removes, QS00 removes then messages), so the gates
+      must read the party the arrival started with. ShowMessage effects
+      queue through pending_messages; pq_conv_gfx pops them as a modal
+      box whose OK click fires the box's callback.
     rationale: >
-      The Lua bodies are sequential if-blocks over a live questState
-      variable: an elseif chain exists only inside OnQueryAction, while
-      OnExecuteAction and OnCompleteAction blocks fall through, which is why
-      first-match would drop the stage advance and the turn-in that Q0Q0
-      and Q1G3 perform in a single event. The third message argument is the
+      The Lua bodies are sequential ifs, and every hook is single-entry:
+      once an arm runs, the elseif chain that arm belongs to is finished -
+      OnExecuteAction and OnCompleteAction included, which is why Q1G3 and
+      Q0Q0 turn in on the NEXT call at the advanced stage, not inside the
+      event that wrote the stage. The runtime used to read the live stage
+      in every guard, so those quest's own write-to-2 unblocked their
+      turn-in arm in the same call; three tests pinned that fall-through
+      reading and are rewritten as exclusivity pins against the Lua. The
+      clause's entry snapshot threads the needle the other way: a later
+      CHAIN in the same hook still re-tests the state a prior chain wrote
+      (the snapshot advances past a fired row), while a sibling arm of the
+      firing chain stays pinned out. The third message argument is the
       display anchor (idLocation/myLocation), not a guard - forcing it as
       one broke Q1E0's SUCCESS2/FAILURE2 boxes. A message row only comes
       from an assignment in the same branch arm as its site: an assignment
@@ -3995,19 +4012,17 @@ port_decisions:
       sites inside one if/else no longer pick up each other's text (the
       rule that removed the duplicate SUCCESS1/NOCOMP boxes Q3Q6, QK06,
       QS02 and the phantom FAILURE copies Q1Q0/Q3Q2 carried). Companion
-      gates close the twin hole that rule exposed: arm exclusion picks the
-      text but both arms still shared one key, so both boxes queued; the
-      gate splits the arms (54 groups + 4 query rows; 0 contradictory
-      merges) without touching what the key cannot see - items, done-flags
-      and the callbacks/OnBegin flat lists stay ungated, counted by
-      extractor --check. The group-before-removes order is forced by Q3S0:
-      removing the gated companion first would flip the very test the
-      arrival message keys on. A caller-driven complete_action keeps the
-      battle settle decoupled, matching the quest_battle_complete
-      separation, and campaign_demo walks Q0I2's whole chain as the
-      reference driver.
+      gates and then var/item slots split the arms that shared one key
+      (54 groups + 4 query rows companion-gated; 52 groups + 41 query
+      rows var-gated, 8 item-gated, 380 clause-gated groups, 8 var-gated
+      callback sites; extractor --check reconciles every count). The
+      group-before-removes order is forced by Q3S0: removing the gated
+      companion first would flip the very test the arrival message keys
+      on. A caller-driven complete_action keeps the battle settle
+      decoupled, matching the quest_battle_complete separation, and
+      campaign_demo walks Q0I2's whole chain as the reference driver.
     supersedes: null
-    date: 2026-10-11
+    date: 2026-10-12
 
   - id: port.full_loop_map_actions
     decision: >
