@@ -1,8 +1,41 @@
 # Puzzle Quest Clean-Room Reimplementation — Status
 
-**Date:** 2026-10-11  
+**Date:** 2026-10-12  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree clean. Seven follow-ups since mount training. The last gap - chains under untracked tests - closed this round: the guard snapshots learned script-variable and inventory conjunctions, so arms keyed by a done-flag, a local or an item carry `var_test` / `item_test` slots alongside the companion gate, and the runtime's `player.quest_vars` store holds them (`script_var_get` / `script_var_set`, cleared on accept so a re-accept restarts from the Lua's `OnInit` defaults; `has_item_tag` reads the traveling inventory). Every group / query / battle / callback / message row now carries the full arm conjunction plus a `clause` list whose entries pin out the sibling arms of the row's own `if/elseif` chain - the clause fires when the predecessor's key holds, and a row applies only when no clause fires. Q1S0's three `triedToKeepKey` arms, QA03's `doneConv` fight-vs-box split, Q3Q5's necropolis sites (per-site flags + the ISES inventory gate) and Q0Q0's `lostToThief` twins all extract and run as the Lua sequences them; 380 clause-gated groups, 52 var-gated, 8 item-gated, 8 var-gated callback sites. The clause evaluates against the chain's ENTRY snapshot (the fold-start player, advanced past a fired row), not the live accumulator - an arm's own SetQuestState or remove_companion cannot unblock a sibling of its chain (Q1G3 and Q0Q0's OnCompleteAction post one box and advance to state 2; the `elseif questState==2` turn-in arm waits for the next call, exactly the single-entry `if` the Lua writes - three older tests that asserted the sibling co-firing were rewritten as exclusivity pins). Generated shapes widened (`campaign_quests.ml` regenerated, deterministic double-run hash-equal), save/load carries `quest_vars`, and the Q1S0 / QA03 / Q3Q5 chains have first-class tests driving execute with companion/var/inventory setups. All 34 suites pass (2464 checks), extractor `--check` and the evidence validator green. Earlier follow-ups this cycle: deterministic group ordering, the last two QUEST_REMOVE_COMPANION sites, message-row sibling-arm pruning, companion gates on all six tables, and the terminates flag.
+**Sync:** clean tree at `790a81a` (the var/item/clause-guard round). Seven follow-ups since mount training. The last gap - chains under untracked tests - closed this round: the guard snapshots learned script-variable and inventory conjunctions, so arms keyed by a done-flag, a local or an item carry `var_test` / `item_test` slots alongside the companion gate, and the runtime's `player.quest_vars` store holds them (`script_var_get` / `script_var_set`, cleared on accept so a re-accept restarts from the Lua's `OnInit` defaults; `has_item_tag` reads the traveling inventory). Every group / query / battle / callback / message row now carries the full arm conjunction plus a `clause` list whose entries pin out the sibling arms of the row's own `if/elseif` chain - the clause fires when the predecessor's key holds, and a row applies only when no clause fires. Q1S0's three `triedToKeepKey` arms, QA03's `doneConv` fight-vs-box split, Q3Q5's necropolis sites (per-site flags + the ISES inventory gate) and Q0Q0's `lostToThief` twins all extract and run as the Lua sequences them; 380 clause-gated groups, 52 var-gated, 8 item-gated, 8 var-gated callback sites. The clause evaluates against the chain's ENTRY snapshot (the fold-start player, advanced past a fired row), not the live accumulator - an arm's own SetQuestState or remove_companion cannot unblock a sibling of its chain (Q1G3 and Q0Q0's OnCompleteAction post one box and advance to state 2; the `elseif questState==2` turn-in arm waits for the next call, exactly the single-entry `if` the Lua writes - three older tests that asserted the sibling co-firing were rewritten as exclusivity pins). Generated shapes widened (`campaign_quests.ml` regenerated, deterministic double-run hash-equal), save/load carries `quest_vars`, and the Q1S0 / QA03 / Q3Q5 chains have first-class tests driving execute with companion/var/inventory setups. All 34 suites pass (2464 checks), extractor `--check` and the evidence validator green. Earlier follow-ups this cycle: deterministic group ordering, the last two QUEST_REMOVE_COMPANION sites, message-row sibling-arm pruning, companion gates on all six tables, and the terminates flag.
+
+---
+
+## Next Round Options (surveyed 2026-10-12)
+
+The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, and the remaining GAPS rows are UI, polish or deliberately-open RE questions. Four candidate directions, ranked by leverage:
+
+### 1. Item effects — wire the never-invoked hooks (recommended)
+
+`Item.hooks` already types `on_receive_mana/gold/xp`, `on_start_turn`, `on_match4/5` and `on_victory`, but **nothing calls them**: the battle loop folds only `on_give_damage` (per damage event) and the start-battle payoffs. The Lua corpus is small and bounded:
+
+| Hook | Items | Portability |
+|------|-------|-------------|
+| OnReceiveMana | 17 (IBFH, IDKH, IMOA, ...) | mostly value transforms (IDKH `+2` on green, IMOA `*2` on blue) - portable; IBFH credits a second pool via `ADD_MANA_EARTH` (needs the mana-credit call) |
+| OnReceiveGold | 3 (IGPK, IRBR, IXHD) | IGPK's XP body needs `ADD_TEMP_SKILL` (staged bonus - no model); gold bodies to audit |
+| OnReceiveXP | 6 (IALR, IAOB, IGPK, IMSE, ISES, ISKT) | same staging problem for IGPK; others to audit |
+| OnStartTurn | 9 (ICOS, IDSH, IEGM, INOB, ISDO, ITRG, ITRI, ITRU, ITUT) | ICOS needs `SET_GEM` + `GetRandomGrid_Isolated2` + a fresh percentile roll (no model); simpler bodies may exist among the rest |
+| OnMatch4 / OnMatch5 | 5 / 6 (ICSA, IMGS, IRKK, ISRI, IWBC, IUSI) | ICSA needs `ADD_TEMP_RESISTANCE` staging; IUSI is `Std_Healing(15)` - likely portable once healing exists; the match4/5 events themselves are already dispatched in `Combat` |
+| OnVictory | 1 (IHTR) | `ADD_XP(+50)` - portable at the campaign award path |
+
+Work: (a) wire invocation points - mana credit on gem matches, turn start in the battle loop, match4/5 dispatch (the event slots already exist on `Combat.hooks`), victory at battle end, gold/XP at the campaign settle; (b) port the portable bodies into `Item_hooks`, extend `item_of_id` beyond damage-only; (c) keep natives-dependent bodies in `known_unported` with reasons (same discipline as the IBSH/percentile note). Closes GAPS §9's last bullet ("the mana/gold/xp, start-turn, match and victory hooks are still never invoked").
+
+### 2. Mana ceiling RE - settle `quest.base_value_from_level`
+
+Open question: what sets the per-element mana ceiling at hero construction? The port models no cap at all (a chosen 20 for AI judgements), so 8 items' `GET_MAX_MANA_*` comparisons and every AI mana test are judged against a phantom. The question's own guidance: the save stores the pool, not the ceiling, and carries level + class - so the base is computed at load time; the save loader is the smaller target. Needs binary/decompiler work (`tools/scan_field_refs.py`, `DecompileSaveSystem.java`). Unblocks the remaining mana-gated item hooks and AI honesty.
+
+### 3. Close stale open questions - cheap doc round
+
+`quest.difficulty_consumers` still says "the quest layer that would choose taskLevel does not exist yet", but `run_quest_battle` now passes `monster.level_base` and road fights pass `enc.my_level` (`port.campaign_task_level`). An audit of the four remaining open questions (`font.advance_field_mapping`, `quest.base_value_from_level`, `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`) against the landed code could retire at least one and sharpen the others.
+
+### 4. Battle UI / spell list - start the full graphics battle
+
+`pq_play_gfx` exists but minimal: no spell panel with costs, no mana bars, no persistent combat log. The data is all there (130 spells with costs, mana pools, float-text events). Large SDL chunk, different flavour from the engine rounds.
 
 ---
 
@@ -231,7 +264,7 @@ Open questions (4): `font.advance_field_mapping`, `quest.base_value_from_level`,
 # Build everything
 opam exec -- dune build
 
-# Run all tests (31 suites: 21 engine + 10 graphics)
+# Run all tests (34 suites: engine + graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -249,7 +282,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 30 suites pass (exit 0, 2026-10-09). Extractor `--check` modes validate against
+All 34 suites pass (exit 0, 2464 checks, 2026-10-12). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -258,8 +291,9 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
+| **High** | **Item effects** | Wire the never-invoked hooks (`OnReceiveMana/Gold/Xp`, `OnStartTurn`, `OnMatch4/5`, `OnVictory`) into the battle/campaign loops; port the portable Lua bodies, account for the rest in `known_unported` - see "Next Round Options" §1 |
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equip landed (roster + party, home-gated pickup, the map Companions tab) |
-| **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, and the shared `Conv_window` that opens queued trees over the map. Still open: the two callback-site `QUEST_REMOVE_COMPANION` removals |
+| **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, the shared `Conv_window` that opens queued trees over the map, and the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5/QU02, fired inside `execute_callback`) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
 | **Medium** | **Grid Spell Targeting** | Landed: hover lights the shape the spell reads (column/row/cell via `Layout.aim_cells`), the HUD prompt says aim, click-to-aim was already wired; `fx.ml`'s `play_for_fx` still skips `target = Grid` calls - their cells arrive through `on_grid_fx`, by design (`port.grid_effects_are_an_observer_not_an_event`) |
 | **Medium** | **City UI** | Shop buy/sell, spell learning, tavern rumors, and the Companions tab (leave/pick up); a dedicated hero screen and captive teaching remain open |
