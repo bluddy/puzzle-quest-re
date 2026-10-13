@@ -442,9 +442,11 @@ let miss_turns_on (target : combatant) (n : int) : unit = miss_turns target n
 (** The gem constants.
 
     The Lua names gems by id, and the ids are the board's own order: 1 Earth,
-    2 Fire, 3 Water, 4 Air, 5 Skull, 15 Red Skull. That is the reverse of the
-    character element order for the last two, which is the trap this file keeps
-    tripping over, so the mapping is written out once here. *)
+    2 Fire, 3 Air, 4 Water, 5 Skull, 6 Star, 7 Coin, 15 Red Skull - the
+    character order with no transposition (board.gem_ids, which corrects an
+    earlier reading here that had water and air swapped and star and coin
+    swapped). The mapping is written out once so the spell bodies read as
+    [GEM_EARTH], [GEM_WATER] and friends rather than as bare ids. *)
 
 let gem_earth = Board.Mana Earth
 let gem_fire = Board.Mana Fire

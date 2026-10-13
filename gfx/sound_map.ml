@@ -42,9 +42,12 @@
     drop the voice - or the effect, which is the one carrying the information.
 
     The element sounds are named for the element (`snd_earth`, `snd_air`,
-    `snd_fire`, `snd_water`) and `ManaGained` carries the element id, so a mana
-    message and its sound agree. The ids are the board's, not [Battle]'s: 1 Earth,
-    2 Fire, 3 Water, 4 Air. *)
+    `snd_fire`, `snd_water`) and `ManaGained` carries the *pool index*
+    [Battle.element_index] produces - 0 Earth, 1 Fire, 2 Air, 3 Water - so a
+    mana message and its sound agree. (This table used to be keyed on the
+    board's 1-based gem ids instead, and on the decompile's transposed reading
+    of them, which meant an Earth gain fell silent and Fire played Earth's
+    sound; see `board.gem_ids` for the ids and the correction.) *)
 
 open Puzzle_quest_lib
 
@@ -55,13 +58,20 @@ open Puzzle_quest_lib
 let cascade (step : int) : string option =
   if step < 2 then None else Some (Printf.sprintf "snd_cascade%d" (min 6 (step - 1)))
 
-(** The element a mana gain was in, by the engine's ids. *)
+(** The element a mana gain was in, keyed on the pool index the event carries.
+
+    The engine's harvest (0x47D091) credits the four pools in the character's
+    own order and pushes a sound alongside each call - `snd_earth` with pool 0
+    at 0x523534, `snd_fire` with 1 at 0x523520, `snd_air` with 2 at 0x523510,
+    `snd_water` with 3 at 0x5234FC - so this is those four call sites read
+    backwards, and the pool order is the one GET_MANA_* reads (+0x74, +0x78,
+    +0x7C, +0x80). *)
 let element_sound (element_id : int) : string option =
   match element_id with
-  | 1 -> Some "snd_earth"
-  | 2 -> Some "snd_fire"
+  | 0 -> Some "snd_earth"
+  | 1 -> Some "snd_fire"
+  | 2 -> Some "snd_air"
   | 3 -> Some "snd_water"
-  | 4 -> Some "snd_air"
   | _ -> None
 
 (** The sounds an event plays, in order. Empty for an event that is silent.

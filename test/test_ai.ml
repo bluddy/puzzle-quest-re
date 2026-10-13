@@ -112,16 +112,34 @@ let () =
 (* ------------------------------------------------------------------ *)
 
 let () =
+  (* The ids are the switch in CBoard_AccumulateGem, with the two mana rows and
+     the gold/xp pair the way the *harvest* consumes them: the buckets at
+     +0x4C and +0x68 are credited with snd_air and snd_water (pool 2 and pool 3),
+     +0xA0 with snd_gold and +0xBC with snd_xp - so gem 3 is air, gem 4 water,
+     gem 6 the star, gem 7 the coin, which is also what StandardConstants.lua
+     says (GEM_AIR=3, GEM_WATER=4, GEM_STAR=6, GEM_GOLD=7). See board.gem_ids. *)
   check_eq "earth is id 1" (gem_id (Mana Earth)) 1;
   check_eq "fire is id 2" (gem_id (Mana Fire)) 2;
-  check_eq "water is id 3" (gem_id (Mana Water)) 3;
-  check_eq "air is id 4" (gem_id (Mana Air)) 4;
+  check_eq "air is id 3" (gem_id (Mana Air)) 3;
+  check_eq "water is id 4" (gem_id (Mana Water)) 4;
   check_eq "skull is id 5" (gem_id Skull) 5;
-  check_eq "gold is id 6" (gem_id Gold) 6;
-  check_eq "xp is id 7" (gem_id Experience) 7;
+  check_eq "the star is id 6" (gem_id Experience) 6;
+  check_eq "the coin is id 7" (gem_id Gold) 7;
   check_eq "red skull is id 0xf" (gem_id RedSkull) 0xf;
   check_eq "a 2x wildcard is id 8" (gem_id (Wildcard 2)) 8;
   check_eq "an 8x wildcard is id 14" (gem_id (Wildcard 8)) 14;
+  (* And the ids land in the buckets their names claim - which is what the
+     old 3/4 and 6/7 transposition would have quietly got wrong. *)
+  let bucket_of run_char =
+    let b = board [ "........"; run_char ^ run_char ^ run_char; "........";
+                    "........"; "........"; "........"; "........"; "........" ] in
+    accumulate zero_resources (ref 1) b 0 1 Horizontal 3
+  in
+  check_eq "an air run lands in the air bucket" (bucket_of "a").r_air 3;
+  check_eq "and not in the water bucket" (bucket_of "a").r_water 0;
+  check_eq "a water run lands in the water bucket" (bucket_of "w").r_water 3;
+  check_eq "a star run lands in the xp bucket" (bucket_of "x").r_xp 3;
+  check_eq "a coin run lands in the gold bucket" (bucket_of "g").r_gold 3;
   List.iter
     (fun g -> check ("gem_of_id inverts gem_id for " ^ string_of_gem g) (gem_of_id (gem_id g) = g))
     [ Mana Earth; Mana Fire; Mana Water; Mana Air; Skull; Gold; Experience; RedSkull;

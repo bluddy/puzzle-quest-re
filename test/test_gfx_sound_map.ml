@@ -112,15 +112,29 @@ let test_battle_end_plays_two () =
     "snd_voice_defeat,snd_defeat"
 
 let test_element_sounds () =
-  (* The ids are the board's: 1 Earth, 2 Fire, 3 Water, 4 Air - which is the
-     transposition that has bitten this port in mana, status effects and the AI. *)
-  check_str "earth" (Option.get (Sound_map.element_sound 1)) "snd_earth";
-  check_str "fire" (Option.get (Sound_map.element_sound 2)) "snd_fire";
+  (* The ids are the pool indices [Battle.element_index] carries - 0 Earth,
+     1 Fire, 2 Air, 3 Water - which is the order the engine's harvest credits
+     the pools in, pushing snd_earth / snd_fire / snd_air / snd_water alongside
+     them (0x47D091). The old table was keyed on the board's 1-based gem ids
+     and on the decompile's transposed reading of them, so Earth fell silent,
+     Fire played earth and air played fire - see board.gem_ids. *)
+  check_str "earth" (Option.get (Sound_map.element_sound 0)) "snd_earth";
+  check_str "fire" (Option.get (Sound_map.element_sound 1)) "snd_fire";
+  check_str "air" (Option.get (Sound_map.element_sound 2)) "snd_air";
   check_str "water" (Option.get (Sound_map.element_sound 3)) "snd_water";
-  check_str "air" (Option.get (Sound_map.element_sound 4)) "snd_air";
-  check "an id that is not an element has no sound" (Sound_map.element_sound 0 = None);
+  check "an id that is not an element has no sound" (Sound_map.element_sound 4 = None);
   check_str "and a fire mana gain says so"
-    (joined (Battle.ManaGained ("you", 2, 3))) "snd_fire";
+    (joined (Battle.ManaGained ("you", 1, 3))) "snd_fire";
+  (* The whole pipeline, not just the table: an event built the way [Battle]
+     builds it has to reach the right tag, which is where the old mapping's
+     base mismatch hid. *)
+  let gain (e : Combat.element) =
+    joined (Battle.ManaGained ("you", Battle.element_index e, 3))
+  in
+  check_str "an earth gain plays the earth sound" (gain Combat.Earth) "snd_earth";
+  check_str "a fire gain plays the fire sound" (gain Combat.Fire) "snd_fire";
+  check_str "an air gain plays the air sound" (gain Combat.Air) "snd_air";
+  check_str "a water gain plays the water sound" (gain Combat.Water) "snd_water";
   check "an out-of-range element is silent"
     (joined (Battle.ManaGained ("you", 9, 3)) = "")
 
@@ -146,9 +160,9 @@ let test_every_tag_exists () =
   let tags = ref [] in
   List.iter
     (fun e -> List.iter (fun s -> tags := s :: !tags) (Sound_map.of_event e))
-    [ Battle.Damage ("x", 1); Battle.ManaGained ("x", 1, 1);
-      Battle.ManaGained ("x", 2, 1); Battle.ManaGained ("x", 3, 1);
-      Battle.ManaGained ("x", 4, 1); Battle.GoldGained ("x", 1);
+    [ Battle.Damage ("x", 1); Battle.ManaGained ("x", 0, 1);
+      Battle.ManaGained ("x", 1, 1); Battle.ManaGained ("x", 2, 1);
+      Battle.ManaGained ("x", 3, 1); Battle.GoldGained ("x", 1);
       Battle.XpGained ("x", 1); Battle.ExtraTurn "x"; Battle.HeroicEffort "x";
       Battle.SpellHeld "x"; Battle.TurnStart (0, Battle.Hero, "x");
       Battle.TurnStart (0, Battle.Enemy, "x"); Battle.BattleEnd Battle.HeroVictory;

@@ -52,9 +52,12 @@ claims:
     source_pass: mana
     summary: >
       Four consecutive ints per character hold the current pools, and four more
-      hold the ceilings. The element index is the Lua mana id, which is the
-      board's gem order (1 Earth, 2 Fire, 3 Water, 4 Air) and not `element`'s
-      order - that transposition is the standing trap in this area.
+      hold the ceilings. The element index is the Lua mana id - 0 Earth,
+      1 Fire, 2 Air, 3 Water - which is also the board's gem order for ids 1-4
+      minus one (board.gem_ids), so pools and gems share one order with no
+      transposition between them. (An earlier reading here called it "1 Earth,
+      2 Fire, 3 Water, 4 Air", the board order with a water/air swap; corrected
+      2026-10-13 when the harvest's per-pool sound calls pinned air at pool 2.)
     evidence:
       - kind: decompiled
         ref: docs/decompiled/Engine_SET_MANA_AIR_445c00.c
@@ -2156,19 +2159,56 @@ claims:
     affects: [lib/board.ml, lib/spell_effects.ml]
 
   - id: board.gem_ids
-    title: Gem ids are 1 Earth, 2 Fire, 3 Water, 4 Air, 5 Skull, 15 Red Skull
+    title: Gem ids run 1 Earth, 2 Fire, 3 Air, 4 Water, 5 Skull, 6 Star, 7 Coin, 15 Red Skull
     area: board
     verdict: mechanic
     status: recovered
     confidence: high
-    source_pass: original_reverse
+    source_pass: gem_id_order
     summary: >
-      The reverse of the character element order for the last two, which is the
-      standing transposition trap across mana, status effects and the AI.
+      The board's gem ids, which are the character/pool order with no
+      transposition anywhere: earth, fire, air, water (1-4), then skull (5),
+      the xp star (6) and the gold coin (7), wildcards 8-14 and the red skull
+      15. Three independent sources agree - the switch in CBoard_AccumulateGem
+      (0x47B0C0), the harvest that consumes its buckets at 0x47D091 (which
+      pushes snd_air with pool index 2 for the +0x4C bucket, snd_water with
+      pool 3 for +0x68, snd_xp for +0xBC and snd_gold for +0xA0), and
+      StandardConstants.lua (GEM_AIR=3, GEM_WATER=4, GEM_STAR=6, GEM_GOLD=7,
+      with GEM_YELLOW=GEM_AIR and GEM_BLUE=GEM_WATER). The sprite sheet's own
+      cell order agrees too: green, red, yellow, blue in cells 0-3.
     evidence:
+      - kind: decompiled
+        ref: docs/decompiled/battle_ai/Sub_47b0c0.c
+        note: case 3 writes +0x4C, case 4 +0x68, case 6 +0xBC (xp), case 7 +0xA0 (gold)
+      - kind: decompiled
+        ref: docs/decompiled/battle_ai/Sub_47d4f0.c
+        note: the harvest - snd_air with element 2, snd_water with element 3, snd_xp at row 6, snd_gold at row 5
+      - kind: binary
+        ref: "0x47d091"
+        note: the caller, whose four mana calls push snd_earth/fire/air/water beside pools 0/1/2/3
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/StandardConstants.lua
+        note: GEM_AIR=3, GEM_WATER=4, GEM_STAR=6, GEM_GOLD=7 and the colour aliases
       - kind: code
-        ref: test/test_board.ml
-    affects: [lib/board.ml, lib/spell.ml, lib/combat.ml]
+        ref: lib/ai.ml
+        note: gem_id / gem_of_id / accumulate, corrected this round
+      - kind: code
+        ref: test/test_ai.ml
+        note: the id table and four bucket assertions
+      - kind: doc
+        ref: docs/BATTLE_AI.md
+        note: section 5's gem-id table and section 4's bucket labels
+    affects: [lib/ai.ml, gfx/sound_map.ml, docs/BATTLE_AI.md, test/test_ai.ml]
+    notes: >
+      This claim used to read "1 Earth, 2 Fire, 3 Water, 4 Air" - the reverse of
+      the character order for the last two - on the strength of the decompile
+      alone, and was wrong about 3/4 and about gold/star (6/7). The transposition
+      it described does not exist: ids 1-4 are the pool order exactly. The
+      error was inert in the AI (both middle weights are 2, gold and xp both 1,
+      and ai.ml matched ids against its own table) but live in sound_map, whose
+      element table was keyed on the wrong base as well - an Earth gain was
+      silent, Fire played earth and air played fire. Both fixed 2026-10-13;
+      see board.gem_id_air_water_order for the question this closed.
 
   # -------------------------------------------------------------- combat ----
 
@@ -4110,13 +4150,46 @@ open_questions:
       yield and the capture parser all work from constructors and characters
       rather than from ids. A reader that decoded a real grid would pick the
       wrong element for exactly one id, and two claims - board.gem_ids and the
-      parenthetical in mana.pool_and_ceiling_offsets - currently state the
-      decompile's order as recovered fact. Found while pinning the manaType
+      parenthetical in mana.pool_and_ceiling_offsets - state the decompile's
+      order as recovered fact. Found while pinning the manaType
       order the IRO* rings compare against: that is MANA_* - 0 Earth, 1 Fire,
       2 Air, 3 Water - which is StandardConstants' GEM_* order less one, so the
       constants file is at least self-consistent.
     related: [board.gem_ids, mana.pool_and_ceiling_offsets]
-    status: open
+    notes: >
+      Settled 2026-10-13 by reading the harvest instead of the switch: the
+      second source was there all along, one function downstream of it.
+    status: recovered
+    resolution: >
+      3 is Air and 4 is Water - StandardConstants.lua was right and
+      docs/BATTLE_AI.md's table (and the port's gem_id with it) were wrong.
+      The second source is the harvest at 0x47D091, which consumes the very
+      buckets AccumulateGem writes: it iterates the ten counters at the
+      0x1C-stride array anchored at +0x14 and, for the four mana rows, calls
+      the mana credit with a pool index and pushes a sound beside it - pool 0
+      with snd_earth, 1 with snd_fire, 2 with snd_air (0x523510) and 3 with
+      snd_water (0x5234FC). Since AccumulateGem case 3 writes +0x4C = row 2,
+      gem 3 is credited as air; case 4 writes +0x68 = row 3, so gem 4 is
+      water. The pool indices are the character's own - GET_MANA_AIR reads
+      +0x7C and GET_MANA_WATER +0x80 - and Lua_ADD_MANA_* hard-codes the same
+      four (earth 0, fire 1, air 2, water 3).
+
+      The row alignment is pinned by a row this question never looked at: gem
+      5 (skull) writes +0x84 = row 4, and row 4's call pushes snd_damage;
+      gem 6 writes +0xBC = row 6 and gets snd_xp; gem 7 writes +0xA0 = row 5
+      and gets snd_gold. So the order was air/water at rows 2/3 *and*
+      star/coin at 6/7 - two more transpositions than the question suspected,
+      all three confirmed independently by StandardConstants.lua and, for the
+      mana two, by the sprite sheet's cell order (yellow before blue, with
+      GEM_YELLOW=GEM_AIR).
+
+      The port's lib/ai.ml (gem_id, gem_of_id and the bucket fold) and the
+      weight/bucket labels in docs/BATTLE_AI.md sections 4 and 5 were
+      corrected; the AI scored identically either way because the affected
+      weights are equal, but Sound_map.element_sound was live-wrong and is
+      fixed too - it was keyed on the board's 1-based ids while ManaGained
+      carries the 0-based pool index, so three of four elements played the
+      wrong sound or none. board.gem_ids carries the corrected table.
 
 # --------------------------------------------------------- port decisions ----
 

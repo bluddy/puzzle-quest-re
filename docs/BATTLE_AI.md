@@ -170,8 +170,8 @@ resource counters at a 0x1C stride starting at `+0x14`, plus the run length at
 ```c
 score  = m[0x14] * w[0x04]     // earth
        + m[0x30] * w[0x08]     // fire
-       + m[0x4C] * w[0x0C]     // water
-       + m[0x68] * w[0x10]     // air
+       + m[0x4C] * w[0x0C]     // air
+       + m[0x68] * w[0x10]     // water
        + m[0x84] * w[0x14]     // skull
        + m[0xA0] * w[0x18]     // gold
        + m[0xBC] * w[0x1C]     // xp
@@ -184,6 +184,14 @@ score  = m[0x14] * w[0x04]     // earth
 if (run_length > 3) score += 0x1E;   // 30
 if (run_length > 4) score += 0x1E;   // 30
 ```
+
+The two middle mana rows are **air** at `+0x4C` and **water** at `+0x68`, in
+the character's own pool order - this section had them the other way round
+until 2026-10-13, when the harvest at `0x47D091` was read: it credits pool 2
+(GET_MANA_AIR, `+0x7C`) alongside the `+0x4C` row's `snd_air`, and pool 3
+(GET_MANA_WATER, `+0x80`) alongside `+0x68`'s `snd_water`. Since all four
+mana weights are equal the score never noticed; a port labelling the buckets
+did. See `board.gem_ids`.
 
 The unweighted coordinate is the anchor's **row**, not its column.
 `CBoard_CheckMatch` stores its arguments as `match[0] = x`, `match[1] = y`
@@ -206,8 +214,8 @@ The final table:
 | :--- | :--- | :--- |
 | `+0x04` | earth | 2 |
 | `+0x08` | fire | 2 |
-| `+0x0C` | water | 2 |
-| `+0x10` | air | 2 |
+| `+0x0C` | air | 2 |
+| `+0x10` | water | 2 |
 | `+0x14` | skull | 10 |
 | `+0x18` | gold | 1 |
 | `+0x1C` | xp | 1 |
@@ -297,20 +305,35 @@ Three consequences worth calling out, all of which the OCaml port reproduces:
 
 ### Gem ids
 
-From the `switch` in `CBoard_AccumulateGem` (`0x0047B0C0`):
+From the `switch` in `CBoard_AccumulateGem` (`0x0047B0C0`), with the four
+ambiguous rows pinned by the harvest that consumes the buckets (`0x47D091`,
+which pushes a sound and a pool index per row) and by
+`StandardConstants.lua` - all three agree, and this table disagreed with them
+on rows 3, 4, 6 and 7 until 2026-10-13 (`board.gem_ids`):
 
-| Id | Gem |
-| :--- | :--- |
-| 0 | empty |
-| 1 | earth |
-| 2 | fire |
-| 3 | water |
-| 4 | air |
-| 5 | skull |
-| 6 | gold |
-| 7 | xp |
-| 8–14 | wildcard multipliers, ×2 through ×8 |
-| 15 | red skull |
+| Id | Gem | Bucket | Row sound |
+| :--- | :--- | :--- | :--- |
+| 0 | empty | | |
+| 1 | earth | `+0x14` | `snd_earth` |
+| 2 | fire | `+0x30` | `snd_fire` |
+| 3 | air | `+0x4C` | `snd_air` |
+| 4 | water | `+0x68` | `snd_water` |
+| 5 | skull | `+0x84` | `snd_damage` |
+| 6 | xp (star) | `+0xBC` | `snd_xp` |
+| 7 | gold (coin) | `+0xA0` | `snd_gold` |
+| 8–"14 | wildcard multipliers, A-2 through A-8 | (multiplier, not a bucket) | |
+| 15 | red skull | `+0x84` (+5) and the red-skull list | |
+| 16, 17 | unidentified specials | `+0xF4`, `+0x110` | `snd_redskull` |
+
+The bucket column is the switch's own write, and the row sound is the harvest's
+own push, so the two agree by construction: the harvest indexes the same
+0x1C-stride counter array anchored at `+0x14`, and gem 5 landing in the
+`snd_damage` row while gem 7 lands in `snd_gold` is what pins the row order
+independently of the mana rows this table used to get wrong. `GEM_AIR = 3`,
+`GEM_WATER = 4`, `GEM_STAR = 6`, `GEM_GOLD = 7` in
+`StandardConstants.lua` - and its colour aliases (`GEM_YELLOW = GEM_AIR`,
+`GEM_BLUE = GEM_WATER`) match the sprite sheet's own left-to-right order
+(green, red, yellow, blue at cells 0–3).
 
 The `0x47BF50` animation switch corroborates the specials: ids 8–14 all take the
 same effect branch, `0x0F` is `L"RedSkull"`, and 5 / 0x10 / 0x11 share

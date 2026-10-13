@@ -230,11 +230,13 @@ type combatant = {
      does a bare [\*piVar1 = \*piVar1 + iVar4] with no clamp and no expiry of its
      own, so this is a running total per element rather than a status effect.
 
-     The index is the *Lua* mana id, which is the board's gem order -
-     1 Earth, 2 Fire, 3 Water, 4 Air - and {e not} [element]'s order, which is
-     Earth, Fire, Air, Water. [resistance] and [add_resistance] do that
-     transposition in one place; nothing outside this file should index the array
-     directly. *)
+     The index is the *Lua* mana id, which is the board's gem order for ids 1-4
+     minus one - 0 Earth, 1 Fire, 2 Air, 3 Water - and that is [element]'s own
+     order too: Earth, Fire, Air, Water. There is no transposition between the
+     two, so [resistance] and [add_resistance] index straight through, and
+     nothing outside this file should index the array directly. (board.gem_ids;
+     an earlier reading here claimed a swap, from the same water/air mix-up the
+     gem-id table had.) *)
   mutable resist : int array;
   (* Gold carried into the battle. [GET_GOLD(idx)] is per combatant, so [SSTL]'s
      transfer is a real move between two holders rather than a change to the

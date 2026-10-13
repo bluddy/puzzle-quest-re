@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree (the battle-screen round this file ranked first). `Assets/Screens/GameMenu.xml` turned out to be the original's whole battle screen, widget by widget, so the front end now draws *its* rectangles rather than a layout of its own: `pad_grid` 584 square at (217,130), the two 180x348 character pads at (11,119)/(835,119) with `icon_enemylifepts`'s 175x18 life bar inside them, seven 178x37 spell pads per side stepping 41 from y=462, the 90x90 turn plates at (135,16)/(784,16), the missed-turn badges at (53,100)/(876,100) and `str_turn` centred at (450,736) - all of it transcribed into `gfx/battle_layout.ml` and pinned by `test_gfx_battle_layout.ml` (35 suites now). What the front gained: **mana bars** with their ceilings per element on both pads (the four bars the panel's foot allows, above the rows), **the spell panel with costs** - name over the four costs, grey and declining when `Spell.can_cast` says no, and `Input.bar` became the rectangles it is handed so drawing and hit-testing share one source (`Input.of_rects (Battle_layout.spell_rows Hero)`; `in_spell_prompt` takes a `live` predicate instead of a count, which also fixes the old mismatch where a filtered list and the drawn rows disagreed about which spell a click meant); and a **combat log** - `Battle.log_of`'s tail, six lines, trimmed through `Battle.format_event`, on its own ground under the board, with the turn line below it in the original's place. The enemy's seven rows carry its roster as labels, the float messages now anchor over the panels, and the plates only started drawing this round: `img_ltimebg`/`img_rtimebg` are cut from `bmp_skin_gemsgrid`, which was never in the sheet list, so `Skin.draw` had been declining silently. `render.battle_screen_geometry` records the asset side (and that the two mana-bar/log rectangles are the port's), `port.battle_screen_layout` the choices - board still centred at the gem sheet's 71px rather than pinned at 73. Evidence 103 claims, 12 questions (4 open), 48 decisions; 35 suites, 2643→2690 checks.
+**Sync:** clean tree (the gem-id round, the third of this date's). `board.gem_id_air_water_order` asked for a second source for which of ids 3 and 4 is Air; the second source was one function downstream of the first: the harvest at `0x47D091` consumes the exact buckets `CBoard_AccumulateGem` writes (the 0x1C-stride counter array anchored at `+0x14`) and, for the four mana rows, credits a pool index beside a pushed sound - pool 0 with `snd_earth`, 1 with `snd_fire`, 2 with `snd_air` (0x523510), 3 with `snd_water` (0x5234FC). Case 3 writes `+0x4C` = row 2 and case 4 `+0x68` = row 3, so **3 is Air and 4 is Water**: `StandardConstants.lua` was right and `docs/BATTLE_AI.md` §5 (plus `lib/ai.ml`) were wrong. The row alignment is pinned by rows the question never looked at - gem 5 (skull) writes `+0x84` = row 4 and row 4 pushes `snd_damage`; gem 6 writes `+0xBC` = row 6 → `snd_xp`; gem 7 writes `+0xA0` = row 5 → `snd_gold` - which means **6 is the star and 7 the coin**, two more transpositions than suspected, and `GEM_STAR=6`/`GEM_GOLD=7` in the constants file agree. So the ids are the character order with no transposition at all (`ai.anchor_term_is_the_row`'s sibling myth, `board.gem_ids` rewritten). The corrections landed in `lib/ai.ml` (gem_id, gem_of_id, the bucket fold, the weight and bucket labels), `docs/BATTLE_AI.md` §4/§5, `combat.ml`/`spell_effects.ml` comments that asserted the old swap - and one **live** bug the audit flushed out: `Sound_map.element_sound` was keyed on the board's 1-based gem ids while `ManaGained` carries the 0-based pool index `Battle.element_index` produces, so an Earth gain was silent, Fire played earth and Air played fire; it now maps 0→earth, 1→fire, 2→air, 3→water with a pipeline test through `element_index`. (The AI itself scored identically either way - the affected weights are equal - which is why the question could sit open.) `mana.pool_and_ceiling_offsets`' parenthetical, which had the same wrong order, is corrected too. Evidence 103 claims, 12 questions (3 open), 48 decisions; 35 suites, 2690→2699 checks.
 
 ---
 
@@ -12,13 +12,15 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
 
 ### 1. Finish the open-question audit's leftovers - cheap RE round
 
-Three of the four questions the audit started with are still open, and it opened a fourth: `board.gem_id_air_water_order` (needs a second source for the 3/4 order - a gem-id→mana-element switch in the binary would do it), `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling), `font.advance_field_mapping` (+0x1c's other consumers), and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the ∓25 %, i.e. what `turn_manager+0x30` means).
+Three of the four questions the audit started with are still open, and it opened a fourth: `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling), `font.advance_field_mapping` (+0x1c's other consumers), and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the ∓25 %, i.e. what `turn_manager+0x30` means).
 
 ### 2. Campaign → battle: fight screens for quest battles
 
 The battle front now renders a real fight, but the campaign's quest and callback battles still run headless behind a banner in `conv_window`. Lifting `pq_play_gfx`'s screen onto `Campaign.run_quest_battle`'s result - the stage, the spoils and the capture offer around a played fight - is the seam the map window has been building toward, and everything it needs (the panels, the rows, the log) is now in place.
 
 ### Closed rounds from this list
+
+- ~~Gem-id order~~ (landed 2026-10-13): `board.gem_id_air_water_order` retired with three sources agreeing against the port - the harvest at `0x47D091` consumes the very buckets `CBoard_AccumulateGem` writes and pushes `snd_air` with pool 2 for the `+0x4C` row and `snd_water` with pool 3 for `+0x68`, gem 5 lands in `snd_damage`'s row and gem 7 in `snd_gold`'s (which pins the row order independently), and `StandardConstants.lua` says `GEM_AIR=3, GEM_WATER=4, GEM_STAR=6, GEM_GOLD=7`. So the ids are the character order with **no** transposition (3 air, 4 water, 6 star, 7 coin) - two more swaps than the question suspected. `lib/ai.ml` (gem_id, gem_of_id, the bucket fold, the weight labels) and `docs/BATTLE_AI.md` §4/§5 are corrected, and the audit caught a live bug on the way: `Sound_map.element_sound` was keyed on the board's 1-based ids while `ManaGained` carries the 0-based pool index, so Earth was silent and Fire played earth's sound - fixed with a pipeline test. `board.gem_ids` and `mana.pool_and_ceiling_offsets` rewritten; `combat.ml`/`spell_effects.ml` comments that asserted the old transposition corrected.
 
 - ~~Battle UI / spell list~~ (landed 2026-10-13): `Assets/Screens/GameMenu.xml` is the original's battle screen, so `gfx/battle_layout.ml` transcribes it (pads, the seven spell rows a side, life bar, turn plates, badges, turn line) and `test_gfx_battle_layout.ml` pins each number; the front draws mana bars with ceilings, the spell panel with costs on the recovered rows (`Input.bar` became the rectangles it is handed, so drawing and hit-testing cannot disagree, and `in_spell_prompt` takes a `live` predicate), a six-line combat log on its own ground under the board with the turn line below it, and the enemy's roster as labels on its rows. The turn plates only started drawing once `bmp_skin_gemsgrid` joined the sheet list. `render.battle_screen_geometry` + `port.battle_screen_layout`.
 - ~~Close stale open questions~~ (landed 2026-10-13): `quest.difficulty_consumers` retired with the whole level-band reading refuted - `Std_GetDifficulty` has no callers, `m_difficulty` comes from the registry option, and the quest hook is journal pips; two bugs fell out (the score's coordinate is the anchor's row, `ai.anchor_term_is_the_row`, and `Campaign.difficulty` replaces the band in `rules_for_battle`), `FUN_0043E400`'s ±25 % was matched to the `[AILEVEL0/2]` rows, and the menu structure plus the developer's AI interview went into `docs/GAME_KNOWLEDGE_BASE.md`.
@@ -328,7 +330,7 @@ The battle front now renders a real fight, but the campaign's quest and callback
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 12 (4 open) | 48 |
+| `docs/reverse/evidence.yml` | 103 | 12 (3 open) | 48 |
 
 Key decisions recorded:
 - `port.item_event_context` — every item hook takes an item_context with `ic_self`, `ic_level`, the native callbacks and the three board writers where the Lua passed `characterIdx`; `ic_percentile` is a draw-per-call closure, so a body that never asks costs no roll
@@ -365,17 +367,16 @@ Key decisions recorded:
 - `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
-Open questions (4): `font.advance_field_mapping`,
-`spell.match_resolution_after_a_spell`, `board.gem_id_air_water_order`
-(the decompile says gem ids 3 water / 4 air, `StandardConstants.lua` says the
-reverse; nothing observable depends on it yet) and `xp.difficulty_scaling`
-(which branch of the results screen pays the ∓25 % XP the `[AILEVEL]` rows
-advertise - i.e. what `turn_manager+0x30` means).
-`quest.base_value_from_level` is closed (recovered): level does not fold in.
-`quest.difficulty_consumers` is closed (recovered): nothing calls
-`Std_GetDifficulty`, the field takes the player's Difficulty option, and the
-quest hook is journal text. `ai.difficulty_from_levels` is kept **refuted**
-so the level band is not re-derived.
+Open questions (3): `font.advance_field_mapping`,
+`spell.match_resolution_after_a_spell` and `xp.difficulty_scaling`
+(which branch of the results screen at 0x43e5f0 pays the ∓25 % XP, i.e.
+what `turn_manager+0x30` means).
+`board.gem_id_air_water_order` is closed (recovered): 3 is Air, 4 is Water -
+the harvest's per-pool sound calls and `StandardConstants.lua` agree, and the
+ids are the character order with no transposition (also 6 star, 7 coin).
+`quest.base_value_from_level` and `quest.difficulty_consumers` are likewise
+closed; `ai.difficulty_from_levels` is kept **refuted** so the level band is
+not re-derived.
 
 ---
 
@@ -403,7 +404,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 35 suites pass (exit 0, 2690 checks, 2026-10-13). Extractor `--check` modes validate against
+All 35 suites pass (exit 0, 2699 checks, 2026-10-13). Extractor `--check` modes validate against
 source assets.
 
 ---

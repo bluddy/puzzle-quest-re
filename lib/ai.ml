@@ -22,12 +22,16 @@ type direction =
 
 (** Per-resource weights live at CBattleManager+0x04..+0x28 (ten consecutive
     ints, indexed by [resource] below). [0x43F8D0] initialises them all to 1
-    and then overwrites seven of them. *)
+    and then overwrites seven of them. The two in the middle are the air and
+    water weights, in the pool's order (air at +0x0C, water at +0x10) - which
+    is the same order the harvest credits the pools in, and both are the same
+    default 2, so a port that had them swapped scored identically while saying
+    the wrong thing about which gem the number belonged to. *)
 type weights = {
   w_earth : int;  (** +0x04, default 2 *)
   w_fire : int;   (** +0x08, default 2 *)
-  w_water : int;  (** +0x0C, default 2 *)
-  w_air : int;    (** +0x10, default 2 *)
+  w_air : int;    (** +0x0C, default 2 *)
+  w_water : int;  (** +0x10, default 2 *)
   w_skull : int;  (** +0x14, default 10 *)
   w_gold : int;   (** +0x18, default 1 *)
   w_xp : int;     (** +0x1C, default 1 *)
@@ -50,15 +54,20 @@ let default_weights =
     w_unknown_10 = 20;
   }
 
+(** The engine's gem ids, read off `CBoard_AccumulateGem` (0x47B0C0) *and* the
+    harvest that consumes its buckets (0x47D091), which is what pins the two
+    rows the decompile alone got backwards: see `board.gem_ids`. The mana four
+    are in the pool's own order - earth, fire, air, water - which is the order
+    `StandardConstants.lua` names them in too. *)
 let gem_id = function
   | Empty -> 0
   | Mana Earth -> 1
   | Mana Fire -> 2
-  | Mana Water -> 3
-  | Mana Air -> 4
+  | Mana Air -> 3
+  | Mana Water -> 4
   | Skull -> 5
-  | Experience -> 7
-  | Gold -> 6
+  | Experience -> 6
+  | Gold -> 7
   | RedSkull -> 0xf
   | Wildcard m -> 6 + m
 
@@ -66,11 +75,11 @@ let gem_id = function
 let gem_of_id = function
   | 1 -> Mana Earth
   | 2 -> Mana Fire
-  | 3 -> Mana Water
-  | 4 -> Mana Air
+  | 3 -> Mana Air
+  | 4 -> Mana Water
   | 5 -> Skull
-  | 6 -> Gold
-  | 7 -> Experience
+  | 6 -> Experience
+  | 7 -> Gold
   | 0xf -> RedSkull
   | m when m >= 8 && m <= 14 -> Wildcard (m - 6)
   | _ -> Empty
@@ -111,12 +120,15 @@ let check_match (b : board) (x : int) (y : int) (d : direction) : int =
 
 (** The nine resource buckets the engine accumulates per match, in
     [0x47B0C0] offset order: +0x14, +0x30, +0x4C, +0x68, +0x84, +0xA0,
-    +0xBC, +0xD8, +0xF4, +0x110. *)
+    +0xBC, +0xD8, +0xF4, +0x110. The middle two are air and water - +0x4C is
+    air and +0x68 is water - which is what the harvest at 0x47D091 says when
+    it credits pool index 2 with the +0x4C row's sound `snd_air` and pool 3
+    with `snd_water` (see `board.gem_ids`). *)
 type match_resources = {
   r_earth : int;
   r_fire : int;
-  r_water : int;
   r_air : int;
+  r_water : int;
   r_skull : int;
   r_gold : int;
   r_xp : int;
@@ -129,8 +141,8 @@ let zero_resources =
   {
     r_earth = 0;
     r_fire = 0;
-    r_water = 0;
     r_air = 0;
+    r_water = 0;
     r_skull = 0;
     r_gold = 0;
     r_xp = 0;
@@ -151,14 +163,14 @@ let accumulate (res : match_resources) (mult : int ref) (b : board) (x : int) (y
         gem_id (get_gem b { x = nx; y = ny }))
     |> List.fold_left
          (fun (r : match_resources) id ->
-           match id with
-           | 1 -> { r with r_earth = r.r_earth + 1 }
-           | 2 -> { r with r_fire = r.r_fire + 1 }
-           | 3 -> { r with r_water = r.r_water + 1 }
-           | 4 -> { r with r_air = r.r_air + 1 }
-           | 5 -> { r with r_skull = r.r_skull + 1 }
-           | 6 -> { r with r_gold = r.r_gold + 1 }
-           | 7 -> { r with r_xp = r.r_xp + 1 }
+          match id with
+          | 1 -> { r with r_earth = r.r_earth + 1 }
+          | 2 -> { r with r_fire = r.r_fire + 1 }
+          | 3 -> { r with r_air = r.r_air + 1 }
+          | 4 -> { r with r_water = r.r_water + 1 }
+          | 5 -> { r with r_skull = r.r_skull + 1 }
+          | 6 -> { r with r_xp = r.r_xp + 1 }
+          | 7 -> { r with r_gold = r.r_gold + 1 }
            | 0xf ->
                (* 0x47B0C0 case 0xf: +5 to the skull bucket, plus a recorded
                   position in the red-skull list. *)
@@ -230,8 +242,8 @@ let score_match_result ?(weights = default_weights) ?(rng = Random.int)
   let base =
     (res.r_earth * weights.w_earth)
     + (res.r_fire * weights.w_fire)
-    + (res.r_water * weights.w_water)
     + (res.r_air * weights.w_air)
+    + (res.r_water * weights.w_water)
     + (res.r_skull * weights.w_skull)
     + (res.r_gold * weights.w_gold)
     + (res.r_xp * weights.w_xp)
