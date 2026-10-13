@@ -105,8 +105,16 @@ let compute_score ?(party_member_contributes = fun _ _ -> true) ~inputs ~hero_in
     neither is inverted. They differ on the baseline: this one treats
     difficulty 1 as unscaled and pays a bonus at 2, while {!compute_score}
     treats 2 and above as unscaled and discounts 0 and 1. So difficulty 1 is
-    discounted for the score and untouched for the payout. Unexplained, and
-    documented as an open discrepancy in docs/BATTLE_SCORE.md. *)
+    discounted for the score and untouched for the payout.
+
+    The `*3/4` and `*5/4` are the -/+25 % XP the Difficulty option advertises
+    ([AILEVEL0] "Easy (-25% XP)" / [AILEVEL2] "Hard (+25% XP)"), and this is
+    the only place in the image difficulty multiplies XP - which is what makes
+    the branch this runs on worth pinning down. See the open question
+    `xp.difficulty_scaling`: the results screen at 0x43E5F0 calls it with
+    (gold, xp) out-params on the branch gated by turn_manager+0x30, labelled
+    co-op in docs/BATTLE_SCORE.md at medium confidence, so whether a solo
+    fight pays the modifier at all is still open. *)
 let compute_co_op_payout ~game_mode ~difficulty raw =
   if game_mode = 4 then raw
   else if difficulty = 0 then (raw * 3) / 4

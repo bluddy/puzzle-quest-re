@@ -1237,32 +1237,44 @@ let open_battle ?(hero_spells = []) ?(enemy_spells = [])
   ignore (Item_hooks.apply_start_battle enemy enemy_items);
   battle
 
-(* The rules a campaign fight runs under. Two of [default_rules]' fields stop
-   being defaults here: difficulty, from the recovered hero/task level band
-   (ai.difficulty_from_levels - the gate on the AI's spell skip and the
-   evaluator's jitter), and the hero's own level, which the board evaluator
-   reads for its hero-level band. The task level is the encounter's own
-   [my_level] on the road - the same field the spawn gate compares the hero
-   against - and the monster's registry base in a quest fight; nothing
-   recovered computes either of those at fight time, and [hero_level_cap]
-   stays at the default because nothing recovered says what the engine
-   passes. That mapping is a choice - port.campaign_task_level. *)
-let rules_for_battle ~(player: player) ~(task_level: int) : Battle.rules =
+(* The rules a campaign fight runs under. One of [default_rules]' fields stops
+   being a default here: the hero's own level, which the board evaluator reads
+   for its hero-level band. [hero_level_cap] stays at the default because
+   nothing recovered says what the engine passes.
+
+   Difficulty does NOT come from the levels - it is the player's Easy/Normal/
+   Hard option, the second dropdown the single-player hero view offers next to
+   the turn Time Limit. The original keeps it in the registry value
+   "Difficulty" under `Software\Infinite Interactive\Puzzle Quest` (0x4223c2
+   reads it into the global battle start copies into CBattleManager.m_difficulty
+   at 0x44bb39; the settings object holds it at +0x74 beside "Time Limit" at
+   +0x70 and defaults it to 1 at 0x43729e). [AILEVEL1] is "Normal",
+   [AILEVEL0]/[AILEVEL2] carry the -/+25% XP the choice buys. It gates the
+   AI's spell skip, the evaluator's jitter and the results screen's scaling -
+   never the hero/task gap: [Spell.difficulty_for_levels], the level-band
+   helper, has no caller anywhere in the shipped corpus (quest.difficulty_
+   consumers). The port has no options screen, so the choice is this ref with
+   the settings default; three values, 0..2, as the dropdown has three rows.
+   port.difficulty_source. *)
+let difficulty : int ref = ref 1
+
+let set_difficulty (d : int) : unit = difficulty := max 0 (min 2 d)
+
+let rules_for_battle ~(player: player) : Battle.rules =
   { Battle.default_rules with
-    difficulty =
-      Spell.difficulty_for_levels ~hero_level:player.level ~task_level;
+    difficulty = !difficulty;
     hero_level = player.level }
 
 (* Run a battle between player and encounter. The hero walks in with the
    spells the player knows and the monster with its own registry roster -
    the loadout choice recorded in port.quest_battle_loop, shared with the
-   quest path below - at the difficulty the encounter's level asks for. *)
+   quest path below - at the difficulty the player's option asks for. *)
 let run_encounter_battle (player: player) (enc: encounter) : battle =
   let monster = Campaign_monsters.monster_by_sprite enc.sprite in
   let hero = player_to_combatant player in
   let enemy = encounter_to_combatant enc player.level in
   let battle = open_battle
-      ~rules:(rules_for_battle ~player ~task_level:enc.my_level)
+      ~rules:(rules_for_battle ~player)
       ~hero ~enemy
       ~hero_spells:(spells_of_ids
         (mount_spell_ids player @ player.known_spells))
@@ -1294,7 +1306,7 @@ let train_mount ?(rng = Random.int) (player: player) (mid: string)
       let b =
         Battle.run
           (open_battle ~rng
-             ~rules:(rules_for_battle ~player ~task_level:ch.creature_level)
+             ~rules:(rules_for_battle ~player)
              ~hero_spells:(spells_of_ids
                (mount_spell_ids player @ player.known_spells))
              ~enemy_spells:(spells_of_ids m.spells)
@@ -1702,10 +1714,10 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
           let battle =
             Battle.run
               (open_battle ~rng
-                 ~rules:(rules_for_battle ~player ~task_level:monster.level_base)
-                 ~hero_spells:(spells_of_ids
-                   (hero_spell_ids @ mount_spell_ids player
-                    @ player.known_spells))
+                  ~rules:(rules_for_battle ~player)
+                  ~hero_spells:(spells_of_ids
+                    (hero_spell_ids @ mount_spell_ids player
+                     @ player.known_spells))
                  ~enemy_spells:(spells_of_ids monster.spells)
                  ~hero_items:(loadout_of_equipment player.equipment)
                  ~hero ~enemy
@@ -1929,7 +1941,7 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
         let battle =
           Battle.run
             (open_battle ~rng
-               ~rules:(rules_for_battle ~player ~task_level:monster.level_base)
+               ~rules:(rules_for_battle ~player)
                ~hero_spells:(spells_of_ids hero_spells)
                ~enemy_spells:(spells_of_ids monster.spells)
                ~hero_items:(loadout_of_equipment p.equipment)

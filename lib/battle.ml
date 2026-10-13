@@ -79,7 +79,9 @@ type player = {
 }
 
 type rules = {
-  difficulty : int;  (** 0-4, from Spell.difficulty_for_levels; see that function *)
+  difficulty : int;
+  (** 0 easy, 1 normal, 2 hard - the player's Difficulty option, not a level
+      band; see [Campaign.difficulty] and [Spell.difficulty_for_levels] *)
   hero_level : int;
   hero_level_cap : int;
   max_turns : int;  (** stalemate guard *)

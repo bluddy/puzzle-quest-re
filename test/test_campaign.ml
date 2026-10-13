@@ -670,25 +670,31 @@ let () =
 ;;
 
 let () =
-  (* Campaign fights stop running on hand-set defaults: the recovered hero/task
-     band decides difficulty (the gate on the AI's spell skip and the
-     evaluator's jitter), the hero's real level feeds the evaluator, and a road
-     monster walks in with its own registry spell roster - which it never did:
-     the encounter path passed no enemy_spells at all, so no road monster had
-     ever cast anything. *)
+  (* Campaign fights stop running on hand-set defaults: difficulty is the
+     player's Easy/Normal/Hard option - a module-level ref the settings object
+     in the original defaults to 1 - and no longer the hero/task level gap,
+     which the shipped corpus never calls (quest.difficulty_consumers); the
+     hero's real level feeds the evaluator, and a road monster walks in with
+     its own registry spell roster - which it never did: the encounter path
+     passed no enemy_spells at all, so no road monster had ever cast anything. *)
   let hero_level30 = { (fresh ()) with Campaign.level = 30 } in
-  let band task =
-    (Campaign.rules_for_battle ~player:hero_level30 ~task_level:task)
-      .Battle.difficulty
+  let chosen () =
+    (Campaign.rules_for_battle ~player:hero_level30).Battle.difficulty
   in
-  check_int "task 1 against a level-30 hero is band 0" (band 1) 0;
-  check_int "task 25 against a level-30 hero is band 1" (band 25) 1;
-  check_int "task 30 against a level-30 hero is band 2" (band 30) 2;
-  check_int "task 37 against a level-30 hero is band 3" (band 37) 3;
-  check_int "task 40 against a level-30 hero is band 4" (band 40) 4;
+  check_int "the option starts on Normal" !Campaign.difficulty 1;
+  check_int "and Normal runs the fights at 1" (chosen ()) 1;
+  Campaign.set_difficulty 0;
+  check_int "Easy runs them at 0" (chosen ()) 0;
+  Campaign.set_difficulty 2;
+  check_int "Hard runs them at 2" (chosen ()) 2;
+  Campaign.set_difficulty 9;
+  check_int "the dropdown has three rows" !Campaign.difficulty 2;
+  Campaign.set_difficulty (-4);
+  check_int "and does not fall off the bottom" !Campaign.difficulty 0;
+  Campaign.set_difficulty 1;
+  check_int "the levels no longer choose it" (chosen ()) 1;
   check_int "the hero's own level reaches the evaluator"
-    (Campaign.rules_for_battle ~player:hero_level30 ~task_level:1)
-      .Battle.hero_level
+    (Campaign.rules_for_battle ~player:hero_level30).Battle.hero_level
     30;
 
   let road =
@@ -704,8 +710,8 @@ let () =
       chance = 0 }
   in
   let b = Campaign.run_encounter_battle hero_level30 road in
-  check_int "the road fight takes the encounter's own level as its task"
-    b.Battle.rules.Battle.difficulty 0;
+  check_int "the road fight runs at the player's difficulty option"
+    b.Battle.rules.Battle.difficulty 1;
   check_int "and carries the hero's level for the evaluator"
     b.Battle.rules.Battle.hero_level 30;
   check "the road monster brings its registry spell roster"

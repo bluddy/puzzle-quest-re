@@ -252,10 +252,12 @@ check "a quest with no active entry has no battle"
  | None -> check "Q0I0 stage 1 has a battle to run" false
  | Some (p2, b) ->
    check "the fight runs to a finish" (Battle.log_of b <> []);
-   (* Warrior 7 against MTRO's registry base 8: task < hero+3 is the band,
-      and the same rules carry the hero's level to the evaluator. *)
-   check_int "the quest fight runs at the band its levels ask for"
-     b.Battle.rules.Battle.difficulty 2;
+   (* The quest fight runs at the player's Difficulty option - the hero/task
+      level gap chooses nothing anywhere in the shipped corpus
+      (quest.difficulty_consumers) - and the same rules carry the hero's level
+      to the evaluator. *)
+   check_int "the quest fight runs at the difficulty option"
+     b.Battle.rules.Battle.difficulty 1;
    check_int "and carries the hero's level for the evaluator"
      b.Battle.rules.Battle.hero_level p1.Campaign.level;
    check "the hero took the loss: no fail entry, stage stays 1"

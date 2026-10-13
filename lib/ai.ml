@@ -212,13 +212,21 @@ let level_jitter_band { level; level_cap } : int =
 
 (** [BattleAI_ScoreMatchResult] (0x0043F970).
 
-    {1 base = weighted resource sum + 3*run_length + match.x + 30*(len>3)
+    {1 base = weighted resource sum + 3*run_length + match.y + 30*(len>3)
      + 30*(len>4); 2 difficulty = AI skill level at CBattleManager+0x48;
     3 jitter = a +/- random band from the difficulty (always at 0, 40% of
-    the time at 1, never at 2+) plus a second band scaled by hero level.} *)
+    the time at 1, never at 2+) plus a second band scaled by hero level.}
+
+    The unweighted coordinate is the anchor's **y**, not its x: the decompile
+    adds the match struct's second dword, and [CBoard_CheckMatch] stores the
+    arguments as match[0] = x and match[1] = y (Sub_47c8c0.c), so the term is
+    the row - one point per row, favouring matches anchored low on the board,
+    which is what the AI's author describes ("it biases its scores slightly
+    higher towards the bottom of the board, because matching lower down tends
+    to give more possibilities for cascades"). See docs/BATTLE_AI.md §4. *)
 let score_match_result ?(weights = default_weights) ?(rng = Random.int)
     ?(difficulty = 0) ?(hero = no_hero) (res : match_resources) (run_length : int)
-    (match_x : int) : int =
+    (match_y : int) : int =
   let base =
     (res.r_earth * weights.w_earth)
     + (res.r_fire * weights.w_fire)
@@ -231,7 +239,7 @@ let score_match_result ?(weights = default_weights) ?(rng = Random.int)
     + (res.r_ice * weights.w_ice)
     + (res.r_unknown_10 * weights.w_unknown_10)
     + (3 * run_length)
-    + match_x
+    + match_y
     + (if run_length > 3 then 30 else 0)
     + (if run_length > 4 then 30 else 0)
   in
@@ -285,7 +293,7 @@ let score_swap ?(weights = default_weights) ?(rng = Random.int) ?(difficulty = 0
           if len >= 3 then begin
             let mult = ref 1 in
             let res = accumulate zero_resources mult b nx ny dir len in
-            (total + score_match_result ~weights ~rng ~difficulty ~hero res len nx, true)
+            (total + score_match_result ~weights ~rng ~difficulty ~hero res len ny, true)
           end
           else (total, found)
         else (total, found))

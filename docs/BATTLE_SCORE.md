@@ -238,10 +238,19 @@ the same difficulty-selection UI. Either difficulty 1 is meant to be the
 double-discounting the common case, or difficulty 2 is, in which case the payout
 function pays a bonus on top of an already-reduced score.
 
-I have not resolved which is intended. It reads as the kind of inconsistency
-that could easily be a genuine bug in the original, but it is equally likely to
-be two different reward curves that were simply never reconciled. Worth
-checking against the difficulty menu before relying on either.
+**Checked against the difficulty menu, 2026-10-13: the payout function is the
+one that matches it.** The three rows are `[AILEVEL0]` "Easy (-25% XP)",
+`[AILEVEL1]` "Normal" and `[AILEVEL2]` "Hard (+25% XP)" - baseline at
+difficulty 1, ×3/4 at 0, ×5/4 at 2, which is `FUN_0043E400` exactly, and the
+menu proves difficulty 1 is the neutral setting. What that leaves open is
+whether a *solo* fight pays the modifier at all: the results screen calls this
+function with its `(gold, xp)` out-params only on the branch gated by
+`turn_manager+0x30`, which the table below still labels co-op at medium
+confidence, while the other branch feeds the same out-params zeros. That is
+recorded as the open question `xp.difficulty_scaling`, and
+`docs/GAME_KNOWLEDGE_BASE.md` carries the menu side of it. The score curve's
+own 1/3, 2/3, 1 calibration is then the odd one out, and it is a different
+quantity (the displayed score, not experience), so it no longer has to agree.
 
 ---
 

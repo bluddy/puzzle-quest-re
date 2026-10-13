@@ -179,14 +179,23 @@ score  = m[0x14] * w[0x04]     // earth
        + m[0xF4] * w[0x24]     // ice
        + m[0x110]* w[0x28]     // (unidentified)
        + run_length * 3
-       + match_x;              // the anchor's x coordinate, unweighted
+       + m[0x04];              // the anchor's y coordinate, unweighted
 
 if (run_length > 3) score += 0x1E;   // 30
 if (run_length > 4) score += 0x1E;   // 30
 ```
 
-The `match_x` term is a real bias toward matches anchored in low columns. It is
-one point per column, small but not zero, and it is unconditional.
+The unweighted coordinate is the anchor's **row**, not its column.
+`CBoard_CheckMatch` stores its arguments as `match[0] = x`, `match[1] = y`
+(`docs/decompiled/battle_ai/Sub_47c8c0.c`: `param_5[1] = param_3; *param_5 =
+param_2`), so `m[0x04]` is `y`, and the term is a real bias toward matches
+anchored **low on the board** - one point per row, small but not zero, and
+unconditional. It is the bias the AI's author describes: *"it biases its
+scores slightly higher towards the bottom of the board, because matching
+lower down tends to give more possibilities for cascades."*
+(Recorded as `ai.anchor_term_is_the_row`; this section read it as `match_x` -
+a low-column bias - until 2026-10-13, when the interview and the decompile
+were put side by side.)
 
 ### Default weights
 

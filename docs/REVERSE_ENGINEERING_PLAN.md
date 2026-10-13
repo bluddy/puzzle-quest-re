@@ -60,7 +60,7 @@ Reverse engineer the original 2007 Windows PC release of *Puzzle Quest: Challeng
   * Cascades & Gravity: tile drop, top-row refill, per-cascade accumulation.
   * Wildcard multiplier *chaining* (a 2x and a 3x in one run scale it by 6).
 * [x] **AI Evaluation**: `EVALUATE_BOARD` fully recovered. See [`BATTLE_AI.md`](BATTLE_AI.md).
-  * Weighted sum over ten resource buckets, plus `3 × run_length`, plus the anchor column, plus 30 per bonus tier.
+  * Weighted sum over ten resource buckets, plus `3 × run_length`, plus the anchor row, plus 30 per bonus tier.
   * Default weights: mana 2 each, skull 10, red skull 20, gold/xp 1, specials 20.
   * Two jitter terms: difficulty-driven (±50 always at easy, ±20 on 40% at normal, none at hard) and hero-level-driven, the latter widening as the hero nears its level cap.
   * Move enumeration uses four hardcoded probe windows in `.rdata` that miss ~4.8% of scoring moves. Reproduced verbatim rather than corrected.

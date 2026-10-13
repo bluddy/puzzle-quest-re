@@ -8,9 +8,27 @@ This document synthesizes verified gameplay mechanics, engine rules, data schema
 
 ### Main Menu
 * **Modes**: New Quest, Continue Quest, Single Player (Instant Action), Multiplayer (LAN / Direct IP / Internet), Settings, High Scores, Multiplayer High Scores.
+* **New Quest** and **Continue Quest** drop you straight into the game.
+* **Single Player** opens the hero view first, where two things are chosen separately from the hero: the **turn Time Limit** (`drop_timelimit`, rows `[TIMELIMIT0..4]`) and the **Difficulty** (`drop_difficulty`, rows `[AILEVEL0..2]`). That screen's menu then offers **Quest**, **Instant Action**, **Choose Opponent**, **Your Citadel**, **Shop**, **Create Hero** and **Delete Hero**; **Quest** starts the game proper.
 * **Hero Selection**:
   * Four Core Classes: **Druid**, **Knight**, **Warrior**, **Wizard**.
   * Each class has specific initial attribute distributions, mana growth curves, and spell learning tables.
+
+### Difficulty (the `m_difficulty` setting)
+* Three rows, chosen per game in the single-player hero view: `[AILEVEL0]` **"Easy (-25% XP)"**, `[AILEVEL1]` **"Normal"**, `[AILEVEL2]` **"Hard (+25% XP)"**. The choice is advertised as an experience modifier as well as an AI strength.
+* Kept machine-wide, not per hero: the registry value `Difficulty` under `Software\Infinite Interactive\Puzzle Quest`, written back beside `Time Limit` (the two settings sit next to each other in the settings object, `+0x74` and `+0x70`, Difficulty defaulting to `1` = Normal). Battle start copies it into `CBattleManager.m_difficulty` at `+0x48`.
+* It gates the AI's spell skip (50 % / 25 % / 0 % of candidates skipped at Easy / Normal / Hard), the board evaluator's jitter (`±50` always at Easy, `±20` on 40 % of matches at Normal, never at Hard, plus a hero-level band that Hard ignores) and the score and payout scaling on the results screen.
+* **Where the ∓25 % XP is applied is not yet located** (`xp.difficulty_scaling` in `docs/reverse/evidence.yml`): the one difficulty-scaled XP writer found is `FUN_0043E400` (`*3/4` at Easy, `*5/4` at Hard - exactly the advertised amounts), called by the results screen on the branch gated by `turn_manager+0x30`.
+* `Std_GetDifficulty(heroLevel, taskLevel)` in `StandardUtilityScripts.lua` is a five-band level-gap helper with **no callers anywhere** in the shipped corpus or the exe, and the quest scripts' `OnQueryDifficulty` - a constant `0..4` in all 142 quests - feeds only the opponent panel's `[OPPDIFFICULTY0..4]` pips. Neither sets the battle's difficulty.
+
+### The battle AI, in the author's own words
+From an interview with the developer who scripted the game's AI:
+* **It does not cheat and does not look ahead.** Every available move is scored 0-100 on what it yields *immediately*; spells are scored the same way and the best is taken. On **Hard** it always picks the best, on **Normal** one of the top 10 %, on **Easy** one of the top 50 %.
+* **Scores are biased slightly higher toward the bottom of the board**, because matching lower down tends to open more cascade possibilities.
+* Against the recovered code (`docs/BATTLE_AI.md`, `docs/reverse/evidence.yml`):
+  * the bottom bias is real and is the anchor's **row**, not its column - `CBoard_CheckMatch` stores `(x, y)` and `BattleAI_ScoreMatchResult` adds the `y`, one point per row (`ai.anchor_term_is_the_row`);
+  * the difficulty percentages are realised as **score jitter** rather than a top-N pick - `±50` at Easy, `±20` on 40 % of matches at Normal, none at Hard (`ai.difficulty_is_the_player_option`);
+  * and the spell loop does **not** take the highest-scoring spell: `BattleAI_PickSpell` (`0x440FB0`) walks the roster in order, applies the difficulty-gated skip, and takes the **first** hook that returns non-zero, which is the port's `pick_ai_spell`. The interview's "score them all, take the best" is the simplification; the decompile is the authority.
 
 ### World Map & Exploration Graph
 * **Graph Structure**: Nodes represent Cities, Ruins, Dungeons, and Shrines connected by bidirectional Road edges (defined in `Assets/Cities/Roads.xml`).

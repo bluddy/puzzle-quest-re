@@ -1588,7 +1588,7 @@ claims:
     title: Std_GetDifficulty derives the difficulty band from the hero/task level gap
     area: spells
     verdict: mechanic
-    status: recovered
+    status: refuted
     confidence: high
     source_pass: presentation_audit
     summary: >
@@ -1632,6 +1632,153 @@ claims:
         ref: lib/spell.ml
         note: difficulty_for_levels
     affects: [lib/spell.ml, lib/battle.ml]
+    notes: >
+      The transcription is right and the role is wrong: the function exists,
+      is five bands as written, and decides nothing. Kept refuted so the
+      bridge is not re-derived - see quest.difficulty_consumers for the audit
+      and ai.difficulty_is_the_player_option for what the field really takes.
+    resolution: >
+      The band function is dead code. No `GetDifficulty` string exists in
+      Assets.zip but its own definition, and the exe holds no such literal, so
+      no script and no engine path can call it; meanwhile Battle.rules.difficulty
+      is written from a registry option at battle start (0x44BB39 reads the
+      global 0x4223C2 filled from Software\Infinite Interactive\Puzzle
+      Quest\Difficulty), never from a level comparison. So the claim's two
+      load-bearing parts fail together: nothing computes the band, and the
+      band is not what decides the field.
+
+      The port keeps the transcription (difficulty_for_levels) because the
+      asset ships it, with the test that pins its boundaries as its only
+      caller - the same dead state the original is in - and gets the value
+      for a campaign fight from Campaign.difficulty instead.
+
+  - id: ai.query_difficulty_is_journal_text
+    title: OnQueryDifficulty feeds the opponent panel's difficulty pips and nothing else
+    area: ui
+    verdict: presentation
+    audited: true
+    status: recovered
+    confidence: high
+    source_pass: difficulty_audit
+    summary: >
+      All 142 quests export OnQueryDifficulty as a constant rating - 114
+      return 2, 15 return 1, 12 return 3 and one returns 0, in five distinct
+      bodies - and the engine has exactly one call site for it: index 13 of
+      the query dispatcher at 0x4730F0, pushed at 0x42AF8A, whose returned
+      0..4 switches over the jump table at 0x42B340 to pick the
+      [OPPDIFFICULTY0..4] / [DIFFICULTY_] widget strings (green, blue, red,
+      yellow). It is the opponent panel's rating, not a battle input.
+    evidence:
+      - kind: binary
+        ref: "0x42af8a"
+        note: push 0x0D; call the dispatcher, then cmp eax,4 / ja / jmp [eax*4 + 0x42B340]
+      - kind: binary
+        ref: "0x4730f0"
+        note: the query dispatcher, jump table at 0x473434 - index 13 is its only 0x0D caller
+      - kind: lua
+        ref: game/Assets.zip!Assets/Quests/Q0I2.lua
+        note: "local function OnQueryDifficulty() return 2; end"
+      - kind: code
+        ref: lib/combat.ml
+        note: OnQueryDifficulty's slot in the 37-name hook table
+    affects: [docs/GAME_KNOWLEDGE_BASE.md]
+    notes: >
+      The widget strings and the [OPPDIFFICULTY*] / [DIFFICULTY_] tag names sit
+      together in the exe's UTF-16 run at 0x0011AE88, and the surrounding
+      panel also labels str_title / str_desc1 / str_victories - a hero or
+      opponent record sheet, not a battle screen.
+
+  - id: ai.difficulty_is_the_player_option
+    title: Difficulty is the player's Easy/Normal/Hard setting, not a level band
+    area: ai
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: difficulty_audit
+    summary: >
+      CBattleManager.m_difficulty (+0x48) gates the AI's spell skip, the
+      evaluator's jitter and the results screen's scaling, and its value is
+      the game's Difficulty option: 0x4223C2 reads the registry value
+      "Difficulty" under Software\Infinite Interactive\Puzzle Quest into the
+      global at 0x582454 - the global's only writer - and battle start copies
+      that into the singleton at 0x44BB39. The settings object carries
+      Difficulty at +0x74 beside Time Limit at +0x70 and defaults it to 1 at
+      0x43729E, so Normal is the default; the single-player hero view offers
+      it as the drop_difficulty dropdown, whose three rows are [AILEVEL0..2]:
+      "Easy (-25% XP)", "Normal", "Hard (+25% XP)".
+    evidence:
+      - kind: binary
+        ref: "0x44bb39"
+        note: battle start - mov [eax+0x48], esi, esi loaded from [0x582454]
+      - kind: binary
+        ref: "0x4223c2"
+        note: the global's only writer - a registry read of the value "Difficulty"
+      - kind: binary
+        ref: "0x43729e"
+        note: settings constructor - [+0x74] = 1 (Difficulty), [+0x70] = 0 (Time Limit)
+      - kind: binary
+        ref: "0x436a34"
+        note: settings save - writes [+0x74] back to the registry as "Difficulty"
+      - kind: xml
+        ref: game/Assets.zip!English/GameText.xml
+        note: "[AILEVEL0] Easy (-25% XP), [AILEVEL1] Normal, [AILEVEL2] Hard (+25% XP)"
+      - kind: code
+        ref: lib/campaign.ml
+        note: difficulty / set_difficulty, and rules_for_battle reading it
+      - kind: doc
+        ref: docs/GAME_KNOWLEDGE_BASE.md
+        note: main menu -> single player -> hero view, the two dropdowns
+    affects: [lib/campaign.ml, lib/battle.ml, lib/spell.ml, lib/ai.ml]
+    notes: >
+      The singleton global is past .data's raw size, so it starts at 0 and a
+      machine that never saved the settings runs at 0 (Easy) until the option
+      is written back; the port models the settings object's default of 1
+      instead, because a fresh install's registry state cannot be recovered
+      from the image. The three rows also advertise the -/+25% XP, whose code
+      path is xp.difficulty_scaling. "Difficulty" sits next to "Time Limit" in
+      the same settings object, which is the other dropdown the hero view
+      offers - the two facts corroborate each other.
+
+  - id: ai.anchor_term_is_the_row
+    title: The score's unweighted coordinate is the anchor's y, not its x
+    area: ai
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: difficulty_audit
+    summary: >
+      BattleAI_ScoreMatchResult adds the match struct's second dword to the
+      base score, unweighted, and CBoard_CheckMatch stores its arguments as
+      match[0] = x and match[1] = y - so the term is the anchor's row, one
+      point per row, favouring matches anchored low on the board. That is the      bias the AI's author describes ("it biases its scores slightly higher
+      towards the bottom of the board, because matching lower down tends to
+      give more possibilities for cascades"), and it is what the port and
+      docs/BATTLE_AI.md §4 both had backwards: they called it match_x and
+      read it as a bias toward low columns.
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/battle_manager_core/BattleAI_ScoreMatchResult_43f970.c
+        note: "iVar5 = ... + *(int *)(param_2 + 4) + ... and the run length at +0x0C"
+      - kind: decompiled
+        ref: docs/decompiled/battle_ai/Sub_47c8c0.c
+        note: "param_5[1] = param_3; *param_5 = param_2 - stores (y, x) at +4, +0"
+      - kind: code
+        ref: lib/ai.ml
+        note: score_match_result's match_y, and score_swap passing ny
+      - kind: code
+        ref: test/test_ai.ml
+        note: two boards differing only in the row must score differently
+      - kind: doc
+        ref: docs/GAME_KNOWLEDGE_BASE.md
+        note: the interview the bias was corroborated against
+    affects: [lib/ai.ml, docs/BATTLE_AI.md, docs/REVERSE_ENGINEERING_PLAN.md]
+    notes: >
+      The interview and the decompile agree, which is why this was worth
+      chasing: the developer's recollection of the spell loop (score every
+      spell 0-100 and take the best) does NOT match the shipped code, which
+      takes the first hook that returns non-zero after the difficulty skip
+      (0x440FB0, the port's pick_ai_spell) - the score description is the
+      simplification there, the coordinate is not.
 
   - id: ai.spellcasting_chance_confirmed_from_lua
     title: Std_AISpellcastingChance confirms the modifier's sign from source
@@ -3688,7 +3835,77 @@ open_questions:
       choose taskLevel does not exist yet, so nothing computes it in practice.
     would_be_settled_by:
       - The quest/task table, once extracted from Assets/Quests.
-    related: [ai.difficulty_from_levels]
+      - >
+        Every reference to the difficulty field in the binary, or every caller
+        of the band function.
+    related: [ai.difficulty_from_levels, ai.difficulty_is_the_player_option,
+              ai.query_difficulty_is_journal_text]
+    notes: >
+      The premise did not survive the audit: Std_GetDifficulty is not the
+      thing that sets Battle.rules.difficulty, and the quest layer's own
+      difficulty hook turns out to be journal text rather than a battle input.
+    status: recovered
+    resolution: >
+      Nowhere, because it has no callers at all. The substring "GetDifficulty"
+      occurs exactly once in Assets.zip - the definition in
+      StandardUtilityScripts.lua - and nowhere in Puzzle Quest.unpacked.exe,
+      so neither a script nor the engine can reach the band function; nothing
+      computes a hero/task band anywhere in the shipped game.
+
+      The quest layer does exist now, and all 142 quests export
+      OnQueryDifficulty, but as a constant rating, not a task level: 114
+      return 2, 15 return 1, 12 return 3 and one returns 0, and the bodies are
+      five distinct "return n;" shapes and nothing else. It has exactly one
+      consumer - index 13 of the query dispatcher at 0x4730f0 (the jump table
+      at 0x473434), whose only caller passing 0x0D is 0x42AF8A - and that
+      function switches 0..4 over a jump table at 0x42B340 to pick the
+      [OPPDIFFICULTY0..4] / [DIFFICULTY_] widget strings, coloured green,
+      blue, red and yellow: the opponent panel's difficulty pips. Presentation.
+
+      What actually feeds Battle.rules.difficulty is the player's Difficulty
+      option: m_difficulty (CBattleManager+0x48) is written by the singleton
+      constructor (0x43F88D = 1), by FUN_004406F0's temporary 2 and restore
+      (0x440742 / 0x440AC3), and at battle start by 0x44BB39 from global
+      0x582454. That global has three code references, one of which is the
+      writer: 0x4223C2 reads the registry value "Difficulty" under
+      Software\Infinite Interactive\Puzzle Quest into it. The settings object
+      holds Difficulty at +0x74 beside Time Limit at +0x70, defaults it to 1
+      (0x43729E), writes it back at 0x436A34 and reads it at 0x4373D9; the
+      single-player hero view's controls are drop_difficulty and
+      drop_timelimit, whose rows are [AILEVEL0..2] ("Easy (-25% XP)",
+      "Normal", "Hard (+25% XP)"). See ai.difficulty_is_the_player_option;
+      the port now takes the value from Campaign.difficulty
+      (port.difficulty_source).
+
+  - id: xp.difficulty_scaling
+    question: Where does the -/+25% XP the Difficulty option promises actually get applied?
+    why_it_matters: >
+      The three rows advertise the choice as an experience modifier - "Easy
+      (-25% XP)" and "Hard (+25% XP)" against Normal - so a port that feeds
+      difficulty only to the AI is leaving half the option unwired, and XP is
+      what drives levels, training costs and the skill ladder.
+    would_be_settled_by:
+      - >
+        A difficulty read inside an XP path: either in Engine_ADD_XP
+        (0x42C030) or in whatever the results screen hands it.
+      - >
+        The meaning of turn_manager+0x30, which gates the only
+        difficulty-scaled XP writer found so far.
+    related: [ai.difficulty_is_the_player_option]
+    notes: >
+      Ruled out this round: Engine_ADD_XP routes its amount through the
+      character's value query with kind 0xf, and that query's switch
+      (0x46672A, cases for kinds 1..10) falls through to the default for 15,
+      so no difficulty term sits in the XP write itself. The one place
+      difficulty multiplies XP is FUN_0043E400 - the port's
+      Score.compute_co_op_payout, (raw*3)/4 at 0 and (raw*5)/4 at 2, which is
+      exactly the advertised -/+25% - called by the results screen at
+      0x43E5F0 with (gold, xp) out-params that feed ADD_GOLD/ADD_XP. That call
+      sits on the branch gated by turn_manager+0x30, which docs/BATTLE_SCORE.md
+      labels co-op at medium confidence; the other branch feeds the same
+      out-params zeros. So either the label is wrong and this is the
+      single-player reward path, or Easy/Hard pays its XP only in a party -
+      and the branch flag is what would tell them apart.
     status: open
 
   - id: quest.grid_patterns_unread
@@ -4370,8 +4587,34 @@ port_decisions:
       evaluator's hero-level jitter at bands 0 and 1, and with nothing
       recovered about the engine's value the default is the honest one rather
       than a guessed ceiling.
+    notes: >
+      Superseded 2026-10-13 by port.difficulty_source: the band turned out to
+      be dead in the shipped game, so a campaign fight's difficulty no longer
+      comes from a task level at all. my_level still gates the spawn and
+      level_base still describes the monster; neither reaches the rules.
     supersedes: null
     date: 2026-10-08
+
+  - id: port.difficulty_source
+    decision: >
+      Campaign fights take Battle.rules.difficulty from Campaign.difficulty,
+      a module-level ref defaulting to 1 (Normal) that set_difficulty clamps
+      to the dropdown's 0..2; rules_for_battle no longer takes a task level,
+      and Spell.difficulty_for_levels keeps its boundary test and no caller,
+      exactly as the asset ships it. rules.hero_level stays the player's own
+      level and hero_level_cap stays at default_rules' 20.
+    rationale: >
+      The original reads Difficulty out of the registry at battle start
+      (ai.difficulty_is_the_player_option) and the hero/task band has no
+      callers anywhere, so wiring the fight's difficulty to levels was a
+      deviation the evidence stopped supporting. Defaulting to 1 rather than
+      0 takes the settings object's own default (0x43729E) over the
+      zero-initialised global, which is what a machine that had saved its
+      options once would run. The port has no options screen, so the choice
+      lives in a ref a driver can set rather than in the per-hero save - the
+      original keeps it machine-wide in the registry, not in the .pqhero.
+    supersedes: port.campaign_task_level
+    date: 2026-10-13
 
   - id: port.travel_model
     decision: >

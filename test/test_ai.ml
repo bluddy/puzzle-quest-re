@@ -19,8 +19,8 @@ let scripted values =
     incr i;
     if v >= n then n - 1 else v
 
-let stable_score ?(weights = default_weights) res len x =
-  score_match_result ~weights ~rng:min_rng ~difficulty:2 ~hero:no_hero res len x
+let stable_score ?(weights = default_weights) res len y =
+  score_match_result ~weights ~rng:min_rng ~difficulty:2 ~hero:no_hero res len y
 
 let failures = ref 0
 
@@ -183,13 +183,13 @@ let () =
 (* ------------------------------------------------------------------ *)
 
 let () =
-  (* base = sum(count * weight) + 3 * run_length + match_x + 30 per bonus tier *)
+  (* base = sum(count * weight) + 3 * run_length + match.y + 30 per bonus tier *)
   let three_fire = { zero_resources with r_fire = 3 } in
   check_eq "3 fire: 3 gems at weight 2 plus 3 per cell"
     (stable_score three_fire 3 0) 15;
   check_eq "a 4-run adds 30" (stable_score three_fire 4 0) 48;
   check_eq "a 5-run adds 30 twice" (stable_score three_fire 5 0) 81;
-  check_eq "match_x is added" (stable_score three_fire 3 4) 19;
+  check_eq "the anchor's row is added unweighted" (stable_score three_fire 3 4) 19;
   check_eq "skulls are weighted 10" (stable_score { zero_resources with r_skull = 3 } 3 0) 39;
   check_eq "red skulls are weighted 20" (stable_score { zero_resources with r_red_skull = 3 } 3 0) 69;
   check_eq "gold is weighted 1" (stable_score { zero_resources with r_gold = 3 } 3 0) 12;
@@ -315,8 +315,32 @@ let () =
   | None -> check "a swap of two empty cells does not score" true);
   (* The mirror-image swap sends the fire away from the pair, so it is dead. *)
   (match score_swap ~rng:min_rng ~difficulty:2 b 1 3 Horizontal with
-  | Some _ -> check "the mirror swap that clears the blocker does not score" false
-  | None -> check "the mirror swap that clears the blocker does not score" true)
+   | Some _ -> check "the mirror swap that clears the blocker does not score" false
+   | None -> check "the mirror swap that clears the blocker does not score" true)
+
+let () =
+  (* What the score adds unweighted is the anchor's ROW, not its column: two
+     boards that differ only in the row the run sits on must score differently,
+     and only a y term can tell them apart - the columns are identical.
+     Sub_47c8c0.c stores CheckMatch's arguments as match[0] = x, match[1] = y,
+     and 0x43F970 adds match[1] ("it biases its scores slightly higher towards
+     the bottom of the board" - the AI's author). *)
+  let row_score y =
+    let b =
+      board (List.init 8 (fun i -> if i = y then "ffaf...." else "........"))
+    in
+    match
+      score_swap ~rng:min_rng ~difficulty:2
+        (swap_gems b { x = 2; y } { x = 3; y })
+        2 y Horizontal
+    with
+    | Some c -> c.cand_score
+    | None -> -10000
+  in
+  let high = row_score 1 and low = row_score 7 in
+  check "the same run anchored lower scores higher" (low > high);
+  check_eq "one point per row between them, per probe cell that saw the run"
+    ((low - high) mod 6) 0
 
 (* ------------------------------------------------------------------ *)
 (* evaluate_board                                                      *)

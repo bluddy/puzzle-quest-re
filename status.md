@@ -2,24 +2,25 @@
 
 **Date:** 2026-10-13  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree (fog-of-war round). There is no fog-of-war radius to port. A full .text scan for byte writes to the node-visible fields (+0x458 cities, +0x454 waypoints) finds exactly three functional writers: the XML loader (0x4426xx, parsing the same yes-flag `extract_campaign_map.py` reads), QUEST_SET_VISIBILITY's engine body (0x450e40 - which has exactly one caller, its Lua binding at 0x4948ae, so no engine path can reveal behind the quest scripts' backs), and the map-rebuild loop (0x4541xx) restoring flags from the saved city-status records, into which SET_VISIBILITY mirrors every change (byte 7, the record created on demand through 0x46c9a0 - the mechanism behind the port's save snapshot). The movement walker (0x44c9xx, reached from QUEST_MOVE) advances road by road touching only movement state: arrival reveals nothing. Ruin visibility is registry membership (0x450820 walks the list at this+0x64), which the port already models as the ruin registry. `campaign.fog_of_war` records the enumeration; `test_campaign` pins that arriving on WTHR leaves RTHC/ROTO and their roads hidden; `campaign.map_visibility` gained the city-status persistence note; GAPS row 3 retires. 34 suites, 2641 checks, evidence validator green (99 claims, 11 open questions, 46 decisions).
+**Sync:** clean tree (the open-question audit round this file ranked first). One question retired and the claim under it refuted: `Std_GetDifficulty` has no callers anywhere - the substring `GetDifficulty` appears in `Assets.zip` only as the function's own definition and nowhere in the exe - and what feeds `Battle.rules.difficulty` is the player's **Difficulty option** instead: the registry value `Difficulty` (beside `Time Limit`) goes into global `0x582454` at `0x4223c2`, battle start copies it into `CBattleManager.m_difficulty` at `0x44bb39`, the settings object holds it at `+0x74` and defaults it to `1` at `0x43729e`, and the single-player hero view's `drop_difficulty` offers it as `[AILEVEL0..2]` - "Easy (-25% XP)", "Normal", "Hard (+25% XP)". The quest layer's own `OnQueryDifficulty` - a constant 0..4 in all 142 quests (114/15/12/1) - has exactly one consumer, index 13 of the query dispatcher pushed at `0x42af8a`, which switches over the `[OPPDIFFICULTY0..4]` widget strings: journal pips, not a battle input (`ai.query_difficulty_is_journal_text`). The port follows (`port.difficulty_source`, superseding `port.campaign_task_level`): `Campaign.difficulty` is a ref defaulting to 1 that `rules_for_battle` reads, so the level band no longer feeds any fight and `difficulty_for_levels` keeps its boundary test and no caller, as the asset ships it (`ai.difficulty_from_levels` kept **refuted**). Two corrections fell out of the same pass: the AI score's unweighted coordinate is the anchor's **row**, not its column - `CBoard_CheckMatch` stores `(x,y)` and `ScoreMatchResult` adds the `y`, which is the bottom-of-board bias the AI's author describes in interview (`ai.anchor_term_is_the_row`, and `lib/ai.ml` now passes `ny`); and the ∓25 % XP those rows advertise is `FUN_0043E400`'s `×3/4` and `×5/4`, which settles BATTLE_SCORE.md's calibration argument (difficulty 1 *is* the neutral setting) while opening `xp.difficulty_scaling` - which branch of the results screen pays it is still unidentified. The knowledge base gained the main-menu/hero-view structure, the difficulty setting and the developer's own account of the AI, including where his recollection (spells scored 0-100, best taken) differs from `0x440FB0`'s first-nonzero walk. Evidence 102 claims, 12 questions (4 open), 47 decisions; 34 suites, 2640→2643 checks.
 
 ---
 
-## Next Round Options (surveyed 2026-10-12; six rounds landed that day, three follow-ons on 2026-10-13)
+## Next Round Options (surveyed 2026-10-12; six rounds landed that day, four follow-ons on 2026-10-13)
 
-The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, and the map's visibility model is complete. What is left is one doc audit and one UI chunk. Ranked by leverage:
+The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. What is left is one UI chunk and a few sharpening threads. Ranked by leverage:
 
-### 1. Close stale open questions - cheap doc round
-
-`quest.difficulty_consumers` still says "the quest layer that would choose taskLevel does not exist yet", but `run_quest_battle` now passes `monster.level_base` and road fights pass `enc.my_level` (`port.campaign_task_level`). An audit of the four remaining open questions (`font.advance_field_mapping`, `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`, `board.gem_id_air_water_order`) against the landed code could retire at least one and sharpen the others - the gem-id one only needs a second source for the 3/4 order, and `quest.base_value_from_level` was just closed.
-
-### 2. Battle UI / spell list - start the full graphics battle
+### 1. Battle UI / spell list - start the full graphics battle
 
 `pq_play_gfx` exists but minimal: no spell panel with costs, no mana bars, no persistent combat log. The data is all there (130 spells with costs, mana pools, float-text events) and the log now carries `MissedTurn` too. Large SDL chunk, different flavour from the engine rounds.
 
+### 2. Finish the open-question audit's leftovers - cheap RE round
+
+Three of the four questions the audit started with are still open, and it opened a fourth: `board.gem_id_air_water_order` (needs a second source for the 3/4 order - a gem-id→mana-element switch in the binary would do it), `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling), `font.advance_field_mapping` (+0x1c's other consumers), and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the ∓25 %, i.e. what `turn_manager+0x30` means).
+
 ### Closed rounds from this list
 
+- ~~Close stale open questions~~ (landed 2026-10-13): `quest.difficulty_consumers` retired with the whole level-band reading refuted - `Std_GetDifficulty` has no callers, `m_difficulty` comes from the registry option, and the quest hook is journal pips; two bugs fell out (the score's coordinate is the anchor's row, `ai.anchor_term_is_the_row`, and `Campaign.difficulty` replaces the band in `rules_for_battle`), `FUN_0043E400`'s ±25 % was matched to the `[AILEVEL0/2]` rows, and the menu structure plus the developer's AI interview went into `docs/GAME_KNOWLEDGE_BASE.md`.
 - ~~The effective-skill query~~ (closed 2026-10-13): level does not fold in - the kind-5 query starts from the raw skill, folds item and status OnQuerySkill hooks, and adds the temp-skill accumulator at `record[skillIdx*4 + 0x68]`. The decoded hero's 31 Fire is training plus the accumulator, not level scaling. The follow-on inside `ADD_TEMP_SKILL` (ceiling move, Morale-to-life move, 999 clamp) closed the same day.
 - ~~Fog of war and visible range~~ (closed 2026-10-13): there is no radius rule and no hero-position reveal - the visibility bytes have exactly three writers (XML loader, `QUEST_SET_VISIBILITY` reached only from its Lua binding, save-restore rebuild), the movement walker touches no flag, and ruins answer to the registry (`campaign.fog_of_war`).
 
@@ -30,6 +31,22 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
 ### Battle Layer (Complete)
 - **Board & gems:** 8×8 grid, swap validation, match detection, cascades, gravity, refill
 - **Combat:** Hero/foe stats, life/mana, damage, status effects, spell casting
+- **Difficulty (NEW):** the fight's difficulty is the player's
+  Easy/Normal/Hard option, not a level band - `Campaign.difficulty` (a ref
+  defaulting to 1, `set_difficulty` clamping 0..2) is what `rules_for_battle`
+  puts in `Battle.rules.difficulty`, matching the original's registry value
+  read at `0x4223c2` and copied into `CBattleManager.m_difficulty` at battle
+  start (`port.difficulty_source`, `ai.difficulty_is_the_player_option`).
+  `Spell.difficulty_for_levels` - the hero/task band - keeps its boundary test
+  and no caller, exactly as the asset ships it, and `ai.difficulty_from_levels`
+  is kept refuted so nobody re-wires it. The three `[AILEVEL0..2]` rows also
+  advertise -/+25 % XP, whose code path is the open `xp.difficulty_scaling`
+- **AI scoring (NEW):** the unweighted coordinate in `score_match_result` is
+  the match anchor's **row** - `CBoard_CheckMatch` stores `(x, y)` and the
+  scorer adds the `y`, so the bias runs toward the bottom of the board, which
+  is what the AI's author describes (`ai.anchor_term_is_the_row`;
+  `score_swap` passes `ny`, and `test_ai` pins two boards that differ only in
+  their row)
 - **Mana ceilings (NEW):** `25 + (skill + 1) / 2` per element, read out of the
   character constructor at `0x4661f0` (and confirmed from the other side by the
   `ADD_TEMP_SKILL` delta at `0x48c5d5`, with `0x4839f0` the only writer of the
@@ -297,7 +314,7 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 98 | 11 (5 open) | 46 |
+| `docs/reverse/evidence.yml` | 102 | 12 (4 open) | 47 |
 
 Key decisions recorded:
 - `port.item_event_context` — every item hook takes an item_context with `ic_self`, `ic_level`, the native callbacks and the three board writers where the Lua passed `characterIdx`; `ic_percentile` is a draw-per-call closure, so a body that never asks costs no roll
@@ -311,7 +328,8 @@ Key decisions recorded:
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
 - `port.human_aim_click` — one click aims a spell (the bar cancels back to the spell question)
 - `port.ai_aim_fallback` — hooks that store nothing aim at nothing; SCHG's row rides as y, the column slot0 as x
-- `port.campaign_task_level` — road task is the encounter's my_level, quest task the monster's base; hero_level_cap stays default
+- `port.difficulty_source` — a campaign fight's difficulty is the player's Easy/Normal/Hard option (`Campaign.difficulty`, default 1, clamped 0..2), never a hero/task band; `rules.hero_level` stays the player's level and `hero_level_cap` the default (supersedes `port.campaign_task_level`)
+- `ai.anchor_term_is_the_row` — the score's unweighted coordinate is the match anchor's y, so the bias runs toward the bottom of the board; `score_swap` passes `ny`
 - `port.map_screen_mapping` — the map fits the window whole; 16px click radius; 120 units/s walk
 - `port.city_services` — buying checks gold against cost only; ShopMenu's rows and buttons reused; rumors in tag order
 - `port.location_action_flow` - query is first match; execute/complete/enter apply every matching group live; the 3rd message arg is the display anchor
@@ -333,10 +351,16 @@ Key decisions recorded:
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
 Open questions (4): `font.advance_field_mapping`,
-`quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
-`board.gem_id_air_water_order` (the decompile says gem ids 3 water / 4 air,
-`StandardConstants.lua` says the reverse; nothing observable depends on it yet).
+`spell.match_resolution_after_a_spell`, `board.gem_id_air_water_order`
+(the decompile says gem ids 3 water / 4 air, `StandardConstants.lua` says the
+reverse; nothing observable depends on it yet) and `xp.difficulty_scaling`
+(which branch of the results screen pays the ∓25 % XP the `[AILEVEL]` rows
+advertise - i.e. what `turn_manager+0x30` means).
 `quest.base_value_from_level` is closed (recovered): level does not fold in.
+`quest.difficulty_consumers` is closed (recovered): nothing calls
+`Std_GetDifficulty`, the field takes the player's Difficulty option, and the
+quest hook is journal text. `ai.difficulty_from_levels` is kept **refuted**
+so the level band is not re-derived.
 
 ---
 
@@ -364,7 +388,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 34 suites pass (exit 0, 2640 checks, 2026-10-13). Extractor `--check` modes validate against
+All 34 suites pass (exit 0, 2643 checks, 2026-10-13). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -412,8 +436,9 @@ source assets.
 6. **Conversation branching** — wired: `pq_conv_gfx` walks the `talk_*/wait/end/scriptcall` actions with the speaking character's portrait and name (the data ships no choice nodes, so there is nothing to branch on), and quest state now queues trees (`pending_conversations`: intros, arrivals, nested callback trees); the map window's shared `Conv_window` now opens those queued trees over the map, and the Actions tab drives the location-action flow
 7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
-9. **Item hooks, the rest** - the layer is done as far as it can be: all eight kinds dispatched, 131 of the 133 hook declarations ported, and the two that are not (`known_unported`) are IALS's per-character `SUBTRACT_XP` and ILBC's `GET_CHARACTER_ID`, which need a per-character experience pool and a registry id on the combatant respectively - not hooks, just fields the port does not model |
+9. **Item hooks, the rest** - the layer is done as far as it can be: all eight kinds dispatched, 131 of the 133 hook declarations ported, and the two that are not (`known_unported`) are IALS's per-character `SUBTRACT_XP` and ILBC's `GET_CHARACTER_ID`, which need a per-character experience pool and a registry id on the combatant respectively - not hooks, just fields the port does not model
 10. **Mana ceilings** - derived from the skills as `25 + (skill + 1) / 2`, so a character's caps agree with its masteries instead of a chosen 20; the effective-skill query is now closed - level does not fold in, and the port models the full formula (raw skill + item/status OnQuerySkill hooks + temp accumulator). `ADD_TEMP_SKILL` moves the ceiling with the skill, caps the increment at 999 effective, and moves life/max on Morale
+11. **Difficulty, the rest** - the option is modelled (`Campaign.difficulty`, default Normal, clamped 0..2) but there is no settings screen to change it and no Time Limit dropdown beside it, and the -/+25 % XP `[AILEVEL0]`/`[AILEVEL2]` advertise is not applied anywhere yet: `xp.difficulty_scaling` is open on which branch of the results screen (`0x43e5f0`) pays it, i.e. what `turn_manager+0x30` means. `Score.compute_co_op_payout` already holds the arithmetic (`×3/4`, `×5/4`) and is the only difficulty-scaled XP writer in the image
 
 ---
 

@@ -471,10 +471,14 @@ let is_cast_legal (s : spell) (ctx : ai_context) : bool =
     first of band 1's territory only from 5 up. Transcribed exactly; the
     off-by-one is the whole shape of the function.
 
-    This is the quest-to-battle bridge: it is the only thing that decides what
-    [Battle.rules.difficulty] is, and that value gates the AI's spell skip and
-    the board evaluator's jitter. It lives here rather than in a quest module
-    because there is no quest module yet and its only consumer is here. *)
+    **It is dead in the shipped game.** Nothing calls it: no `GetDifficulty`
+    string exists anywhere in `Assets.zip` but the definition, and the exe
+    holds no such literal, so no engine path can reach the Lua global either.
+    What actually feeds [Battle.rules.difficulty] is the player's Difficulty
+    option - see [Campaign.difficulty] and `quest.difficulty_consumers`.
+    Transcribed anyway, because the file ships it; its only caller here is a
+    test. It lives in spell.ml rather than a quest module because there was no
+    quest module when it was ported. *)
 let difficulty_for_levels ~(hero_level : int) ~(task_level : int) : int =
   if task_level < hero_level - 6 then 0
   else if task_level < hero_level - 1 then 1
