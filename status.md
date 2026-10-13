@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree (the open-question audit round this file ranked first). One question retired and the claim under it refuted: `Std_GetDifficulty` has no callers anywhere - the substring `GetDifficulty` appears in `Assets.zip` only as the function's own definition and nowhere in the exe - and what feeds `Battle.rules.difficulty` is the player's **Difficulty option** instead: the registry value `Difficulty` (beside `Time Limit`) goes into global `0x582454` at `0x4223c2`, battle start copies it into `CBattleManager.m_difficulty` at `0x44bb39`, the settings object holds it at `+0x74` and defaults it to `1` at `0x43729e`, and the single-player hero view's `drop_difficulty` offers it as `[AILEVEL0..2]` - "Easy (-25% XP)", "Normal", "Hard (+25% XP)". The quest layer's own `OnQueryDifficulty` - a constant 0..4 in all 142 quests (114/15/12/1) - has exactly one consumer, index 13 of the query dispatcher pushed at `0x42af8a`, which switches over the `[OPPDIFFICULTY0..4]` widget strings: journal pips, not a battle input (`ai.query_difficulty_is_journal_text`). The port follows (`port.difficulty_source`, superseding `port.campaign_task_level`): `Campaign.difficulty` is a ref defaulting to 1 that `rules_for_battle` reads, so the level band no longer feeds any fight and `difficulty_for_levels` keeps its boundary test and no caller, as the asset ships it (`ai.difficulty_from_levels` kept **refuted**). Two corrections fell out of the same pass: the AI score's unweighted coordinate is the anchor's **row**, not its column - `CBoard_CheckMatch` stores `(x,y)` and `ScoreMatchResult` adds the `y`, which is the bottom-of-board bias the AI's author describes in interview (`ai.anchor_term_is_the_row`, and `lib/ai.ml` now passes `ny`); and the ∓25 % XP those rows advertise is `FUN_0043E400`'s `×3/4` and `×5/4`, which settles BATTLE_SCORE.md's calibration argument (difficulty 1 *is* the neutral setting) while opening `xp.difficulty_scaling` - which branch of the results screen pays it is still unidentified. The knowledge base gained the main-menu/hero-view structure, the difficulty setting and the developer's own account of the AI, including where his recollection (spells scored 0-100, best taken) differs from `0x440FB0`'s first-nonzero walk. Evidence 102 claims, 12 questions (4 open), 47 decisions; 34 suites, 2640→2643 checks.
+**Sync:** clean tree (the battle-screen round this file ranked first). `Assets/Screens/GameMenu.xml` turned out to be the original's whole battle screen, widget by widget, so the front end now draws *its* rectangles rather than a layout of its own: `pad_grid` 584 square at (217,130), the two 180x348 character pads at (11,119)/(835,119) with `icon_enemylifepts`'s 175x18 life bar inside them, seven 178x37 spell pads per side stepping 41 from y=462, the 90x90 turn plates at (135,16)/(784,16), the missed-turn badges at (53,100)/(876,100) and `str_turn` centred at (450,736) - all of it transcribed into `gfx/battle_layout.ml` and pinned by `test_gfx_battle_layout.ml` (35 suites now). What the front gained: **mana bars** with their ceilings per element on both pads (the four bars the panel's foot allows, above the rows), **the spell panel with costs** - name over the four costs, grey and declining when `Spell.can_cast` says no, and `Input.bar` became the rectangles it is handed so drawing and hit-testing share one source (`Input.of_rects (Battle_layout.spell_rows Hero)`; `in_spell_prompt` takes a `live` predicate instead of a count, which also fixes the old mismatch where a filtered list and the drawn rows disagreed about which spell a click meant); and a **combat log** - `Battle.log_of`'s tail, six lines, trimmed through `Battle.format_event`, on its own ground under the board, with the turn line below it in the original's place. The enemy's seven rows carry its roster as labels, the float messages now anchor over the panels, and the plates only started drawing this round: `img_ltimebg`/`img_rtimebg` are cut from `bmp_skin_gemsgrid`, which was never in the sheet list, so `Skin.draw` had been declining silently. `render.battle_screen_geometry` records the asset side (and that the two mana-bar/log rectangles are the port's), `port.battle_screen_layout` the choices - board still centred at the gem sheet's 71px rather than pinned at 73. Evidence 103 claims, 12 questions (4 open), 48 decisions; 35 suites, 2643→2690 checks.
 
 ---
 
@@ -10,16 +10,17 @@
 
 The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. What is left is one UI chunk and a few sharpening threads. Ranked by leverage:
 
-### 1. Battle UI / spell list - start the full graphics battle
-
-`pq_play_gfx` exists but minimal: no spell panel with costs, no mana bars, no persistent combat log. The data is all there (130 spells with costs, mana pools, float-text events) and the log now carries `MissedTurn` too. Large SDL chunk, different flavour from the engine rounds.
-
-### 2. Finish the open-question audit's leftovers - cheap RE round
+### 1. Finish the open-question audit's leftovers - cheap RE round
 
 Three of the four questions the audit started with are still open, and it opened a fourth: `board.gem_id_air_water_order` (needs a second source for the 3/4 order - a gem-id→mana-element switch in the binary would do it), `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling), `font.advance_field_mapping` (+0x1c's other consumers), and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the ∓25 %, i.e. what `turn_manager+0x30` means).
 
+### 2. Campaign → battle: fight screens for quest battles
+
+The battle front now renders a real fight, but the campaign's quest and callback battles still run headless behind a banner in `conv_window`. Lifting `pq_play_gfx`'s screen onto `Campaign.run_quest_battle`'s result - the stage, the spoils and the capture offer around a played fight - is the seam the map window has been building toward, and everything it needs (the panels, the rows, the log) is now in place.
+
 ### Closed rounds from this list
 
+- ~~Battle UI / spell list~~ (landed 2026-10-13): `Assets/Screens/GameMenu.xml` is the original's battle screen, so `gfx/battle_layout.ml` transcribes it (pads, the seven spell rows a side, life bar, turn plates, badges, turn line) and `test_gfx_battle_layout.ml` pins each number; the front draws mana bars with ceilings, the spell panel with costs on the recovered rows (`Input.bar` became the rectangles it is handed, so drawing and hit-testing cannot disagree, and `in_spell_prompt` takes a `live` predicate), a six-line combat log on its own ground under the board with the turn line below it, and the enemy's roster as labels on its rows. The turn plates only started drawing once `bmp_skin_gemsgrid` joined the sheet list. `render.battle_screen_geometry` + `port.battle_screen_layout`.
 - ~~Close stale open questions~~ (landed 2026-10-13): `quest.difficulty_consumers` retired with the whole level-band reading refuted - `Std_GetDifficulty` has no callers, `m_difficulty` comes from the registry option, and the quest hook is journal pips; two bugs fell out (the score's coordinate is the anchor's row, `ai.anchor_term_is_the_row`, and `Campaign.difficulty` replaces the band in `rules_for_battle`), `FUN_0043E400`'s ±25 % was matched to the `[AILEVEL0/2]` rows, and the menu structure plus the developer's AI interview went into `docs/GAME_KNOWLEDGE_BASE.md`.
 - ~~The effective-skill query~~ (closed 2026-10-13): level does not fold in - the kind-5 query starts from the raw skill, folds item and status OnQuerySkill hooks, and adds the temp-skill accumulator at `record[skillIdx*4 + 0x68]`. The decoded hero's 31 Fire is training plus the accumulator, not level scaling. The follow-on inside `ADD_TEMP_SKILL` (ceiling move, Morale-to-life move, 999 clamp) closed the same day.
 - ~~Fog of war and visible range~~ (closed 2026-10-13): there is no radius rule and no hero-position reveal - the visibility bytes have exactly three writers (XML loader, `QUEST_SET_VISIBILITY` reached only from its Lua binding, save-restore rebuild), the movement walker touches no flag, and ruins answer to the registry (`campaign.fog_of_war`).
@@ -29,6 +30,19 @@ Three of the four questions the audit started with are still open, and it opened
 ## What Works
 
 ### Battle Layer (Complete)
+- **Battle screen (NEW):** the front draws the original's own rectangles -
+  `Assets/Screens/GameMenu.xml` is the battle screen, so `gfx/battle_layout.ml`
+  transcribes it (both character pads, seven spell rows a side, the life bar,
+  the turn plates, the missed-turn badges, the turn line) and
+  `test/test_gfx_battle_layout.ml` pins each number. On top of them: life and
+  **mana bars with their ceilings** per element on both pads, the **spell panel
+  with costs** on the recovered rows (name over the four costs, grey and
+  declining when `Spell.can_cast` says no - `Input.bar` is now the rectangles it
+  is handed, so drawing and clicking share one source), a **combat log** of
+  `Battle.log_of`'s tail on its own ground under the board with the turn line
+  below it, the enemy's roster as labels on its rows, and float messages
+  anchored over the panels. `--shot` + `tools/ppm_to_png.py` is how it was
+  checked: 35 suites, `render.battle_screen_geometry` + `port.battle_screen_layout`
 - **Board & gems:** 8×8 grid, swap validation, match detection, cascades, gravity, refill
 - **Combat:** Hero/foe stats, life/mana, damage, status effects, spell casting
 - **Difficulty (NEW):** the fight's difficulty is the player's
@@ -314,7 +328,7 @@ Three of the four questions the audit started with are still open, and it opened
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 102 | 12 (4 open) | 47 |
+| `docs/reverse/evidence.yml` | 103 | 12 (4 open) | 48 |
 
 Key decisions recorded:
 - `port.item_event_context` — every item hook takes an item_context with `ic_self`, `ic_level`, the native callbacks and the three board writers where the Lua passed `characterIdx`; `ic_percentile` is a draw-per-call closure, so a body that never asks costs no roll
@@ -330,6 +344,7 @@ Key decisions recorded:
 - `port.ai_aim_fallback` — hooks that store nothing aim at nothing; SCHG's row rides as y, the column slot0 as x
 - `port.difficulty_source` — a campaign fight's difficulty is the player's Easy/Normal/Hard option (`Campaign.difficulty`, default 1, clamped 0..2), never a hero/task band; `rules.hero_level` stays the player's level and `hero_level_cap` the default (supersedes `port.campaign_task_level`)
 - `ai.anchor_term_is_the_row` — the score's unweighted coordinate is the match anchor's y, so the bias runs toward the bottom of the board; `score_swap` passes `ny`
+- `port.battle_screen_layout` — the battle screen's rectangles come from `GameMenu.xml` (pads, spell rows, life bar, plates, turn line); the board stays centred at the gem sheet's 71px, and the mana bars plus the combat log are the port's own
 - `port.map_screen_mapping` — the map fits the window whole; 16px click radius; 120 units/s walk
 - `port.city_services` — buying checks gold against cost only; ShopMenu's rows and buttons reused; rumors in tag order
 - `port.location_action_flow` - query is first match; execute/complete/enter apply every matching group live; the 3rd message arg is the display anchor
@@ -388,7 +403,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 34 suites pass (exit 0, 2643 checks, 2026-10-13). Extractor `--check` modes validate against
+All 35 suites pass (exit 0, 2690 checks, 2026-10-13). Extractor `--check` modes validate against
 source assets.
 
 ---

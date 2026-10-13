@@ -96,6 +96,23 @@ unterminated string/comment, or a trailing semicolon in a preceding toplevel
   `docs/GAME_KNOWLEDGE_BASE.md`); `score_swap` therefore passes `ny`. Never
   "fix" it back to `nx` - `docs/BATTLE_AI.md` §4 carried that mistake until
   2026-10-13 (`ai.anchor_term_is_the_row`).
+- **Battle screen:** `gfx/battle_layout.ml` is the transcription of
+  `Assets/Screens/GameMenu.xml` - both character pads, the seven spell rows a
+  side (178x37 stepping 41 from y=462), the life bar, the turn plates, the
+  missed-turn badges, the turn line - plus the two rectangles the asset has no
+  opinion about: the four mana bars at each panel's foot, and the combat log
+  under the board. Drawing and clicking both read it, so a row cannot be in one
+  place and hit in another: the buttons are
+  `Input.of_rects (Battle_layout.spell_rows Hero)` and `Input.in_spell_prompt`
+  takes a **`live` predicate** rather than a count - the index is the row's own,
+  never an index into a filtered list (that mismatch used to make a greyed row
+  cast a different spell). A row whose spell cannot be paid for declines. The
+  board stays centred at the gem sheet's 71px cells where `pad_grid` says 73,
+  and the log band is the front's own 96px reserve
+  (`port.battle_screen_layout`, `render.battle_screen_geometry`). To see any of
+  it: `--shot out.ppm`, then `python tools/ppm_to_png.py out.ppm` (or
+  `tools/shot_crop.py` to zoom a region, `tools/shot_probe.py` to read pixels) -
+  the layout was verified that way, not by eye.
 - Generated files (`lib/campaign_quests.ml`, `lib/campaign_conversations.ml`,
   etc.) are produced by scripts in `tools/` — edit the generator, not the
   output.

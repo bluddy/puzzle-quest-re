@@ -80,6 +80,16 @@ The Hero management screen (`Assets/Screens/HeroDetailsMenu.xml`, `ManageHeroMen
 * $8 \times 8$ active battle grid ($x \in [0..7], y \in [1..8]$).
 * Buffer row $y = 0$ at the top for newly generated falling gems.
 
+### Battle screen layout (`Assets/Screens/GameMenu.xml`)
+The battle screen is declared widget by widget, and every rectangle below is transcribed into `gfx/battle_layout.ml` (pinned by `test/test_gfx_battle_layout.ml`):
+* **Board**: `pad_grid` 584x584 at (217,130) - eight 73px cells - inside `icon_grid` (212,45) 600x680; the fight's title `str_battlename` is 512x25 at (256,95).
+* **Character pads**: `pad_gamechar0/1` 180x348 at (11,119) and (835,119), with portrait art `img_gamechar0/1` (180x320) over them and `icon_enemylifepts` - the life bar, 175x18 at (837,121) - inside the enemy's.
+* **Spell pads**: seven per side, 178x37 from y=462 stepping 41 (a 4px gutter), at x=11 and x=835; the seventh ends at y=745, three pixels off the screen.
+* **Turn plates**: `icon_ltimebg`/`icon_rtimebg` 90x90 at (135,16)/(784,16), carrying `str_ltime`/`str_rtime` (each side's time limit - the countdown `drop_timelimit` chooses).
+* **Missed-turn badges**: `icon_missturn0/1` 90x24 at (53,100)/(876,100); the art is `img_missturn_1..5` in `Skin_Battle_Misc`.
+* **Turn line**: `str_turn` 124x18 at (450,736) - centred. `SidePanels.xml` adds the two 176-wide sliding panels.
+* The port draws these as they are; its own additions are the four mana bars per panel and a combat log under the board, and it centres its board on the gem sheet's 71px cells instead of pinning the 584 pad (`port.battle_screen_layout`).
+
 ### Gem Types & Matching Effects
 * **Elemental Gems (Green, Red, Blue, Yellow)**: Add mana to the respective elemental pool.
 * **Coins (Gold)**: Awards Gold directly to player reserves (capped at 99,999).

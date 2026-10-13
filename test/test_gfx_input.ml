@@ -36,17 +36,24 @@ let check_eq name got want =
     incr failures
   end
 
-(* The front end's geometry: four 120px buttons 12px apart in a 900px window, with
-   a 96px bar along the bottom. *)
+(* The front end's geometry, as it was before the spells moved to the side panel:
+   four 120px buttons 12px apart in a 900px window, with a 96px band along the
+   bottom. The shape is what [Input.horizontal] builds, so a change to the
+   constructor changes the buttons these assertions are about. *)
 let bar =
-  { Input.count = 4; button_w = 120; gap = 12; top_y = 680 - 96; left_x = 186 }
+  Input.horizontal ~count:4 ~button_w:120 ~button_h:60 ~gap:12 ~top_y:(680 - 96)
+    ~left_x:186
+
+(* The same thing where it lives now: the seven pads down the hero's side of the
+   screen, in the rectangles GameMenu.xml declares. *)
+let rows = Input.of_rects (Battle_layout.spell_rows Battle_layout.Hero)
 
 let lay = Layout.create ~reserve_top:0 ~reserve_bottom:0 ~cell:64 ~cols:8 ~rows:8 ~window_w:900 ~window_h:680
 
 let always_valid _ _ = true
 let never_valid _ _ = false
 
-let spell ?(usable = 3) mx my = Input.in_spell_prompt bar ~usable mx my
+let spell ?(live = fun i -> i < 3) mx my = Input.in_spell_prompt bar ~live mx my
 
 let swap ?(first = None) ?(valid = always_valid) mx my =
   Input.in_swap_prompt bar lay ~first ~valid mx my
@@ -55,24 +62,29 @@ let () =
   (* --- the spell prompt, which is where the trap was --- *)
   check_eq "a live button casts" (spell 200 620) (Input.Cast 0);
   check_eq "the last live button casts" (spell 450 620) (Input.Cast 2);
-  check_eq "button 2 is found at its right edge" (spell 570 620) (Input.Cast 2);
+  check_eq "button 2 is found at its last pixel" (spell 569 620) (Input.Cast 2);
+  check_eq "and stops one pixel later" (spell 570 620) Input.Decline;
   (* THE regression. Clicking the board while being asked for a spell must decline
      the spell so the turn proceeds to the swap. *)
   check_eq "a board click declines the spell" (spell 450 300) Input.Decline;
   check_eq "an empty part of the bar declines the spell" (spell 20 620)
     Input.Decline;
-  check_eq "a button that is not affordable declines too" (spell ~usable:1 700 620)
-    Input.Decline;
+  check_eq "a button that is not affordable declines too"
+    (spell ~live:(fun i -> i < 1) 700 620) Input.Decline;
   check_eq "a click above the bar declines the spell" (spell 450 100)
     Input.Decline;
-  check_eq "with nothing affordable every click declines" (spell ~usable:0 450 300)
-    Input.Decline;
-  (* The buttons themselves are found across their whole width. *)
+  check_eq "with nothing affordable every click declines"
+    (spell ~live:(fun _ -> false) 450 300) Input.Decline;
+  (* The buttons themselves are found across their whole width, and only it: the
+     right edge is exclusive, like every other rectangle in this project, so the
+     pixel after a button is the gutter rather than the button. *)
   check_opt "button 1 is found at its left edge" (Input.bar_button bar 186 600)
     (Some 0);
-  check_opt "button 1 is found at its right edge" (Input.bar_button bar 306 600)
+  check_opt "button 1 is found at its last pixel" (Input.bar_button bar 305 600)
     (Some 0);
   check_opt "button 0 is not found past its right edge"
+    (Input.bar_button bar 306 600) None;
+  check_opt "button 0 is not found past its right edge either"
     (Input.bar_button bar 310 600) None;
   check_opt "nothing is found above the bar" (Input.bar_button bar 200 400) None
 
@@ -133,6 +145,29 @@ let () =
   check_eq "a bar click cancels the cast" (target 200 620) Input.Cancel;
   check_eq "a click off the board and off the bar changes nothing"
     (target 5 300) Input.Miss
+
+let () =
+  (* --- the same prompt on the side panel's rows, which is where the buttons
+     live now: seven 178x37 pads at x=11, stepping 41 from y=462 --- *)
+  let row ?(live = fun i -> i < Battle_layout.spell_count) mx my =
+    Input.in_spell_prompt rows ~live mx my
+  in
+  check_opt "the first row is hit at its top-left" (Input.bar_button rows 11 462)
+    (Some 0);
+  check_opt "the first row is hit at its bottom-right"
+    (Input.bar_button rows 188 498) (Some 0);
+  check_opt "the 4px gutter between rows is not a button"
+    (Input.bar_button rows 100 501) None;
+  check_opt "the seventh row is the last" (Input.bar_button rows 100 744) (Some 6);
+  check_opt "a pixel past the seventh row misses"
+    (Input.bar_button rows 100 745) None;
+  check_opt "a pixel past the row's right edge misses"
+    (Input.bar_button rows 190 470) None;
+  check_eq "the first row casts the first spell" (row 100 470) (Input.Cast 0);
+  check_eq "the seventh row casts the seventh spell" (row 100 740)
+    (Input.Cast 6);
+  check_eq "a row that cannot be paid for declines"
+    (row ~live:(fun i -> i < 2) 100 740) Input.Decline
 
 let () =
   if !failures = 0 then print_endline "all gfx input tests passed"

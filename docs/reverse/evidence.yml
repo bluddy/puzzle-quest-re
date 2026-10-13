@@ -3205,6 +3205,60 @@ claims:
       its 22px marker: the 480px span is a choice, and so are the rest of
       the panel's interactions - port.city_services.
 
+  - id: render.battle_screen_geometry
+    title: The battle screen's rectangles are declared by Assets/Screens/GameMenu.xml
+    area: render
+    verdict: presentation
+    audited: true
+    status: recovered
+    confidence: high
+    source_pass: battle_ui
+    summary: >
+      GameMenu.xml is the original's battle screen and names every rectangle
+      the port now draws: pad_grid 584 square at (217,130) - 73px cells -
+      inside the 600x680 img_grid backing at (212,45); the two character pads
+      pad_gamechar0/1, 180x348 at (11,119) and (835,119) with the portrait art
+      img_gamechar0/1 180x320 over them and icon_enemylifepts, the life bar,
+      at (837,121) 175x18 inside the enemy's; seven spell pads per side,
+      178x37 stepping 41 from y=462 (a 4px gutter), ending 3px short of the
+      screen; the turn plates icon_ltimebg/icon_rtimebg 90x90 at (135,16) and
+      (784,16) carrying str_ltime/str_rtime; the missed-turn badges
+      icon_missturn0/1 90x24 at (53,100) and (876,100); str_turn 124x18 at
+      (450,736), centred; and str_battlename 512x25 at (256,95). gfx/
+      battle_layout.ml is the transcription and test_gfx_battle_layout pins
+      each number against the asset.
+    evidence:
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/GameMenu.xml
+        note: every rectangle above, by widget name
+      - kind: xml
+        ref: game/Assets.zip!Assets/Screens/SidePanels.xml
+        note: img_sidepanel_l / img_sidepanel_r, the 176-wide sliding panels
+      - kind: code
+        ref: gfx/battle_layout.ml
+        note: the transcription, plus the two rectangles the XML has no opinion about
+      - kind: code
+        ref: test/test_gfx_battle_layout.ml
+        note: each recovered number, and the designed ones against each other
+      - kind: code
+        ref: bin/pq_play_gfx.ml
+        note: what draws them, and the sheet list the plates needed
+    affects:
+      [gfx/battle_layout.ml, gfx/input.ml, bin/pq_play_gfx.ml,
+       test/test_gfx_battle_layout.ml]
+    notes: >
+      Two rectangles in that module are the port's, not the game's: the four
+      mana bars per panel (the original paints them into the portrait art,
+      which we do not place) and the combat log under the board, which the
+      original does not have at all - see port.battle_screen_layout. The
+      front end also had to start loading `bmp_skin_gemsgrid`: img_ltimebg and
+      img_rtimebg are cut from it, it was not in the sheet list, and Skin.draw
+      had been declining silently, so the turn plates were geometry with no
+      art behind it for as long as they have existed. And the port's board
+      keeps 71px cells - the gem sheet is drawn 1:1 at its own size - where
+      the asset's pad says 73; the 584 is recorded, the two-pixel difference
+      is deliberate.
+
   - id: render.world_map_layout
     title: The world map is sixteen 512px segments in a 2048 square the nodes sit on
     area: render
@@ -4614,6 +4668,34 @@ port_decisions:
       lives in a ref a driver can set rather than in the per-hero save - the
       original keeps it machine-wide in the registry, not in the .pqhero.
     supersedes: port.campaign_task_level
+    date: 2026-10-13
+
+  - id: port.battle_screen_layout
+    decision: >
+      The battle front draws the original's rectangles where GameMenu.xml
+      gives them - both character pads, both columns of seven spell rows, the
+      life bars, the turn plates and the turn line - and keeps three choices
+      of its own: the board stays centred in the window minus a 96px bottom
+      band, at the gem sheet's own 71px cells rather than being pinned to
+      pad_grid at (217,130) with the asset's 73; the four mana bars per panel
+      and the combat log under the board are the port's rectangles, since the
+      original paints mana into portrait art and has no log at all; and only
+      the hero's column of rows is clickable, through
+      Input.of_rects (Battle_layout.spell_rows Hero), while the enemy's seven
+      are labels for the roster it fights with.
+    rationale: >
+      Fidelity where the asset speaks and a choice where it does not: the pads
+      are the shipped screen, so inventing a spell bar somewhere else would
+      disagreeing with the game for no benefit, while pinning the board would
+      cost the resize-robustness Layout.create exists for and buy back two
+      pixels a cell that the gem sheet does not carry. The log is a deliberate
+      addition - the engine narrates every event and a windowed battle had
+      nowhere to show it - and it takes the band the spell bar used to occupy,
+      which is why the buttons moved rather than the log finding a corner. The
+      plates are drawn without the countdown they carry in the original
+      because the port runs no turn clock, and a click on a row a spell cannot
+      pay for declines exactly as the bar's own dead buttons always have.
+    supersedes: null
     date: 2026-10-13
 
   - id: port.travel_model

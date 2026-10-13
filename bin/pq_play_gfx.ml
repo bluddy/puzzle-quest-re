@@ -27,9 +27,19 @@ let window_w = Layout.game_screen_w
 and window_h = Layout.game_screen_h
 
 (* The board's cells are 71px in the gem sheet, and the sheet is drawn 1:1, so 71
-   is the size a gem is {e meant} to be. An 8x8 board of them is 568 square. *)
+   is the size a gem is {e meant} to be. An 8x8 board of them is 568 square. The
+   original's `pad_grid` is 584 - 73px cells - which is the one place the port
+   and the asset disagree by two pixels a cell; see [Battle_layout.pad_grid]. *)
 let cell = 71
+
+(* The band under the board: the combat log's backdrop, full width. The original
+   has no log and so has no band - its spell rows run to y=745 - which is why this
+   number is the port's rather than recovered. *)
 let bar_h = 96
+
+(* The side the player sits on: `pad_gamechar0`, the left pad. The spell buttons
+   are that pad's seven rows, so this is the one place the choice is made. *)
+let side = Battle_layout.Hero
 
 (* The decoration frames, by the tags the registry gives them. Naming the tag
    rather than the rectangle is the point: Skin_data has the coordinates, and a
@@ -69,7 +79,7 @@ type ui = {
   fonts : Font.t option;
   system : Font_layout.metrics option;  (** font_system - the HUD's body text *)
   small : Font_layout.metrics option;  (** font_small - the tight fits *)
-  button : Font_layout.metrics option;  (** font_button - the spell bar *)
+  button : Font_layout.metrics option;  (** font_button - the spell rows *)
   xp : Font_layout.metrics option;  (** font_xp, which is purple *)
   gold : Font_layout.metrics option;  (** font_gold, which is orange *)
   (* The decoration sheets. The backdrop and the border are both on one, and both
@@ -109,24 +119,27 @@ let layout () = (ui ()).layout
 
 (** The message a subject is anchored to.
 
-    A message belongs over the character it is about, and the characters have no
-    portraits placed yet - so the hero's side is the left margin and the foe's the
-    right, either side of the board. When the portraits arrive this is the one
-    function that moves.
+    A message belongs over the character it is about, and the characters now have
+    somewhere to be about: `pad_gamechar0` and `pad_gamechar1`, the two side
+    panels, where the life and mana bars are drawn. [Battle_layout] holds their
+    rectangles, so the float messages rise off the same rectangles the bars do
+    rather than off a guess about where a portrait would be.
 
     The anchor is a one-pixel box: [place_message] takes the box's smaller corner
     and centres the text on it, which is exactly what a point anchor wants, and it
     clamps the result into the screen on the way. *)
 let message_anchor (s : Float_text.subject) : Font_layout.box =
-  let lay = layout () in
-  let board = Layout.board_rect lay in
   let point x y = { Font_layout.x0 = x; y0 = y; x1 = x; y1 = y } in
+  let over (side : Battle_layout.side) =
+    let p = Battle_layout.panel side in
+    point (p.Layout.x + (p.Layout.w / 2)) (p.Layout.y + (p.Layout.h / 3))
+  in
   match s with
-  | Float_text.Both -> point (board.Layout.x + (board.Layout.w / 2)) (board.Layout.y - 40)
-  | Float_text.Hero -> point (board.Layout.x / 2) (board.Layout.y + (board.Layout.h / 2))
-  | Float_text.Foe ->
-      point (board.Layout.x + board.Layout.w - (board.Layout.w / 4))
-        (board.Layout.y + (board.Layout.h / 2))
+  | Float_text.Both ->
+      let board = Layout.board_rect (layout ()) in
+      point (board.Layout.x + (board.Layout.w / 2)) (board.Layout.y - 40)
+  | Float_text.Hero -> over Battle_layout.Hero
+  | Float_text.Foe -> over Battle_layout.Foe
 
 (** Clock for message lifetimes, in seconds.
 
@@ -223,30 +236,35 @@ let ev = E.create ()
 let some_ev = Some ev
 
 (** Draw the current frame. Every piece of state the player can act on is on
-    screen: the board, whose cells they may swap, and the spell bar, whose buttons
+    screen: the board, whose cells they may swap, and the spell rows, whose buttons
     they may press. *)
-(* The spell bar's geometry, in the form gfx/input.ml interprets. Kept in one
-   place so the drawing and the click handling cannot disagree about where the
-   buttons are - they used to compute it separately, which is exactly the kind of
-   duplication that makes a button that is drawn but not clickable. *)
+(* The spell buttons: the seven pads down the hero's side of the screen, in the
+   original's own rectangles. Kept in one place so the drawing and the click
+   handling cannot disagree about where the buttons are - they used to compute it
+   separately, which is exactly the kind of duplication that makes a button that
+   is drawn but not clickable. *)
 let bar () : Input.bar =
-  let n = List.length demo_spells in
-  let bw = 120 and gap = 12 and bar_y = window_h - bar_h in
-  let x0 = (window_w - (n * bw + ((n - 1) * gap))) / 2 in
-  { Input.count = n; button_w = bw; gap; top_y = bar_y; left_x = x0 }
+  Input.of_rects (Battle_layout.spell_rows side)
 
 (** The heads-up display: everything a player needs in order to choose a move,
-    which until now existed only in the console.
+    laid out on the original's own rectangles.
 
-    Life and mana are drawn as numbers in the game's own fonts rather than as
-    bars, because that is what the original's battle screen does - the portrait
-    frames carry the bars, and those live in Skin_Battle_Misc.png, which is
-    extracted but not yet placed. Mana is labelled per element in the board's own
-    order, and the costs under each spell button are the spell's four costs, so an
-    unaffordable spell explains {e itself} rather than just being grey.
+    The side panels carry the characters ([Battle_layout.panel]): their name and
+    life across the recovered life bar, their level and the player's purse in the
+    portrait area, and the four mana pools as bars with their ceilings underneath
+    - a bar rather than a number because a pool that is *nearly* full and one
+    that is nearly empty are the same digits and different information.
 
-    Colours come from the named fonts, which is why [font_xp] and [font_gold] are
-    worth having: they are the game's own purple and orange, not ones picked here.
+    The seven rows under each panel are the spells ([Battle_layout.spell_rows]),
+    with the four costs on the second line in the same element order as the mana
+    bars above them, so the row explains itself against the column it needs. A
+    spell the hero cannot pay for is drawn grey and clicks as a decline, which is
+    what the prompt has always meant by "not usable".
+
+    Colours come from the named fonts where a colour exists for the thing (gold
+    and xp are the game's own orange and purple), from the element colours the
+    board already uses for the mana bars, and from one grey for anything
+    unavailable.
 
     Returns runs to append to the frame's own, so text and geometry share one
     vertex-buffer upload - [Gl.submit] takes a single run list, and a second pass
@@ -255,7 +273,6 @@ let draw_hud (gl : Gl.context) (spells : Spell.spell list) : Gl.run list =
   let u = ui () in
   let b = battle () in
   let lay = layout () in
-  let bg = bar () in
   let out = ref [] in
   let put rs = out := !out @ rs in
   (* [fonts] being None is a supported state, not an error: a checkout with no
@@ -265,90 +282,196 @@ let draw_hud (gl : Gl.context) (spells : Spell.spell list) : Gl.run list =
     | None -> ()
     | Some fonts -> put (f fonts m)
   in
-  let centred m s ~cx ~y = with_font m (fun fonts m -> Font.draw_centred gl fonts m s ~cx ~y) in
+  let centred m text ~cx ~y =
+    with_font m (fun fonts m -> Font.draw_centred gl fonts m text ~cx ~y)
+  in
+  (* Truncate to a width rather than letting a long line run out of its
+     rectangle: the log sits between two panels and a spell name sits in a
+     178px pad, and neither has anywhere to overflow into. *)
+  let fit (m : Font_layout.metrics) ~(max_w : int) (s : string) : string =
+    if Font_layout.measure m s <= max_w then s
+    else
+      let rec cut n =
+        if n <= 0 then ""
+        else
+          let t = String.sub s 0 n in
+          if Font_layout.measure m t <= max_w then t else cut (n - 1)
+      in
+      cut (String.length s - 1)
+  in
   let grey = Layout.rgb 130 132 140 and white = Layout.rgb 255 255 255 in
   let hero = b.Battle.hero and foe = b.Battle.enemy in
-  (* The HUD lives in the margins the board leaves, not on top of it: the board is
-     centred in the window minus the bar, so there is a band above it and one
-     below, and putting text there is the difference between a HUD and a
-     collision. *)
-  (* Clear of the timer plates, which are 90px wide at each end of the top panel. *)
-  let pad = 104 in
-  (* --- life: hero at the top left, the foe at the top right --- *)
-  let life_line (c : Combat.combatant) ~x ~right =
-    match u.system with
+  let board = Layout.board_rect lay in
+  let panel_block (c : Combat.combatant) (s : Battle_layout.side) =
+    let p = Battle_layout.life_bar s in
+    (* Name and life over the bar itself: the bar is the widest thing in the
+       panel and the line is short, so the text sits on its fill. *)
+    (match u.system with
     | None -> ()
     | Some m ->
-        let s = Printf.sprintf "%s %d/%d" c.Combat.name c.Combat.life c.Combat.max_life in
-        let x = if right then window_w - 104 - Font_layout.measure m s else x in
-        with_font m (fun fonts m -> Font.draw gl fonts m s ~x ~y:pad)
+        let text =
+          Printf.sprintf "%s  %d/%d" c.Combat.name c.Combat.life c.Combat.max_life
+        in
+        with_font m (fun fonts m ->
+            Font.draw gl fonts m ~colour:white
+              (fit m ~max_w:(p.Layout.w - 6) text)
+              ~x:(p.Layout.x + 3) ~y:(p.Layout.y + 24)));
+    (* The portrait area under the bar is the player's purse, in the game's own
+       gold and xp colours. The foe has no purse, so its portrait area stays
+       empty until there is portrait art to put in it. *)
+    if s = Battle_layout.Hero then begin
+      let pr = Battle_layout.panel s in
+      let top = pr.Layout.y + 48 in
+      (match u.gold with
+      | None -> ()
+      | Some gm ->
+          with_font gm (fun fonts gm ->
+              Font.draw gl fonts gm
+                (Printf.sprintf "%d gold" b.Battle.gold)
+                ~x:(pr.Layout.x + 6) ~y:top));
+      (match u.xp with
+      | None -> ()
+      | Some xm ->
+          with_font xm (fun fonts xm ->
+              Font.draw gl fonts xm
+                (Printf.sprintf "%d xp" b.Battle.xp)
+                ~x:(pr.Layout.x + 6) ~y:(top + 20)))
+    end;
+    (* The four pools, one bar each, in the board's own element order, with the
+       value over the fill: `n/c` so the ceiling is visible without a second
+       read of the same number. *)
+    let bars = Battle_layout.mana_bars s in
+    let element (i : int) (get : Combat.mana -> int) (ceiling : Combat.mana -> int)
+        (letter : string) =
+      let r = bars.(i) in
+      let text =
+        Printf.sprintf "%s %d/%d" letter (get c.Combat.mana)
+          (ceiling c.Combat.max_mana)
+      in
+      match u.small with
+      | None -> ()
+      | Some m ->
+          with_font m (fun fonts m ->
+              Font.draw gl fonts m ~colour:white text ~x:(r.Layout.x + 4)
+                ~y:(r.Layout.y + 1))
+    in
+    element 0 (fun m -> m.Combat.earth) (fun m -> m.Combat.earth) "E";
+    element 1 (fun m -> m.Combat.fire) (fun m -> m.Combat.fire) "F";
+    element 2 (fun m -> m.Combat.air) (fun m -> m.Combat.air) "A";
+    element 3 (fun m -> m.Combat.water) (fun m -> m.Combat.water) "W"
   in
-  life_line hero ~x:pad ~right:false;
-  life_line foe ~x:0 ~right:true;
-  (* --- the hero's mana, one row per element, in the board's element order --- *)
+  panel_block hero Battle_layout.Hero;
+  panel_block foe Battle_layout.Foe;
+  (* --- each spell row: name, then the four costs in the element order the mana
+         bars are read in, so the column on the left and the row on the side say
+         the same thing --- *)
+  let rows = Battle_layout.spell_rows side in
+  List.iteri
+    (fun i (s : Spell.spell) ->
+      if i < Array.length rows then begin
+        let r = rows.(i) in
+        let col = if Spell.can_cast hero s then white else grey in
+        let centre text m y =
+          with_font m (fun fonts m ->
+              let text = fit m ~max_w:(r.Layout.w - 8) text in
+              let w = Font_layout.measure m text in
+              Font.draw gl fonts m ~colour:col text
+                ~x:(r.Layout.x + ((r.Layout.w - w) / 2)) ~y)
+        in
+        (match u.button with
+        | None -> ()
+        | Some m -> centre s.Spell.name m (r.Layout.y + 1));
+        match u.small with
+        | None -> ()
+        | Some m ->
+            centre
+              (Printf.sprintf "%d %d %d %d" s.Spell.cost_earth s.Spell.cost_fire
+                 s.Spell.cost_air s.Spell.cost_water)
+              m (r.Layout.y + 21)
+      end)
+    spells;
+  (* The enemy's rows are the same seven pads on the other side; the port does
+     not model the AI's hand, so they carry the roster it fights with as a name
+     each, greyed - a label, not a control. *)
   (match u.small with
   | None -> ()
   | Some m ->
-      let row (name : string) (get : Combat.mana -> int) y =
-        let s = Printf.sprintf "%s %2d" name (get hero.Combat.mana) in
-        with_font m (fun fonts m -> Font.draw gl fonts m s ~x:pad ~y)
-      in
-      row "E" (fun (x : Combat.mana) -> x.Combat.earth) (pad + 22);
-      row "F" (fun (x : Combat.mana) -> x.Combat.fire) (pad + 36);
-      row "A" (fun (x : Combat.mana) -> x.Combat.air) (pad + 50);
-      row "W" (fun (x : Combat.mana) -> x.Combat.water) (pad + 64));
-  (* --- gold and experience, right-aligned under the foe's life, in the game's
-         own gold and xp colours --- *)
-  let right_number (m : Font_layout.metrics option) (v : int) y =
-    match m with
-    | None -> ()
-    | Some m ->
-        let s = Printf.sprintf "%d" v in
-        with_font m (fun fonts m ->
-            Font.draw gl fonts m s ~x:(window_w - 104 - Font_layout.measure m s) ~y)
-  in
-  right_number u.gold b.Battle.gold (pad + 22);
-  right_number u.xp b.Battle.xp (pad + 40);
-  (* --- each spell button labelled with its name and its four costs --- *)
-  List.iteri
-    (fun i (s : Spell.spell) ->
-      let x = bg.Input.left_x + (i * (bg.Input.button_w + bg.Input.gap)) in
-      let col = if Spell.can_cast hero s then white else grey in
-      let centre text m y =
-        with_font m (fun fonts m ->
-            let w = Font_layout.measure m text in
-            Font.draw gl fonts m ~colour:col text
-              ~x:(x + ((bg.Input.button_w - w) / 2))
-              ~y)
-      in
-      (match u.button with Some m -> centre s.Spell.name m (bg.Input.top_y + 26) | None -> ());
-      (* Costs in the same element order as the mana readout, so the row under the
-         name is read the same way as the column on the left. *)
-      match u.small with
-      | Some m ->
-          centre
-            (Printf.sprintf "%d %d %d %d" s.Spell.cost_earth s.Spell.cost_fire
-               s.Spell.cost_air s.Spell.cost_water)
-            m (bg.Input.top_y + 56)
-      | None -> ())
-    spells;
+      let foe_rows = Battle_layout.spell_rows Battle_layout.Foe in
+      List.iteri
+        (fun i (s : Spell.spell) ->
+          let r = foe_rows.(i) in
+          let name = fit m ~max_w:(r.Layout.w - 8) s.Spell.name in
+          let w = Font_layout.measure m name in
+          with_font m (fun fonts m ->
+              Font.draw gl fonts m ~colour:grey name
+                ~x:(r.Layout.x + ((r.Layout.w - w) / 2)) ~y:(r.Layout.y + 10)))
+        (List.filteri (fun i _ -> i < Battle_layout.spell_count) b.Battle.enemy_spells));
   (* A prompt, so the window says what it wants rather than only the console
-     doing it. It sits in the band between the board and the bar. *)
+     doing it. It sits in the band between the top of the screen and the board,
+     which is empty by construction: the board is centred below the top inset. *)
   (match u.small with
   | Some m ->
       let prompt =
         if u.aim_shape <> 0 then
           match u.hover with
-          | Some _ -> "aim - click the board to cast, or a button to cancel"
+          | Some _ -> "aim - click the board to cast, or a row to cancel"
           | None -> "aim - hover the board, then click to cast"
         else
           match u.first_cell with
           | Some _ -> "click an adjacent gem to swap"
-          | None -> "click a gem, then an adjacent one  -  or a button to cast"
+          | None -> "click a gem, then an adjacent one  -  or a row to cast"
       in
-      let board = Layout.board_rect lay in
-      centred m prompt ~cx:(window_w / 2) ~y:(board.Layout.y + board.Layout.h + 8)
+      centred m prompt ~cx:(window_w / 2) ~y:14
   | None -> ());
+  (* The combat log: the battle's own narration, oldest at the top, as many
+     lines as the band under the board will hold. The engine already keeps the
+     list in that order ([Battle.log_of]); this is a window onto its tail. *)
+  let log = Battle_layout.log_rect ~board in
+  let n = Battle_layout.log_lines log in
+  let skip = max 0 (List.length (Battle.log_of b) - n) in
+  let rec drop k l =
+    if k <= 0 then l else match l with [] -> [] | _ :: t -> drop (k - 1) t
+  in
+  let lines = drop skip (Battle.log_of b) in
+  (match u.small with
+  | None -> ()
+  | Some m ->
+      List.iteri
+        (fun i e ->
+          let text = String.trim (Battle.format_event e) in
+          let col =
+            match e with
+            | Battle.TurnStart _ -> white
+            | Battle.BattleEnd _ -> Layout.rgb 250 210 90
+            | Battle.Damage _ | Battle.Death _ -> Layout.rgb 235 120 110
+            | _ -> grey
+          in
+          with_font m (fun fonts m ->
+              Font.draw gl fonts m ~colour:col
+                (fit m ~max_w:(log.Layout.w - 12) text)
+                ~x:(log.Layout.x + 6)
+                ~y:(log.Layout.y + (i * Battle_layout.log_line_h))))
+        lines);
+  (* The turn line, at the original's own place under everything: whose turn the
+     last [TurnStart] in the narration announced. *)
+  (match u.small with
+  | None -> ()
+  | Some m ->
+      let rec text = function
+        | [] -> ""
+        | Battle.TurnStart (_, Battle.Hero, _) :: _ -> "your turn"
+        | Battle.TurnStart (_, Battle.Enemy, name) :: _ -> name ^ "'s turn"
+        | _ :: rest -> text rest
+      in
+      match text (Battle.log_of b) with
+      | "" -> ()
+      | line ->
+          with_font m (fun fonts m ->
+              let w = Font_layout.measure m line in
+              Font.draw gl fonts m ~colour:white line
+                ~x:(Battle_layout.turn_rect.Layout.x
+                   + ((Battle_layout.turn_rect.Layout.w - w) / 2))
+                ~y:Battle_layout.turn_rect.Layout.y));
   !out
 
 (** The backdrop and the four border pieces.
@@ -372,22 +495,31 @@ let draw_decorations (rs : Gl.run list ref) =
   ignore (Skin.draw s rs frame_border_right ~place:(at window_w 0));
   ignore (Skin.draw s rs frame_border_bottom ~place:(at 0 window_h))
 
-(** The turn counters: the two 90x90 plates the registry puts either side of the
-    board, in the top panel.
+(** The turn counters: the two 90x90 plates `GameMenu.xml` puts either side of the
+    top panel - `icon_ltimebg` at (135,16) and `icon_rtimebg` at (784,16), with
+    `str_ltime` / `str_rtime` centred on them. [Battle_layout] holds both.
 
-    The plate art is placed by the registry and only its position is ours: they go
-    at the outer ends of the top panel, clear of the HUD in the middle and clear of
-    the board below. The hourglass ([img_timer_0]) is {e not} drawn - it belongs to
-    the timed minigames, and there is nothing on a battle screen for it to count,
-    so guessing a place for it would be decoration for its own sake. *)
+    The plates are drawn; what goes on them is not. The original puts each side's
+    *time limit* there - the countdown the hero view's `drop_timelimit` chooses -
+    and this port runs no clock, so an empty plate is the honest rendering: the
+    frame exists, the number it would carry does not. ([TIMELIMIT0..4] is the
+    other half of that options screen; see GAME_KNOWLEDGE_BASE.)
+
+    The hourglass ([img_timer_0]) is likewise not drawn - it belongs to the timed
+    minigames, and there is nothing on a battle screen for it to count.
+
+    Both plates only ever drew once the front end started loading the sheet they
+    are cut from: their registry rows name `bmp_skin_gemsgrid`, which was not in
+    the sheet list, so [Skin.draw] declined silently and the plates were geometry
+    with no art behind it. *)
 let draw_timer (rs : Gl.run list ref) =
   let s = (ui ()).skin in
-  let pad = 6 in
-  let y = (Skin.top_inset () - 90) / 2 + 2 in
-  ignore (Skin.draw s rs frame_timer_l ~place:{ Layout.x = pad; y; w = 0; h = 0 });
-  ignore
-    (Skin.draw s rs frame_timer_r
-       ~place:{ Layout.x = window_w - pad - 90; y; w = 0; h = 0 })
+  let at (side : Battle_layout.side) =
+    let r = Battle_layout.timer_plate side in
+    { Layout.x = r.Layout.x; y = r.Layout.y; w = 0; h = 0 }
+  in
+  ignore (Skin.draw s rs frame_timer_l ~place:(at Battle_layout.Hero));
+  ignore (Skin.draw s rs frame_timer_r ~place:(at Battle_layout.Foe))
 
 let fx_sprite_size name =
   match List.find_opt (fun (n, _, _, _) -> n = name) (ui ()).fx_textures with
@@ -449,7 +581,6 @@ let draw_fx (rs : Gl.run list ref) =
 let draw ?(present = true) () =
   let b = battle () in
   let lay = layout () in
-  let bg = bar () in
   let gl = (ui ()).gl in
   Gl.begin_frame gl;
   (* Each quad is emitted with the colour its run will be drawn with, so the run
@@ -475,12 +606,80 @@ let draw ?(present = true) () =
           @ [ { Gl.first; count = 6; tex = Some sheet; colour = Layout.rgba 255 255 255 255; clip = None; blend = None } ]
     | _ -> emit dst (Layout.gem_colour g)
   in
-  emit
-    { Layout.x = 0; y = bg.Input.top_y; w = window_w; h = bar_h }
-    (Layout.rgb 20 22 30);
+  emit (Battle_layout.log_band bar_h) (Layout.rgb 20 22 30);
   (* The backdrop and the border go down first, so everything else is on top of
      them. Both come from one sheet, and both are absent together. *)
   draw_decorations runs;
+  (* The battle screen's own geometry: the two side panels with their life bars,
+     the four mana bars along each panel's foot, and the seven spell rows under
+     them. Every rectangle comes from [Battle_layout], which recovered them from
+     `Assets/Screens/GameMenu.xml` - the drawing and the click handling share
+     that module, so a row cannot be drawn in one place and hit in another. *)
+  let board = Layout.board_rect lay in
+  (* The log gets its own ground: it is text on what would otherwise be the
+     backdrop art, and a narration line over a painted landscape is unreadable.
+     It goes down after the backdrop for the same reason the panels do. *)
+  emit (Battle_layout.log_rect ~board) (Layout.rgb 14 16 22);
+  let pool_at (i : int) (m : Combat.mana) =
+    match i with
+    | 0 -> m.Combat.earth
+    | 1 -> m.Combat.fire
+    | 2 -> m.Combat.air
+    | _ -> m.Combat.water
+  in
+  let gem_at (i : int) : Board.gem =
+    match i with
+    | 0 -> Board.Mana Board.Earth
+    | 1 -> Board.Mana Board.Fire
+    | 2 -> Board.Mana Board.Air
+    | _ -> Board.Mana Board.Water
+  in
+  let fill (r : Layout.rect) (frac : float) (col : Layout.colour) =
+    let f = max 0.0 (min 1.0 frac) in
+    let w = int_of_float (float_of_int r.Layout.w *. f) in
+    if w > 0 then emit { r with Layout.w = w } col
+  in
+  List.iter
+    (fun (side : Battle_layout.side) ->
+      let c = if side = Battle_layout.Hero then b.Battle.hero else b.Battle.enemy in
+      emit (Battle_layout.panel side) (Layout.rgb 26 28 38);
+      let life = Battle_layout.life_bar side in
+      emit life (Layout.rgb 58 60 70);
+      let lf =
+        if c.Combat.max_life <= 0 then 0.0
+        else float_of_int c.Combat.life /. float_of_int c.Combat.max_life
+      in
+      fill life lf (Layout.rgb 84 176 96);
+      (* The badge the original shows over a character who is sitting a turn
+         out: the art is `img_missturn_1` in the battle sheet, and a checkout
+         without it gets a flat marker rather than nothing. *)
+      if List.mem_assoc "Missed" c.Combat.effects then begin
+        let badge = Battle_layout.missed_badge side in
+        if not (Skin.draw (ui ()).skin runs "img_missturn_1" ~place:badge) then
+          emit badge (Layout.rgb 226 190 70)
+      end;
+      Array.iteri
+        (fun i r ->
+          emit r (Layout.rgb 34 36 46);
+          let pool = pool_at i c.Combat.mana and ceil = pool_at i c.Combat.max_mana in
+          let f = if ceil <= 0 then 0.0 else float_of_int pool /. float_of_int ceil in
+          fill r f (Layout.gem_colour (gem_at i)))
+        (Battle_layout.mana_bars side))
+    [ Battle_layout.Hero; Battle_layout.Foe ];
+  let spell_rows = Battle_layout.spell_rows side in
+  List.iteri
+    (fun i (s : Spell.spell) ->
+      let r = spell_rows.(i) in
+      emit r
+        (if Spell.can_cast b.Battle.hero s then Layout.rgb 70 120 200
+         else Layout.rgb 50 54 66))
+    demo_spells;
+  (* The enemy's rows are the same pads on the other side, in a neutral ground:
+     the port does not model the AI's hand, so they are a list to read rather
+     than buttons to press. *)
+  Array.iter
+    (fun (r : Layout.rect) -> emit r (Layout.rgb 34 36 46))
+    (Battle_layout.spell_rows Battle_layout.Foe);
 (* Gems come from the animation while it is running, and from the battle's own
      board when it is not. That is the whole seam: [Anim.frame] returns fractional
      cell positions for whatever phase is current, and this turns them into quads.
@@ -565,17 +764,9 @@ let draw ?(present = true) () =
                   w = r.Layout.w - 8; h = r.Layout.h - 8 }
                 (Layout.rgba 255 255 255 80))
           (Layout.aim_cells lay ~shape:(ui ()).aim_shape (hx, hy)));
-  List.iteri
-    (fun i (s : Spell.spell) ->
-      let affordable = Spell.can_cast b.Battle.hero s in
-      emit
-        { Layout.x = bg.Input.left_x + (i * (bg.Input.button_w + bg.Input.gap));
-          y = bg.Input.top_y + 20; w = bg.Input.button_w; h = bar_h - 40 }
-        (if affordable then Layout.rgb 70 120 200 else Layout.rgb 50 54 66))
-    demo_spells;
   (* The turn counters, in the game's own timer furniture: a background either
-     side of the top panel and the hourglass over it. There is no countdown in a
-     turn-based battle, so what is shown is how many turns have gone. *)
+     side of the top panel. There is no countdown in a turn-based battle, so what
+     is shown is how many turns have gone. *)
   draw_timer runs;
   (* Spell effects go in after the gems and before the text, so a sparkle is over the
      board and under the numbers it belongs to. *)
@@ -665,26 +856,29 @@ let cast_aim : Board.position option ref = ref None
 let choose_aim (_s : Spell.spell) : Board.position option = !cast_aim
 
 let choose_spell spells : Spell.spell option =
-  (* Only affordable, off-cooldown spells are live, so anything offered is a legal
-     cast. Spell.can_cast is the engine's own affordability test, the same one the
-     AI path uses. *)
-  let usable =
-    List.filter (Spell.can_cast (battle ()).Battle.hero) spells
-  in
+  (* Which rows are live is the engine's own affordability test, [Spell.can_cast]
+     - the same one the AI path uses - asked per row rather than as a count of a
+     filtered list. The two used to be separate, and a list filtered front-first
+     made the row you clicked and the spell you got disagree whenever the first
+     spell was the unaffordable one. *)
+  let hero = (battle ()).Battle.hero in
+  let live i = i < List.length spells && Spell.can_cast hero (List.nth spells i) in
   let bg = bar () in
-  Printf.printf "\n  your turn - click a button to cast, or click the board to\n\
+  Printf.printf "\n  your turn - click a row to cast, or click the board to\n\
                  \  make a match without casting:\n";
   List.iteri
-    (fun i (s : Spell.spell) -> Printf.printf "    %d) %s\n" (i + 1) s.Spell.id)
-    usable;
-  if usable = [] then
+    (fun i (s : Spell.spell) ->
+      Printf.printf "    %d) %s%s\n" (i + 1) s.Spell.id
+        (if live i then "" else "  (not enough mana)"))
+    spells;
+  if not (List.exists live (List.init (List.length spells) Fun.id)) then
     print_string "    (nothing affordable - just make a match)\n";
   flush stdout;
   let rec ask () =
     let mx, my = wait_click () in
-    match Input.in_spell_prompt bg ~usable:(List.length usable) mx my with
-    | Input.Cast i when i < List.length usable ->
-        let s : Spell.spell = List.nth usable i in
+    match Input.in_spell_prompt bg ~live mx my with
+    | Input.Cast i when live i ->
+        let s : Spell.spell = List.nth spells i in
         (* The button's own click, before the spell's sound. Both are real tags:
            `snd_buttup` is the button, and the spell sound follows from the observer
            when the battle emits the cast. *)
@@ -706,7 +900,7 @@ let choose_spell spells : Spell.spell option =
             | _ -> "cell"
           in
           Printf.printf
-            "  cast %s - click a %s (or the spell bar to cancel)\n" s.Spell.id
+            "  cast %s - click a %s (or a spell row to cancel)\n" s.Spell.id
             what;
           flush stdout;
           (* The highlight is live for exactly as long as the question is open. *)
@@ -1048,9 +1242,17 @@ let () =
         anim = Anim.create ();
         fx = Fx.create ();
         fx_textures;
-        (* Two sheets carry the whole frame: the backdrop the border is cut out
-           of, and the sheet the selection glow and turn counters live on. *)
-        skin = Skin.create ~gl ~sheets:[ "bmp_skin_backdrop"; "bmp_skin_battlemisc" ] };
+        (* Three sheets carry the frame: the backdrop the border is cut out of,
+           the battle sheet the selection glow and the missed-turn badge live on,
+           and the gems-grid sheet the two turn plates are cut from - those two
+           are `img_ltimebg` / `img_rtimebg`, whose registry rows name
+           `bmp_skin_gemsgrid`, which is why the plates used to draw nowhere at
+           all. The gems sheet is loaded twice (the gem sprites are its other
+           consumer); a 512x512 texture is cheap and one code path is not. *)
+        skin =
+          Skin.create ~gl
+            ~sheets:[ "bmp_skin_backdrop"; "bmp_skin_battlemisc";
+                      "bmp_skin_gemsgrid" ] };
 (* `--demo N` plays N turns with nobody at the keyboard before anything is
      drawn. It exists because `--shot` on its own photographs the board before the
      battle has done anything, which cannot show damage numbers, cascades or any

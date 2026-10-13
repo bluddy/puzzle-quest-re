@@ -14,9 +14,45 @@
     what it should mean, because in the real game you can make a match without
     casting anything. *)
 
-(** Where the spell bar is. Separated from [Layout] because the bar is chrome, not
-    board, and has no relationship to the board's geometry. *)
-type bar = { count : int; button_w : int; gap : int; top_y : int; left_x : int }
+(** Where the spell buttons are: their rectangles, in window pixels.
+
+    Rectangles rather than a row of numbers because the two layouts the game has
+    are not the same shape - the front end once laid its spells out in one
+    horizontal strip along the bottom, and they now sit in the original's seven
+    stacked pads down the side (`Battle_layout.spell_rows`). A bar that stores
+    the rectangles it was handed cannot disagree with the drawing, which is the
+    whole point of the type living next to the code that draws them. *)
+type bar = { rects : Layout.rect array }
+
+(** Buttons left to right, [count] of them, [button_h] tall from [top_y]. *)
+let horizontal ~count ~button_w ~button_h ~gap ~top_y ~left_x : bar =
+  {
+    rects =
+      Array.init count (fun i ->
+          {
+            Layout.x = left_x + (i * (button_w + gap));
+            y = top_y;
+            w = button_w;
+            h = button_h;
+          });
+  }
+
+(** Buttons top to bottom - the side panel's spell rows. [pitch] is the step
+    between row tops, so a gutter is [pitch - button_h]. *)
+let vertical ~count ~button_w ~button_h ~pitch ~top_y ~left_x : bar =
+  {
+    rects =
+      Array.init count (fun i ->
+          {
+            Layout.x = left_x;
+            y = top_y + (i * pitch);
+            w = button_w;
+            h = button_h;
+          });
+  }
+
+(** Wrap rectangles the caller already has - [Battle_layout.spell_rows], say. *)
+let of_rects (rects : Layout.rect array) : bar = { rects }
 
 type action =
   | Cast of int
@@ -38,21 +74,28 @@ type action =
       (** Neither board nor bar: ignored. *)
 
 let bar_button (b : bar) (mx : int) (my : int) : int option =
-  if my < b.top_y then None
-  else
-    let i = (mx - b.left_x) / (b.button_w + b.gap) in
-    if i < 0 || i >= b.count then None
-    else if mx - b.left_x - (i * (b.button_w + b.gap)) > b.button_w then None
-    else Some i
+  let rec find i =
+    if i >= Array.length b.rects then None
+    else
+      let r = b.rects.(i) in
+      if mx >= r.Layout.x && mx < r.Layout.x + r.Layout.w && my >= r.Layout.y
+         && my < r.Layout.y + r.Layout.h
+      then Some i
+      else find (i + 1)
+  in
+  find 0
 
-(** The spell prompt. [usable] is how many live buttons there are.
+(** The spell prompt. [live] answers whether a given button may be pressed - the
+    front end passes "is this spell affordable", so a greyed row is a real
+    rectangle whose click means decline rather than an index that has to line up
+    with a filtered list.
 
-    A click on a live button casts it. {e Everything else declines} - including a
-    click on a button that is not currently affordable, because the player asked
+    A click on a live button casts it. {e Everything else declines} - including
+    a click on a button that is not currently affordable, because the player asked
     to move on and blocking them would be the same trap in a smaller window. *)
-let in_spell_prompt (b : bar) ~usable (mx : int) (my : int) : action =
+let in_spell_prompt (b : bar) ~live (mx : int) (my : int) : action =
   match bar_button b mx my with
-  | Some i when i < usable -> Cast i
+  | Some i when live i -> Cast i
   | _ -> Decline
 
 (** The target prompt, for a spell whose [input_type] is not 0.
