@@ -219,6 +219,17 @@ and effect_context = {
       script, which knows the flag, and passing it twice is how the two would
       disagree. *)
   fx_grid_effect : (Board.position -> Spell_fx.fx -> unit) option;
+  (** [GET_SKILL]'s kind-5 query against the caster, recomputed live: raw skill,
+      the equipped items' OnQuerySkill hooks, the active statuses' hooks, then
+      the temp-skill accumulator - what [Battle.skill_value] folds, for any of
+      the seven skills rather than just the four elements.
+
+      [ADD_TEMP_SKILL] needs this because its ceiling move and its Morale-to-life
+      move compare the effective skill *before* the accumulator write against the
+      value after it, and the fold runs over the battle's loadout and effects
+      that a bare [combatant] in hand cannot reach. The caller clamps the result
+      to 999 the way GET_SKILL does at 0x465f30. *)
+  fx_effective_skill : (skill -> int);
 }
 
 let total_cost (s : spell) =

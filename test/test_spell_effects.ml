@@ -50,6 +50,18 @@ let fx ?(spell = None) ?(percentile = 0) ?(input = None) ?(grid_effect = None)
   ; Spell.fx_spell = spell
   ; Spell.fx_percentile = percentile
   ; Spell.fx_grid_effect = grid_effect
+  ; Spell.fx_effective_skill =
+      (fun k ->
+        (* The kind-5 fold a battle would run, without a battle: no items on
+           this context, statuses through the standard descriptors, then the
+           live accumulator. [add_temp_skill] clamps the result to 999 the way
+           GET_SKILL does. *)
+        let v =
+          Combat.query_skill caster Status_effect_hooks.descriptors ~k ~roll
+            ~battle:{ Combat.spells_disallowed = false }
+            (Combat.skill_in k caster.Combat.skills)
+        in
+        v + Combat.skill_in k caster.Combat.temp_skills)
   }
 
 (** Runs a ported effect by id. Fails loudly rather than silently skipping: a
@@ -423,16 +435,20 @@ let () =
   let b = ref (board_with Spell.GYellow 6) in
   run "SBNA" ~caster:c ~foe:(foe ()) b;
   check "SBNA destroys the Air gems" (count_of !b (Mana Air) = 0);
-  check "SBNA banks six Air skill" (Combat.skill_in SAir c.skills = 6);
-  check "SBNA leaves the other skills alone"
-    (Combat.skill_in SEarth c.skills = 0 && Combat.skill_in SBattle c.skills = 0)
+  check "SBNA banks six Air skill" (Combat.skill_in SAir c.temp_skills = 6);
+  check "SBNA leaves the raw skills alone"
+    (Combat.skill_in SAir c.skills = 0 && Combat.skill_in SEarth c.skills = 0);
+  check "SBNA leaves the other temp skills alone"
+    (Combat.skill_in SEarth c.temp_skills = 0 && Combat.skill_in SBattle c.temp_skills = 0);
+  check "SBNA carries the Air ceiling with it: 25 + (6 + 1) / 2"
+    (Combat.max_mana c Combat.Air = 28)
 
 let () =
   (* SBAV empties Earth into Battle skill, draining first so the number cannot be
      counted twice. *)
   let c = caster ~mana:{ Combat.earth = 12; fire = 0; air = 0; water = 0 } () in
   run "SBAV" ~caster:c ~foe:(foe ()) (ref (board_with Spell.GGreen 0));
-  check "SBAV banks twelve Battle skill" (Combat.skill_in SBattle c.skills = 12);
+  check "SBAV banks twelve Battle skill" (Combat.skill_in SBattle c.temp_skills = 12);
   check "SBAV empties the Earth pool" (Combat.mana c Combat.Earth = 0);
 
   (* SESK takes both skull kinds. *)
@@ -440,7 +456,7 @@ let () =
   let b2 = ref (board_two_kinds ~filler:(Mana Fire) ~a:Skull ~b:RedSkull ~na:2 ~nb:3) in
   run "SESK" ~caster:c2 ~foe:(foe ()) b2;
   check "SESK banks five Battle skill from both skull kinds"
-    (Combat.skill_in SBattle c2.skills = 5);
+    (Combat.skill_in SBattle c2.temp_skills = 5);
   check "SESK removes both skull kinds"
     (count_of !b2 Skull = 0 && count_of !b2 RedSkull = 0);
 
@@ -456,9 +472,9 @@ let () =
   let ctx = fx ~roll:(fun n -> if n >= 7 then 5 else 0) ~caster:c4 ~foe:(foe ()) b4 in
   Spell_effects.effect_sflv ctx;
   check "SFLV draining to index 5 lands on Cunning"
-    (Combat.skill_in SCunning c4.skills = 9);
+    (Combat.skill_in SCunning c4.temp_skills = 9);
   check "SFLV empties the Fire pool" (Combat.mana c4 Combat.Fire = 0);
-  check "SFLV put nothing in Morale" (Combat.skill_in SMorale c4.skills = 0)
+  check "SFLV put nothing in Morale" (Combat.skill_in SMorale c4.temp_skills = 0)
 
 let () =
   (* Shape 5: taking the enemy's mana. SFSP heals for exactly what it took. *)
@@ -1354,8 +1370,13 @@ let () =
   let ctx = fx ~roll:(fun _ -> 0) ~caster:c ~foe:(foe ()) b in
   Spell_effects.effect_sswm ctx;
   check "SSWM deletes the Air gems" (count_of !b (Mana Air) = 0);
-  check "SSWM heals six" (c.life = 56);
-  check "SSWM banks six Morale" (Combat.skill_in SMorale c.skills = 6);
+  (* 56 is not the whole story: banking six Morale also moves life by case 7 of
+     0x478620 - floor(3 * 6 / 2) = 9 - through ADD_LIFE (clamped at the old
+     max of 100) and then ADD_MAX_LIFE, so six from the script plus nine from
+     the Morale move. *)
+  check "SSWM heals six from the script and nine from the Morale move" (c.life = 65);
+  check "SSWM raised max life by the Morale move too" (c.max_life = 109);
+  check "SSWM banks six Morale" (Combat.skill_in SMorale c.temp_skills = 6);
   check "SSWM restored the bonus flags" ctx.Spell.fx_flags.wildcard_chance
 
 let () =
@@ -1668,6 +1689,55 @@ let () =
   let b = empty_board () in
   run "SBAC" ~caster:(caster ()) ~foe:(foe ()) b;
   check "a spell still works with no observer attached" (count_of !b RedSkull >= 1)
+
+let () =
+  (* The two moves ADD_TEMP_SKILL makes around the accumulator write: the
+     elemental ceiling follows the effective skill while preserving the offset
+     SET_MAX_MANA wrote between it and the derived value, a lowered ceiling
+     clamps the pool down (0x4839f0), the increment stops with the effective
+     skill at 999 (GET_SKILL's own clamp), and a Morale change moves life and
+     max life by case 7 - floor(3 * skill / 2) - through ADD_LIFE clamped at
+     the old max and then ADD_MAX_LIFE, the order at 0x48c608. *)
+  let b = ref (board_with Spell.GGreen 0) in
+  let c = caster ~life:50 () in
+  let ctx = fx ~caster:c ~foe:(foe ()) b in
+  Spell_effects.add_temp_skill ctx SFire 5;
+  check "temp Fire lifts the Fire ceiling by three" (Combat.max_mana c Combat.Fire = 28);
+  check "temp Fire leaves life and max life alone" (c.life = 50 && c.max_life = 100);
+  check "temp Fire did not touch the other ceilings"
+    (Combat.max_mana c Combat.Earth = 25 && Combat.max_mana c Combat.Air = 25);
+
+  (* A ceiling SET_MAX_MANA raised above the derived value keeps its offset. *)
+  Spell_effects.set_max_mana c Combat.Fire 40;
+  Spell_effects.add_temp_skill ctx SFire 4;
+  check "the SET_MAX offset rides along with the skill" (Combat.max_mana c Combat.Fire = 42);
+
+  (* Lowering the ceiling past the pool takes the pool down with it. *)
+  Combat.set_mana c Combat.Fire 41;
+  Spell_effects.add_temp_skill ctx SFire (-7);
+  check "a lowered ceiling clamps the pool down"
+    (Combat.max_mana c Combat.Fire = 38 && Combat.mana c Combat.Fire = 38);
+
+  (* The increment caps at 999 effective - the fold's own value - not at the
+     accumulator, so a raw skill of 996 gains three, not three short of 999. *)
+  let c2 = make_combatant ~skills:{ Combat.zero_skills with air = 996 } 0 "capped" in
+  let ctx2 = fx ~caster:c2 ~foe:(foe ()) (ref (board_with Spell.GGreen 0)) in
+  Spell_effects.add_temp_skill ctx2 SAir 10;
+  check "the increment stops with the effective skill at 999"
+    (Combat.skill_in SAir c2.temp_skills = 3);
+  check "the ceiling follows the capped value" (Combat.max_mana c2 Combat.Air = 525);
+
+  (* Morale moves life by floor(3 * skill / 2), up and back down, and leaves
+     the elemental ceilings alone. *)
+  let c3 = caster ~life:50 () in
+  let ctx3 = fx ~caster:c3 ~foe:(foe ()) (ref (board_with Spell.GGreen 0)) in
+  Spell_effects.add_temp_skill ctx3 SMorale 6;
+  check "Morale +6 moves life by nine (clamped at the old max) and max by nine"
+    (c3.life = 59 && c3.max_life = 109);
+  check "a Morale change leaves the elemental ceilings alone"
+    (Combat.max_mana c3 Combat.Fire = 25);
+  Spell_effects.add_temp_skill ctx3 SMorale (-6);
+  check "Morale back to zero puts life and max life back" (c3.life = 50 && c3.max_life = 100)
 
 let () =
   if !failures = 0 then print_endline "All spell effect tests passed."

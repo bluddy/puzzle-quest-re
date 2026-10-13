@@ -342,8 +342,10 @@ type hooks = {
       (** (ctx, value) -> value *)
   on_receive_xp : (item_context -> int -> int) option;
       (** (ctx, value) -> value *)
-  on_query_skill : (int -> int -> int -> int) option;
-      (** (value, characterIdx, skillIdx) -> value *)
+  on_query_skill : (item_context -> int -> skill -> int) option;
+      (** (ctx, value, skill) -> value. The Lua signature is
+          (value, characterIdx, skillIdx); the port knows the character from the
+          loadout it walks, and [skill] replaces the raw index for type safety. *)
   on_query_resistance : (int -> element -> int -> int) option;
   on_start_turn : (item_context -> int -> unit) option;
       (** (ctx, turnNumber) -> () *)
@@ -602,4 +604,19 @@ let run_victory (l : loadout) (ctx : item_context) : string list =
           fired @ [ item_id i ]
       | None -> fired)
     [] (equipped l)
+
+(** [OnQuerySkill], folded over the loadout in slot order. The fold starts from
+    the raw skill and each hook sees the running value, matching the binary's
+    order: raw, then item hooks, then status hooks, then the temp-skill
+    accumulator (added by [Battle.skill_of] after this fold). Addition is
+    commutative so the item hooks' order among themselves is invisible; the
+    only non-additive hook is IBNC's, which reads [GET_SKILL(AIR)] - a raw
+    skill read rather than a nested query, so it cannot recurse. *)
+let run_query_skill (l : loadout) (ctx : item_context) ~(k : skill) (value : int) : int =
+  List.fold_left
+    (fun acc i ->
+      match i.hooks.on_query_skill with
+      | Some f -> f ctx acc k
+      | None -> acc)
+    value (equipped l)
 

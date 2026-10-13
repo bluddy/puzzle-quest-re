@@ -250,4 +250,3 @@ battle callbacks and applies each scriptcall's extracted body effects.
 Pick one:
 
 - **Forge minigame** - the skill game [FORGEITEMS_FAIL] expects (the ten Easy..Godlike bands become targets) and the [MAXRUNEITEM] cap
-- **The effective-skill query** - the one unread half of the ceiling formula: a vtable slot at +0x20 taking (kind 5, raw skill, level, element) and clamping to 999, which decides whether level folds into `25 + (effective skill + 1) / 2`; the port uses the raw skill until it is read, and a decoded .pqhero's Masteries beside its mana pools would pin it from the other side

@@ -1,30 +1,30 @@
 # Puzzle Quest Clean-Room Reimplementation — Status
 
-**Date:** 2026-10-12  
+**Date:** 2026-10-13  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree (mana-ceiling RE round). `quest.base_value_from_level` is answered as far as the binary gives up: the character constructor at **0x4661f0** zeroes the four ceilings and computes each one as **25 + (effective skill + 1) / 2** - the half is `0x478620`'s case 3, `(v + 1) / 2`, and the 25 is also what the sibling constructor `0x466060` writes flat to all four; `ADD_TEMP_SKILL`'s call at `0x48c5d5` moves a ceiling by the delta of that same expression, which is why the two paths agree, and the setter at `0x4839f0` is the only writer of the field anywhere in the image - five callers in all, the four `SET_MAX_MANA_*` Lua bindings and `ADD_TEMP_SKILL`. The walk that found them is the existing recursive-descent map (954,645 decoded instruction bytes, 82.9% of `.text`, 10,478 functions) plus one gap in its seeding: `Lua_ADD_TEMP_SKILL.c` has no address in its filename, so the binding was never a seed until `docs/LUA_API.md`'s va column fed it in - that is what turned "four callers" into the fifth. In the port, `Combat.base_mana_limit = 25` replaces the chosen 20, `mana_limit_for_skill` / `caps_for` are the formula, and `make_combatant` derives `max_mana` from the `skills` it is given (one reordered optional parameter), so `player_to_combatant` and `monster_to_combatant` get skill-derived ceilings without knowing about ceilings at all; `default_mana_limit` keeps its name, now equal to the zero-skill base, because the tests compare against the name rather than the number. Three test blocks that wanted a *specific* cap now pin one explicitly. What is still unread is the effective skill itself - a virtual call taking `(kind 5, raw skill, level, element)` - so the question is narrowed to that and the port uses the raw skill and says so (`port.mana_ceiling_from_skills`). `mana.ceiling.base_value` went from `assumed` / low to `recovered` / high. All 34 suites pass (2625 checks), extractor `--check` and the evidence validator green (98 claims, 11 questions / 5 open, 46 decisions).
+**Sync:** clean tree (ADD_TEMP_SKILL ceiling-move round). `add_temp_skill` now makes both moves the native at 0x48c510 makes around the accumulator write. First, the increment is capped so the *effective* skill cannot pass 999 - GET_SKILL clamps its own result at 0x3e7, so the value read before the write is the fully folded kind-5 query, not the raw skill. Second, an elemental skill carries its ceiling: the stored ceiling moves by `mana_limit_for_skill(after) - mana_limit_for_skill(before)` through `set_max_mana`, which preserves whatever offset SET_MAX_MANA put between the ceiling and the derived value, and the setter (0x4839f0) clamps the pool down if it sat above the new ceiling. Third, a Morale change moves life and max life by the delta of case 7 of 0x478620 - `floor (3 * skill / 2)`, the cdq/sar at 0x478633, now `(3 * v) asr 1` - through ADD_LIFE (0x445c40, `life = min(life + delta, max_life)` for any sign, unlike the positive-only `add_life` primitive) and then ADD_MAX_LIFE (0x445c80), the order at 0x48c608: life first, clamped at the *old* max, then the max. The move needs the effective skill before *and* after the write, which a bare combatant cannot fold, so `Spell.effect_context` grew `fx_effective_skill` - `Battle.skill_value` is the kind-5 fold generalized from `skill_of` over all seven skills, and the test contexts fold over the standard descriptors with no items. `mana_limit_for_skill` now floors through `asr 1` (case 3 floors with cdq/sar too; the two formulas differ only below zero). SBNA pins its Air ceiling at 28, SSWM pins life 65 / max 109 (six from the script plus nine from the Morale move), and a new block pins the SET_MAX offset ride, the pool clamp, the 999 cap and a Morale round trip - 34 suites, 2640 checks, extractor `--check` and the evidence validator green (98 claims, 11 open questions, 46 decisions). GAPS.md lost its ADD_TEMP_SKILL row.
 
 ---
 
-## Next Round Options (surveyed 2026-10-12; six rounds landed the same day)
+## Next Round Options (surveyed 2026-10-12; six rounds landed that day, two follow-ons on 2026-10-13)
 
-The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), both follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`), and the mana ceiling is recovered rather than chosen. What is left is one RE thread, one map round, one doc audit and one UI chunk. Ranked by leverage:
+The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), and the mana ceiling is recovered rather than chosen. What is left is one map round, one doc audit and one UI chunk. Ranked by leverage:
 
-### 1. The effective-skill query (new)
-
-The one unread half of the ceiling formula: `ceiling = 25 + (effective skill + 1) / 2`, where the effective skill comes from a virtual call taking `(kind 5, raw skill, level, element)` and clamping to 999 (`quest.base_value_from_level`). Level is handed to it, so it may or may not fold in - and the difference shows: the decoded hero that banks 31 Fire at level 5 needs an effective skill of 11, where a profession's raw base of 3 gives 27. The port uses the raw skill, so a high-level hero's cap may be understated and every `mana_at_limit` read with it. The work is one function: find the character vtable's slot at +0x20 for the hero class and read it. The other way in is a decoded .pqhero - its seven Masteries beside its mana pools pin what the formula had to produce.
-
-### 2. Fog of war and visible range (GAPS row 3)
+### 1. Fog of war and visible range (GAPS row 3)
 
 Visibility flags exist, save correctly and are drawn by the map window, but nothing recomputes what the hero can see from where they stand - a road is visible when both endpoints are, which is the rule the engine recovered, and that is as far as it goes. This is the medium milestone with the most of its machinery already in place: `set_location_visible`, the reveal hooks, the saved live state, and a renderer that already paints the flags. The open half is the range rule itself, which needs the same RE treatment the ceiling just had (what radius, and does it depend on level or on standing at a node?).
 
-### 3. Close stale open questions - cheap doc round
+### 2. Close stale open questions - cheap doc round
 
-`quest.difficulty_consumers` still says "the quest layer that would choose taskLevel does not exist yet", but `run_quest_battle` now passes `monster.level_base` and road fights pass `enc.my_level` (`port.campaign_task_level`). An audit of the five remaining open questions (`font.advance_field_mapping`, `quest.base_value_from_level`, `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`, `board.gem_id_air_water_order`) against the landed code could retire at least one and sharpen the others - the gem-id one only needs a second source for the 3/4 order, and one of the five was just narrowed rather than closed.
+`quest.difficulty_consumers` still says "the quest layer that would choose taskLevel does not exist yet", but `run_quest_battle` now passes `monster.level_base` and road fights pass `enc.my_level` (`port.campaign_task_level`). An audit of the four remaining open questions (`font.advance_field_mapping`, `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`, `board.gem_id_air_water_order`) against the landed code could retire at least one and sharpen the others - the gem-id one only needs a second source for the 3/4 order, and `quest.base_value_from_level` was just closed.
 
-### 4. Battle UI / spell list - start the full graphics battle
+### 3. Battle UI / spell list - start the full graphics battle
 
 `pq_play_gfx` exists but minimal: no spell panel with costs, no mana bars, no persistent combat log. The data is all there (130 spells with costs, mana pools, float-text events) and the log now carries `MissedTurn` too. Large SDL chunk, different flavour from the engine rounds.
+
+### Closed rounds from this list
+
+- ~~The effective-skill query~~ (closed 2026-10-13): level does not fold in - the kind-5 query starts from the raw skill, folds item and status OnQuerySkill hooks, and adds the temp-skill accumulator at `record[skillIdx*4 + 0x68]`. The decoded hero's 31 Fire is training plus the accumulator, not level scaling. The follow-on inside `ADD_TEMP_SKILL` (ceiling move, Morale-to-life move, 999 clamp) closed the same day.
 
 ---
 
@@ -39,9 +39,16 @@ Visibility flags exist, save correctly and are drawn by the map window, but noth
   field in the image). `Combat.caps_for` is the formula and `make_combatant`
   derives `max_mana` from the skills it is given, so heroes and monsters carry
   ceilings that agree with their masteries instead of a chosen 20
-  (`port.mana_ceiling_from_skills`). The one unread half is the effective-skill
-  query, a virtual call over (skill, level, element) - `quest.base_value_from_level`
-  - and the port uses the raw skill until it is read.
+  (`port.mana_ceiling_from_skills`). The effective-skill query is now read
+  (`quest.base_value_from_level`): level does not fold in; the query is raw
+  skill + item OnQuerySkill hooks + status OnQuerySkill hooks + the
+  temp-skill accumulator at `record[skillIdx*4 + 0x68]`, all wired in the port.
+  `ADD_TEMP_SKILL` carries everything around its write: the increment stops
+  with the effective skill at 999 (GET_SKILL's own clamp), an elemental skill
+  moves the stored ceiling by the `25 + (effective + 1) / 2` delta through
+  `set_max_mana` (keeping any `SET_MAX_MANA` offset and clamping the pool),
+  and a Morale delta moves life - clamped at the old max - and then max life,
+  the native's order at `0x48c608`
 
 - **Spells:** 130 spells ported from Lua; 11 spells with 13 grid-effect calls (`Std_GridSpellEffect`); the nine `Input` spells aim from the cast question (`choose_aim` -> `fx_input`) and the six hook picks land as `ctx_aim`
 - **Animation:** Per-gem pop (matched fade/shrink), column-bottom-up fall, entrant slide; `Battle.on_step` observer
@@ -328,10 +335,11 @@ Key decisions recorded:
 - `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
-Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
+Open questions (4): `font.advance_field_mapping`,
 `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
 `board.gem_id_air_water_order` (the decompile says gem ids 3 water / 4 air,
 `StandardConstants.lua` says the reverse; nothing observable depends on it yet).
+`quest.base_value_from_level` is closed (recovered): level does not fold in.
 
 ---
 
@@ -359,7 +367,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 34 suites pass (exit 0, 2625 checks, 2026-10-12). Extractor `--check` modes validate against
+All 34 suites pass (exit 0, 2640 checks, 2026-10-13). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -369,7 +377,7 @@ source assets.
 | Priority | Area | Description |
 |----------|------|-------------|
 | **High** | **Item effects** | **Landed:** all eight hook kinds dispatched and ported - the six event kinds at the six battle-loop points, both damage chains (`OnGiveDamage` 51/53, `OnReceiveDamage` 38/38), the board writes (`ic_set_gem` / `ic_destroy_gem` / the `GetRandomGrid_*` pickers) behind nine more, every capped mana credit running the fold (`port.mana_credit_registry`), and the turn loop spending `Missed` so IFZT and ITUT are in too (`port.missed_turn_placement`). **131 of the 133 hook declarations run**; `known_unported` is two ids - IALS and ILBC, both against natives with nothing behind them - and the item layer has nothing open (`port.item_event_context`, `port.item_event_dispatch_order`, `port.item_board_writes`). |
-| **High** | **Mana ceiling** | **Landed:** the ceiling is `25 + (skill + 1) / 2` per element, read out of the character constructor at `0x4661f0` and confirmed by the `ADD_TEMP_SKILL` delta at `0x48c5d5` with `0x4839f0` the image's only writer of the field; `Combat.caps_for` feeds `make_combatant`'s default (`port.mana_ceiling_from_skills`), and `mana.ceiling.base_value` went from assumed/low to recovered/high. **Open:** the effective-skill query - one vtable slot (+0x20) taking (skill, level, element), which is what decides whether a high-level hero's cap is understated (`quest.base_value_from_level`) |
+| **High** | **Mana ceiling** | **Landed:** the ceiling is `25 + (skill + 1) / 2` per element, read out of the character constructor at `0x4661f0` and confirmed by the `ADD_TEMP_SKILL` delta at `0x48c5d5` with `0x4839f0` the image's only writer of the field; `Combat.caps_for` feeds `make_combatant`'s default (`port.mana_ceiling_from_skills`), and `mana.ceiling.base_value` went from assumed/low to recovered/high. The effective-skill query is closed (`quest.base_value_from_level`): level does not fold in; raw skill + item/status OnQuerySkill hooks + temp accumulator, all wired; the `ADD_TEMP_SKILL` follow-on landed 2026-10-13: the ceiling moves with the skill, the increment stops at 999 effective, and a Morale delta moves life and max life |
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equip landed (roster + party, home-gated pickup, the map Companions tab) |
 | **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, the shared `Conv_window` that opens queued trees over the map, and the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5/QU02, fired inside `execute_callback`) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
@@ -408,7 +416,7 @@ source assets.
 7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
 9. **Item hooks, the rest** - the layer is done as far as it can be: all eight kinds dispatched, 131 of the 133 hook declarations ported, and the two that are not (`known_unported`) are IALS's per-character `SUBTRACT_XP` and ILBC's `GET_CHARACTER_ID`, which need a per-character experience pool and a registry id on the combatant respectively - not hooks, just fields the port does not model |
-10. **Mana ceilings** - derived from the skills as `25 + (skill + 1) / 2`, so a character's caps agree with its masteries instead of a chosen 20; open is the effective-skill query behind it (a virtual call over raw skill, level and element, unread), which the port stands in for with the raw skill - and a decoded save's Masteries beside its pools is the other way to settle it
+10. **Mana ceilings** - derived from the skills as `25 + (skill + 1) / 2`, so a character's caps agree with its masteries instead of a chosen 20; the effective-skill query is now closed - level does not fold in, and the port models the full formula (raw skill + item/status OnQuerySkill hooks + temp accumulator). `ADD_TEMP_SKILL` moves the ceiling with the skill, caps the increment at 999 effective, and moves life/max on Morale
 
 ---
 

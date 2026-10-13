@@ -20,9 +20,10 @@
     - [SET_MAX_MANA_<E>] - stores the new ceiling and clamps the pool down to it,
       so lowering a ceiling destroys held mana.
     - [EXTRA_TURN] - banks an extra turn for the caster.
-    - [ADD_TEMP_SKILL] - a flat change to one of the seven skills. Separate from
-      spending mana: the skill is what drives mana {e yield}, so a spell can raise
-      the pool without touching the pool.
+    - [ADD_TEMP_SKILL] - a flat change to one of the seven skills, carrying the
+      elemental ceilings with it and a Morale change with life. Separate from
+      spending mana: the skill is what drives mana {e yield}, so a spell can
+      raise the pool without touching the pool.
     - [ADD_LIFE] / [SUBTRACT_LIFE] - direct life changes. [SUBTRACT_LIFE] goes
       through the damage hooks, so it is not a bare assignment.
     - [MISS_TURNS] - makes a combatant skip its next turns.
@@ -88,12 +89,67 @@ let set_max_mana (c : combatant) (e : element) (value : int) : unit =
 (* Skills, life and turns                                                *)
 (** ------------------------------------------------------------------ *)
 
-(** [ADD_TEMP_SKILL(idx, skill, amount)]: a flat change to one skill.
+(** The life a Morale score is worth: case 7 of the value map at 0x478620,
+    [floor (3 * morale / 2)]. The binary gets the floor with cdq/sar; [asr 1]
+    is the same operation, and [(/)] would not be for a negative score. *)
+let morale_life (v : int) : int = (3 * v) asr 1
 
-    [Combat.add_skill] saturates rather than wrapping, matching the 999 cap the
-    mana-yield path recovers. *)
-let add_temp_skill (c : combatant) (k : skill) (amount : int) : unit =
-  if amount = 0 then () else c.skills <- Combat.add_skill k amount c.skills
+(** [ADD_TEMP_SKILL(idx, skill, amount)]: a flat change to one skill's
+    temp-skill accumulator, with the two moves the native makes around the
+    write (0x48c510).
+
+    The accumulator lives at registry record[skillIdx*4 + 0x68], separate from
+    the raw skill at char+0x48: the kind-5 effective-skill query adds it after
+    folding the item and status OnQuerySkill hooks, so a multiplicative hook
+    like Fear sees the raw skill rather than raw-plus-temp.
+
+    Around the write, three things happen:
+
+    - the increment is capped so the *effective* skill cannot pass 999. The cap
+      is on what GET_SKILL returns - it clamps its own result at 0x3e7 - so the
+      old value read here is the fully folded query, not the raw skill or the
+      accumulator alone;
+
+    - an elemental skill carries its ceiling with it: the stored ceiling moves
+      by the delta of [mana_limit_for_skill] over the effective skill before and
+      after the write, which preserves whatever offset SET_MAX_MANA put between
+      the ceiling and the derived value, and the setter clamps the pool down if
+      it sat above the new ceiling (0x4839f0);
+
+    - a Morale change moves life and max life by the delta of case 7, through
+      ADD_LIFE and then ADD_MAX_LIFE (0x445c40 then 0x445c80 - the order at
+      0x48c608). Life moves first, clamped at the *old* max, then the max
+      moves: raising Morale buys capacity and, up to the old max, health;
+      lowering it costs life before it costs capacity. *)
+let add_temp_skill (fx : effect_context) (k : skill) (amount : int) : unit =
+  if amount <> 0 then begin
+    let c = fx.fx_caster in
+    let old = min 999 (fx.fx_effective_skill k) in
+    (* 0x48c597: if old + amount passes 999, the increment becomes what is
+       left to 999 - and GET_SKILL clamps low at nothing, so the remainder is
+       never negative. *)
+    let amount = if old + amount > 999 then 999 - old else amount in
+    if amount <> 0 then begin
+      c.temp_skills <- add_skill k amount c.temp_skills;
+      (match element_of_skill k with
+      | None -> ()
+      | Some e ->
+          let lifted = mana_limit_for_skill (old + amount) - mana_limit_for_skill old in
+          set_max_mana c e (mana_of e c.max_mana + lifted));
+      if k = SMorale then begin
+        let moved = morale_life (old + amount) - morale_life old in
+        if moved <> 0 then begin
+          (* ADD_LIFE: life = min(life + delta, max_life), any sign - unlike the
+             [add_life] primitive above, which models the Lua that only ever
+             heals. *)
+          let raised = c.life + moved in
+          c.life <- if raised < c.max_life then raised else c.max_life;
+          (* ADD_MAX_LIFE: max_life += delta, no clamp. *)
+          c.max_life <- c.max_life + moved
+        end
+      end
+    end
+  end
 
 (** [ADD_LIFE(idx, amount)]: flat heal, not capped at [max_life] unless the native
     is. The natives that heal a percentage compute it themselves in Lua. *)
@@ -797,7 +853,7 @@ let effect_schw fx = mana_then_extra_turn ~elem:Water ~amount:5 fx
 let gems_into_skill ~(gem : Board.gem) ~(skill : skill) fx =
   let n = count_gems_of fx gem in
   destroy_all_gems fx gem;
-  add_temp_skill fx.fx_caster skill n
+  add_temp_skill fx skill n
 
 let effect_sbna fx = gems_into_skill ~gem:gem_air ~skill:SAir fx
 let effect_sbne fx = gems_into_skill ~gem:gem_earth ~skill:SEarth fx
@@ -814,7 +870,7 @@ let effect_sbnw fx = gems_into_skill ~gem:gem_water ~skill:SWater fx
 let effect_sbav fx =
   let m = Combat.mana fx.fx_caster Earth in
   set_mana fx.fx_caster Earth 0;
-  add_temp_skill fx.fx_caster SBattle m
+  add_temp_skill fx SBattle m
 
 (** SESK is SBAV's shape over skulls instead of mana, and it takes both skull
     kinds. They are counted first and deleted second, and the two counts add
@@ -824,13 +880,13 @@ let effect_sesk fx =
   let n = count_gems_of fx Board.Skull + count_gems_of fx Board.RedSkull in
   delete_all_gems fx Board.Skull;
   delete_all_gems fx Board.RedSkull;
-  add_temp_skill fx.fx_caster SBattle n
+  add_temp_skill fx SBattle n
 
 (** SREV doubles the caster's existing Battle skill. A no-op at zero, since adding
     zero to zero is zero - the Lua does not guard it either. *)
 let effect_srev fx =
   let have = Combat.skill_in SBattle fx.fx_caster.Combat.skills in
-  add_temp_skill fx.fx_caster SBattle have
+  add_temp_skill fx SBattle have
 
 (** SFLV empties the Fire pool into a {e random} skill, drawn with
     [GET_RANDOM_SYNC(0,6)] - seven options, so every one of the seven skills.
@@ -844,7 +900,7 @@ let effect_sflv fx =
   let m = Combat.mana fx.fx_caster Fire in
   let idx = fx.fx_roll 7 in
   set_mana fx.fx_caster Fire 0;
-  add_temp_skill fx.fx_caster (Combat.skill_of_index idx) m
+  add_temp_skill fx (Combat.skill_of_index idx) m
 
 (* ------------------------------------------------------------------ *)
 (* Shape 5: taking the enemy's mana                                      *)
@@ -1985,7 +2041,7 @@ let effect_sswm fx =
   let num_gems = count_gems_of fx gem_air in
   delete_all_gems fx gem_air;
   healing fx.fx_caster num_gems;
-  add_temp_skill fx.fx_caster SMorale num_gems;
+  add_temp_skill fx SMorale num_gems;
   set_multiplier_effects fx true
 
 (** [SCMA]: destroy one mana kind, chosen by the shared percentile.

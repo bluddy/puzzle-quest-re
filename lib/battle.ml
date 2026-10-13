@@ -470,19 +470,36 @@ let match_item_hooks (b : battle) (c : combatant) ~(of_five : bool) : string lis
 let victory_item_hooks (b : battle) (winner : combatant) : string list =
   Item.run_victory (loadout_of b winner) (item_context b ~self:winner)
 
-(** The skill that drives mana yield for an element.
+(** The effective skill for any of the seven, the fold [skill_of] takes an
+    element out of.
 
     A character's skill is a separate field from its mana balance in the
     original: the extra turn roll reads the skill, so a character sitting on a
     large unearned pool rolls no better than its training justifies. Clamped to
     [rules.hero_skill_cap] because the original clamps at 999 before computing
-    the yield. *)
+    the yield.
+
+    The fold order is the binary's kind-5 query at 0x466610: raw skill, then the
+    equipped items' OnQuerySkill hooks, then the active status effects'
+    OnQuerySkill hooks, then the temp-skill accumulator at
+    record[skillIdx*4 + 0x68]. Level does not fold in (quest.base_value_from_level). *)
+let skill_value (c : combatant) (b : battle) (k : skill) : int =
+  let trained = min b.rules.hero_skill_cap (skill_in k c.skills) in
+  (* Items first, then status effects, then the accumulator - the binary's
+     order. Fear halves and Enraged folds in the Fire pool, so the trained
+     value is the starting point rather than the answer. *)
+  let with_items =
+    Item.run_query_skill (loadout_of b c) (item_context b ~self:c) ~k trained
+  in
+  let with_status =
+    query_skill c b.effects ~k ~roll:b.rng ~battle:b.effect_state with_items
+  in
+  with_status + skill_in k c.temp_skills
+
+(** The skill that drives mana yield for an element: [skill_value] read for the
+    element's own skill name. *)
 let skill_of (c : combatant) (b : battle) (e : element) : int =
-  let trained = min b.rules.hero_skill_cap ((skill_in (skill_of_element e) c.skills)) in
-  (* Fear halves and Enraged folds in the Fire pool, so the trained value is the
-     starting point rather than the answer. This is the only read of a skill that
-     goes through the status effects. *)
-  query_skill c b.effects ~k:(skill_of_element e) ~roll:b.rng ~battle:b.effect_state trained
+  skill_value c b (skill_of_element e)
 
 (** Credits mana and rolls for the extra turn, once per matched run.
 
@@ -829,6 +846,7 @@ let effect_context (b : battle) (actor : combatant) (defender : combatant)
           Some
             (fun cell fx ->
               f { grid_fx_cell = cell; grid_fx_effect = fx; grid_fx_caster = actor.Combat.name }))
+  ; Spell.fx_effective_skill = (fun k -> skill_value actor b k)
   }
 
 (** One turn for the acting side: at most one spell, then a swap only if the

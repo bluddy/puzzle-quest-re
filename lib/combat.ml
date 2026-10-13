@@ -122,11 +122,14 @@ type skills = {
 let zero_skills =
   { earth = 0; fire = 0; air = 0; water = 0; battle = 0; morale = 0; cunning = 0 }
 
-(** [base + (skill + 1) / 2]: the ceiling one element's mastery implies, as the
-    constructor at 0x4661f0 computes it. The half is integer division, which is
-    what 0x478620's case 3 does: two points of skill buy a point of ceiling, and
-    a raw skill of 0 leaves the base exactly where it is. *)
-let mana_limit_for_skill (skill : int) : int = base_mana_limit + (skill + 1) / 2
+(** [base + floor((skill + 1) / 2)]: the ceiling one element's mastery implies,
+    as the constructor at 0x4661f0 computes it. The half is case 3 of 0x478620,
+    which floors with cdq/sar - [asr 1] is the same operation, so a negative
+    effective skill (a Morale or elemental penalty past zero) lands where the
+    binary lands rather than a division rounding toward zero. Two points of
+    skill buy a point of ceiling, and a raw skill of 0 leaves the base exactly
+    where it is. *)
+let mana_limit_for_skill (skill : int) : int = base_mana_limit + ((skill + 1) asr 1)
 
 (** The four ceilings a [skills] record implies. [make_combatant] uses this as
     its default, so a combatant built with skills carries ceilings that agree
@@ -205,6 +208,12 @@ type combatant = {
   (* Trained skill per element. Drives mana yield and the extra turn roll, and
      is independent of the balance above: spending mana never lowers it. *)
   mutable skills : skills;
+  (* The temp-skill accumulator at registry record[skillIdx*4 + 0x68], which
+     [ADD_TEMP_SKILL] writes and the kind-5 effective-skill query adds after
+     folding the item and status OnQuerySkill hooks. Separate from [skills]
+     because the hooks fold over the raw skill, not raw-plus-temp: Fear's
+     halving sees the trained skill and the accumulator rides on top. *)
+  mutable temp_skills : skills;
   mutable is_dead : bool;
   (* Per-character extra turns banked. This is the original's m_turnsLeft,
      which is only ever incremented by EXTRA_TURN. *)
@@ -279,6 +288,7 @@ let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_
     mana;
     max_mana;
     skills;
+    temp_skills = zero_skills;
     is_dead = false;
     extra_turns;
     effects;

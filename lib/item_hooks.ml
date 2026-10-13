@@ -828,6 +828,40 @@ let hook_idsh_start = hook_reset_counter "IDSH"
 let hook_inob_start = hook_reset_counter "INOB"
 
 (* ------------------------------------------------------------------ *)
+(* OnQuerySkill                                                        *)
+(* ------------------------------------------------------------------ *)
+
+(** The eleven scripts that declare OnQuerySkill, all portable. Ten are the
+    same shape - a flat bonus to one or more skills - and IBNC reads the
+    wearer's Air skill to bonus Battle/Cunning/Morale. The fold order is
+    raw skill, then these item hooks, then the status hooks, then the
+    temp-skill accumulator; addition is commutative so the item hooks'
+    order among themselves is invisible. *)
+
+(** `if skill is in the list then value = value + n`: the ten flat bonuses. *)
+let plus_skills (skills : skill list) (n : int) ctx value k =
+  ignore ctx;
+  if List.mem k skills then value + n else value
+
+(** IBNC: +1 Battle, Cunning, Morale per 3 points of Air.
+
+    ```lua
+    if (skillIdx == SKILL_BATTLE or skillIdx == SKILL_CUNNING or
+        skillIdx == SKILL_MORALE) then
+        value = value + GET_SKILL(characterIdx,SKILL_AIR)/3;
+    end
+    ```
+
+    [GET_SKILL] in the binary returns the effective Air skill (hooks folded),
+    but the port reads the raw Air from [ic_self.skills] to avoid recursing
+    into the query this hook is part of. The difference is the Air-modifying
+    hooks, which are rare; IBNC itself never touches Air. *)
+let hook_ibnc ctx value k =
+  match k with
+  | SBattle | SCunning | SMorale -> value + ctx.ic_self.skills.air / 3
+  | _ -> value
+
+(* ------------------------------------------------------------------ *)
 (* OnMatch4 / OnMatch5 / OnVictory                                     *)
 (* ------------------------------------------------------------------ *)
 
@@ -1082,6 +1116,20 @@ let event_hooks : (string * Item.hooks) list =
       { no_hooks with on_match4 = Some hook_imgs; on_match5 = Some hook_imgs } );
     (* OnVictory: the only one. *)
     ("IHTR", { no_hooks with on_victory = Some hook_ihtr });
+    (* OnQuerySkill: all eleven. Ten are flat bonuses; IBNC reads Air. *)
+    ("IAOR", { no_hooks with on_query_skill = Some (plus_skills [ SFire ] 5) });
+    ("IBNC", { no_hooks with on_query_skill = Some hook_ibnc });
+    ("IBSA", { no_hooks with on_query_skill = Some (plus_skills [ SMorale ] 20) });
+    ("IGOH",
+      { no_hooks with on_query_skill = Some (plus_skills [ SBattle; SCunning; SMorale ] 8) });
+    ("IKOP",
+      { no_hooks with on_query_skill = Some (plus_skills [ SEarth; SFire; SAir; SWater ] 4) });
+    ("ILKS", { no_hooks with on_query_skill = Some (plus_skills [ SCunning ] 6) });
+    ("ILSW", { no_hooks with on_query_skill = Some (plus_skills [ SBattle ] 4) });
+    ("IMCL", { no_hooks with on_query_skill = Some (plus_skills [ SEarth ] 3) });
+    ("INOH", { no_hooks with on_query_skill = Some (plus_skills [ SMorale ] 4) });
+    ("IROY", { no_hooks with on_query_skill = Some (plus_skills [ SEarth ] 5) });
+    ("ISEC", { no_hooks with on_query_skill = Some (plus_skills [ SMorale ] 5) });
   ]
 
 (** The whole hook record for an id: the damage hooks if they are ported, plus
@@ -1100,6 +1148,7 @@ let hooks_of_id (id : string) : Item.hooks =
         on_start_turn = e.on_start_turn;
         on_match4 = e.on_match4;
         on_match5 = e.on_match5;
+        on_query_skill = e.on_query_skill;
         on_victory = e.on_victory }
 
 

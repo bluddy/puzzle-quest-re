@@ -300,13 +300,12 @@ claims:
       setter it calls - 0x4839f0 - is the only writer of the field anywhere in
       the image. Five sites call that setter in all: the four SET_MAX_MANA_*
       Lua bindings and ADD_TEMP_SKILL.
-      What is still unread is the effective skill itself: it comes from a
-      virtual call taking (kind 5, raw skill, level, element), clamped to 999,
-      and level is passed to it, so whether it folds in is what
-      quest.base_value_from_level now asks. The port uses the raw skill and
-      says so. The save carries the seven Masteries and no ceiling, so a loaded
-      hero's ceiling recomputes from exactly this formula once that query is
-      read.
+      What was still unread is now read (quest.base_value_from_level): the
+      effective skill is the raw skill plus the equipped items' OnQuerySkill
+      hooks plus the active status effects' OnQuerySkill hooks plus the
+      temp-skill accumulator at record[skillIdx*4 + 0x68] - level does not fold
+      in. The save carries the seven Masteries and no ceiling, so a loaded
+      hero's ceiling recomputes from exactly this formula.
     evidence:
       - kind: binary
         ref: game/Puzzle Quest.unpacked.exe
@@ -339,11 +338,9 @@ claims:
       with confidence low - the constant was standing in for a derived one, and
       20 vs 25 matters for the AI's "pool is full" tests. It answers the
       constructive half of quest.base_value_from_level; the effective-skill
-      query is the half left. Do not clamp a loaded save with it blindly: the
-      decoded hero that banks 31 Fire at level 5 needs an effective skill of 11,
-      while a profession's raw base of 3 would give it 27 - so either the real
-      Masteries grow with level or the query folds level in, and both belong to
-      the open question.
+      query is now answered too (see that question's resolution): level does not
+      fold in, and the decoded hero's 31 Fire is explained by training plus the
+      temp-skill accumulator, not by level scaling.
   - id: mana.yield.formula
     title: Mana yield is (skill + 100) * run_multiplier * 0.01, capped at 999
     area: mana
@@ -3325,45 +3322,65 @@ claims:
       dropped with every NOTIFY_OF_ACTIVATED_ITEM.
 
   - id: mana.temp_skill_writes_the_skill_array
-    title: ADD_TEMP_SKILL writes the skill array under a 999 cap and moves the elemental ceilings with it
+    title: ADD_TEMP_SKILL writes a per-skill accumulator on the registry slot and moves the elemental ceilings with it
     area: mana
     verdict: mechanic
-    status: inferred
-    confidence: medium
+    status: recovered
+    confidence: high
     source_pass: item_hooks
     summary: >
       The Lua binding reads the three arguments, caps the increment so the
-      result cannot pass 999, and adds it straight into the character's skill
-      array at +0x1a - there is no staging. For an elemental skill it then
-      recomputes that element's ceiling as old_ceiling + (base(new) -
-      base(old)), where base is a derived-stat query over the effective skill
-      plus 25: the helper behind it returns (v + 1) / 2 for that case. So the
-      ceiling is 25 plus half the effective skill, moved by the same delta
+      result cannot pass 999, and adds it into a per-skill accumulator on the
+      character's registry slot at record[skillIdx*4 + 0x68] (decompiler units:
+      piVar5[skillIdx + 0x1a]). This is separate from the raw skill array at
+      char+0x48: the kind-5 effective-skill query reads the raw skill, folds
+      the item and status OnQuerySkill hooks, and then adds the accumulator.
+      For an elemental skill ADD_TEMP_SKILL then recomputes that element's
+      ceiling as old_ceiling + (base(new) - base(old)), where base is
+      25 + (effective + 1) / 2 via 0x478620's case 3, and moves the pool by
+      the same delta through the setter at 0x4839f0. A skill-6 (morale) change
+      also moves life and max life by the delta of case 7, floor(3 * skill / 2),
+      through ADD_LIFE (0x445c40, clamped at the old max, any sign) and then
+      ADD_MAX_LIFE (0x445c80) - life first, then the max, the order at 0x48c608.
 
     evidence:
       - kind: decompiled
         ref: docs/decompiled/Lua_ADD_TEMP_SKILL.c
-        note: the 999 cap, the skill-array write at +0x1a, and the ceiling delta
+        note: the 999 cap, the accumulator write at +0x1a (= record+0x68), and the ceiling delta
       - kind: decompiled
         ref: docs/decompiled/Engine_ADD_TEMP_SKILL_478620.c
         note: the derived-stat switch, case 3 returning (param_2 + 1) / 2
       - kind: decompiled
         ref: docs/decompiled/Engine_ADD_TEMP_SKILL_4839f0.c
         note: the setter that writes the ceiling at +0x84 and clamps the pool to it
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          0x48c5ba writes the accumulator (mov [edi+esi*4+0x68], ecx); the
+          kind-5 query at 0x4668dc reads it (add edi, [eax+ecx*4+0x68]) after
+          folding the item and status OnQuerySkill hooks
       - kind: code
         ref: lib/spell_effects.ml
-        note: add_temp_skill already writes the skill directly, for spells
+        note: add_temp_skill caps the increment at 999 effective, writes temp_skills, moves the ceiling through set_max_mana, and moves life/max on Morale
+      - kind: code
+        ref: lib/battle.ml
+        note: skill_value is the kind-5 fold (items, statuses, accumulator) over all seven skills; the effect context carries it as fx_effective_skill
       - kind: code
         ref: lib/item_hooks.ml
         note: IGSH and IGPK read it the same way
-    affects: [lib/combat.ml, lib/item_hooks.ml, lib/spell_effects.ml, lib/campaign.ml]
+    affects: [lib/combat.ml, lib/item_hooks.ml, lib/spell.ml, lib/battle.ml, lib/spell_effects.ml, lib/campaign.ml]
     notes: >
       This is what retired the "ADD_TEMP_SKILL stages a bonus" reading the item
       header carried: staging would mean a bonus applied later, and the write is
-      right there in the binding. The port does not yet move ceilings with the
-      skill (Combat.max_mana is set once), so a temp skill raises the skill and
-      not the cap - recorded rather than fixed, since the construction-time
-      ceiling is the open half of the question.
+      right there in the binding. The accumulator is separate from the raw skill
+      at char+0x48: the effective-skill query adds it after folding the item and
+      status OnQuerySkill hooks, so a multiplicative hook like Fear sees the raw
+      skill rather than raw-plus-temp. The port models this with
+      Combat.combatant.temp_skills, and add_temp_skill now also makes the
+      ceiling and life moves: the ceiling keeps its SET_MAX_MANA offset and the
+      pool is clamped by set_max_mana, the increment stops at 999 effective
+      (GET_SKILL's own clamp), and a Morale delta moves life clamped at the old
+      max before the max itself.
 
   - id: items.board_writes
     title: Nine item bodies write the grid, and the loop makes room for them
@@ -3536,7 +3553,29 @@ open_questions:
       into mana.ceiling.base_value, so only the level question is left here. The
       save carries the seven Masteries and no ceiling, which is what makes a
       decoded hero the other way to settle it.
-    status: open
+    status: recovered
+    resolution: >
+      Level does not fold in. The kind-5 query at 0x466610 starts from the raw
+      skill (the `skill` argument, which GET_SKILL at 0x465f30 reads from
+      char+0x48+skillIdx*4), folds the equipped items' OnQuerySkill hooks
+      (dispatched by 0x475340), folds the active status effects' OnQuerySkill
+      hooks (0x4711c0), and then adds the temp-skill accumulator at
+      record[skillIdx*4 + 0x68]. The `level` argument is passed but never read
+      in the kind-5 path. The hero override at 0x469370 calls the base and only
+      folds companions for kind==1, so it is inert here.
+
+      The decoded hero that banks 31 Fire at level 5 is explained by training:
+      the train-skill native at 0x402920 raises the raw skill by spending XP
+      ((effective + 9) * 50 from the XP field at +0x94), and the temp-skill
+      accumulator - written by ADD_TEMP_SKILL at 0x48c5ba - adds on top. The
+      profession XMLs carry no per-level skill growth: only <Level life="2"/>
+      and the XP ladder, so skills grow only via training and temp bonuses,
+      never automatically with level.
+
+      The port's use of the raw skill as the base is correct. What was missing
+      is the item OnQuerySkill fold and the accumulator being added after the
+      status hooks rather than merged into the raw skill; both are wired in the
+      round that closed this.
 
   - id: quest.skull_scaling_consumer
     question: What reads board flag +0x392?
@@ -4923,9 +4962,9 @@ port_decisions:
       says so. base_mana_limit replaces the old chosen 20 as the zero-skill
       base, and default_mana_limit keeps its name (now equal to it) because the
       tests compare against the name rather than the number. The raw skill
-      stands in for the effective one until quest.base_value_from_level reads
-      the virtual call - a ceiling derived that way can be too low for a
-      high-level hero, which is why the save path still must not clamp a loaded
-      pool against it.
+      stands in for the effective one at construction time, which is correct:
+      quest.base_value_from_level is now answered - level does not fold in, and
+      the hooks and temp-skill accumulator that complete the effective skill are
+      battle-time additions that do not move the construction-time ceiling.
     supersedes: null
     date: 2026-10-12
