@@ -786,6 +786,24 @@ let () =
     (match Campaign.advance_travel (Campaign.AtNode "CBAR") 5.0 with
      | Campaign.AtNode "CBAR" -> true
      | _ -> false);
+  (* No fog of war: a full .text scan finds exactly three writers of the
+     visibility bytes - the XML loader, QUEST_SET_VISIBILITY (whose only
+     caller is its Lua binding) and the save-restore rebuild - and the
+     movement walker touches no flag, so arriving at a node reveals nothing
+     around it (campaign.fog_of_war). *)
+  Campaign.set_location_visible "RTHC" false;
+  Campaign.set_location_visible "ROTO" false;
+  (match Campaign.begin_travel (fresh ()) "CBAR" "WTHR" with
+   | Some (Campaign.Traveling t) ->
+       (match Campaign.advance_travel (Campaign.Traveling t) d with
+        | Campaign.AtNode "WTHR" ->
+            check "arrival reveals nothing around the destination"
+              ((not (Campaign.node_visible "RTHC"))
+               && not (Campaign.node_visible "ROTO")
+               && not (Campaign.get_road_visible "WTHR" "RTHC")
+               && not (Campaign.get_road_visible "WTHR" "ROTO"))
+        | _ -> check "the arrival tick lands on WTHR" false)
+   | _ -> check "the revealed road opens a second journey" false);
   let walker = { (fresh ()) with Campaign.level = 1 } in
   check "a road with no encounter stops nobody"
     (Campaign.road_encounter walker "CBAR" "WTHR" = None);

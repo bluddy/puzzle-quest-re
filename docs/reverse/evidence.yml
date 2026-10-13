@@ -2132,7 +2132,72 @@ claims:
       Which nodes a quest reveals is a separate fact, extracted from the
       QUEST_SET_VISIBILITY and QUEST_ADD_RUIN calls in each quest's Lua and grouped
       by hook (reveal_on_begin / reveal_on_end / ruin_reveals) by
-      tools/extract_quests.py.
+      tools/extract_quests.py. Persistence rides the city-status record: the
+      engine body mirrors each changed flag into status byte 7 (creating the
+      record on demand through 0x46c9a0), and the map-rebuild loop restores
+      the live flags from those bytes over the static XML defaults - the
+      port's table snapshot in the save is the equivalent (see
+      campaign.fog_of_war for the writer enumeration).
+
+  - id: campaign.fog_of_war
+    title: There is no hero-position reveal - visibility has exactly three writers and none is the map
+    area: campaign
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    summary: >
+      The game has no fog-of-war radius. A full .text scan for byte writes to
+      the node-visible fields (+0x458 on cities, +0x454 on waypoints; stack
+      spills at the same displacements excluded) finds exactly three
+      functional writers: the XML loader (0x4426xx parses the initial
+      yes-flag into the static records), QUEST_SET_VISIBILITY's engine body
+      (0x450e40, writing the flag, mirroring it into the city-status record's
+      byte 7, and re-deciding the touching roads under the both-endpoints
+      rule), and the map-rebuild loop (0x4541xx) that restores flags from
+      those saved city-status bytes over the static defaults. SET_VISIBILITY
+      has exactly one caller - its Lua binding at 0x4948ae - so no engine
+      path can reveal behind the quest scripts' backs, and the movement
+      walker (0x44c9xx, reached from QUEST_MOVE) advances road by road
+      touching only movement state (+0xc/+0x10/+0x230/+0x244): arrival
+      reveals nothing. Ruin visibility is registry membership (0x450820
+      walks the list at this+0x64), which the port already models as the
+      ruin registry. The port's existing model - static initial set, quest
+      reveals, the road rule, ruins through the registry, flags snapshotted
+      in the save - is the whole mechanic, with no radius to recover.
+    evidence:
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          .text scan: byte writes to +0x458/+0x454 at 0x442653/0x442703
+          (loader), 0x450e9e/0x450ecc (SET_VISIBILITY), 0x4542ae/0x4543f0
+          (rebuild); no other functional writer
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          E8-rel32 xrefs: SET_VISIBILITY 0x450e40 called only from 0x4948ae
+          (its Lua binding); IS_VISIBLE 0x451020 only from 0x493536
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          the movement walker at 0x44c9e0-0x44cb05 hops roads via 0x44c360
+          and sets arrival state; it never touches a visibility byte
+      - kind: decompiled
+        ref: docs/decompiled/Engine_QUEST_SET_VISIBILITY_450e40.c
+        note: the flag write, the city-status byte-7 mirror, and the road loop
+      - kind: decompiled
+        ref: docs/decompiled/Engine_QUEST_MOVE_44c750.c
+        note: QUEST_MOVE hands off to the walker; no visibility call
+      - kind: code
+        ref: test/test_campaign.ml
+        fn: arrival reveals nothing around the destination
+        note: the regression pin - travel lands on WTHR and RTHC/ROTO stay hidden
+    affects: [lib/campaign.ml, lib/campaign_save.ml, test/test_campaign.ml]
+    notes: >
+      GAPS row 3's fog-of-war gap and status.md's map round both retire on
+      this: there was no radius rule to recover, and no hero-position
+      recompute anywhere in the image. The XML loader's flag is parsed from
+      the same Map/Cities attribute extract_campaign_map.py already reads
+      (visible = yes).
 
   - id: campaign.quest_rewards_conditional
     title: A quest's branching reward callbacks contribute the first branch in source order

@@ -63,7 +63,8 @@
 |-----|---------|
 | ~~Road unlock~~ | ✅ `set_location_visible` applies the recovered both-endpoints rule; reveals from extracted `QUEST_SET_VISIBILITY` / `QUEST_ADD_RUIN` calls, saved and restored |
 | Ruin visibility | Ruins reveal via `ruin_reveals`; no unlock-by-city-entry logic |
-| Fog of war | Visibility flags exist and save; no hero position on the map, no visible-range logic |
+| ~~Fog of war~~ | ✅ the game has no radius rule: the visibility bytes have exactly three writers - the XML loader, `QUEST_SET_VISIBILITY` (reached only from its Lua binding), and the save-restore rebuild - and the movement walker reveals nothing (`campaign.fog_of_war`, pinned in `test_campaign`) |
+| Hero position | Tracked while traveling (current node + interpolation, the port's map marker); nothing else reads it for visibility |
 
 ### 4. Spell Targeting (Grid Spells)
 | Gap | Details |
