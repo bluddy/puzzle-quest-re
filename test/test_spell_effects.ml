@@ -518,9 +518,9 @@ let () =
   in
   (* 4 doubles to 8: there is room, so it adds the whole pool. *)
   check "SSBM doubles Water when there is headroom" (let w, _, _ = run_ssbm 4 in w = 8);
-  (* 15 would double to 30, past a ceiling of 20, so it adds only the shortfall. *)
+  (* 15 would double to 30, past the ceiling, so it adds only the shortfall. *)
   check "SSBM tops Water out at the ceiling when doubling would overshoot"
-    (let w, _, m = run_ssbm 15 in w = m && m = 20);
+    (let w, _, m = run_ssbm 15 in w = m && m = Combat.default_mana_limit);
   (* The enemy half is independent of that. *)
   check "SSBM takes half the enemy Air pool, truncating 10 to 5"
     (let _, a, _ = run_ssbm 4 in a = 5)
@@ -1299,11 +1299,12 @@ let monster =
   check "SRGN has a monster spend Water: 40 buys four rounds of seven"
     (Combat.mana monster Water = 12);
   check "so the monster heals four plus four a round, so twenty" (monster.life = 70);
-  (* With the ceiling left at the default the loop is cut short by [set_mana]'s
+  (* With the ceiling pinned at 20 the loop is cut short by [set_mana]'s
      clamp rather than by either of the Lua's two conditions: 40 is above the
-     ceiling of 20, so the first subtraction stores 33 and it becomes 20. *)
+     ceiling, so the first subtraction stores 33 and it becomes 20. *)
   let capped =
-    make_combatant ~life:50 ~max_life:100 ~mana:(mana 0 0 0 40) ~is_monster:true 0 "capped"
+    make_combatant ~life:50 ~max_life:100 ~mana:(mana 0 0 0 40)
+      ~max_mana:(mana 0 0 0 20) ~is_monster:true 0 "capped"
   in
   Spell_effects.effect_srgn
     (fx ~caster:capped ~foe:(foe ()) (solid_board ()));

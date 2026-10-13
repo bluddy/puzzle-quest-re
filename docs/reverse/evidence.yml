@@ -107,9 +107,7 @@ claims:
       Strengthened from a decompilation scan to a machine-code scan. Of the 244
       instructions in the binary that reference +0x84, only **three** touch it in
       the element-indexed form this field actually has, and all three are already
-      known: Engine_SET_MANA_AIR at 0x445c00 (reads the ceiling, clamps the pool
-      to it), Engine_ADD_MANA_AIR at 0x47a660, and 0x4839f0 itself. So no
-      undiscovered initialiser hides among the ~89% of .text that
+
       tools/scan_field_refs.py reaches. The filter that makes this hold is the
       access *shape* (see the trap list in docs/reverse/README.md): a common
       offset is tractable only once you require the shape the field actually
@@ -282,57 +280,70 @@ claims:
     affects: [lib/spell.ml, lib/combat.ml]
 
   - id: mana.ceiling.base_value
-    title: The per-element mana ceiling base is a chosen 20, not a recovered fact
+    title: The per-element mana ceiling is 25 + (effective skill + 1) / 2, computed at construction
     area: mana
     verdict: mechanic
-    status: assumed
-    confidence: low
+    status: recovered
+    confidence: high
     source_pass: mana
     summary: >
-      `default_mana_limit = 20` was picked so that every threshold the scripts
-      test (8, 10, 12, 14, 15, 20) stays reachable. If the real base is a
-      function of level and class, then every spell and every AI hook comparing
-      `GET_MANA_* >= N` is being judged against the wrong number.
-
-      This is the largest open correctness question in the port. The evidence
-      points at derivation rather than storage: the save record carries level and
-      class_id but only one mana quadruple, and no ceiling.
-
-      The search for a writer has now gone as far as it usefully can. A
-      recursive-descent walk of 89% of the binary's non-padding code finds exactly
-      one function that writes the ceiling on a battle character
-      (mana.ceiling.only_written_by_set_max), and that is the spell-facing setter.
-      So the base is not set by code we can reach. Two further facts narrow where
-      it does come from, and one of them corrects an earlier guess of mine:
-
-      - `SET_MAX_MANA` is called exactly **once** in the whole game, by
-        `SLCO.lua`. No item, rune, companion or quest script raises a ceiling, so
-        the base is not established by Lua.
-      - There is no second executable. `Puzzle Quest.exe` is the only game
-        binary; `oalinst.exe` is an installer (KERNEL32/USER32/GDI32/ADVAPI32
-        only) and every other file in `game/` is an audio or install-helper DLL.
-        I had assumed quest-side construction lived in some other binary. It does
-        not - all the game logic is Lua in `Assets.zip` plus this one image.
-
-      So the base is native code we have not reached, or it is bulk-loaded from
-      the save. Note the limit of the negative: the walk reaches 89% of
-      non-padding code and the remainder is largely SEH landing pads, so "not
-      found" is not "not present".
+      The ceiling is neither stored nor chosen. The character constructor at
+      0x4661f0 zeroes all four and then computes each one from the character's
+      own skill for that element: ceiling = 25 + (effective skill + 1) / 2,
+      where the half is 0x478620's case 3 - (v + 1) / 2 - and the 25 is also
+      what the sibling constructor at 0x466060 writes flat to all four. An
+      untrained character starts at 25 and every two points of mastery buy one
+      point of ceiling.
+      The other half of the derivation is confirmed from the opposite side:
+      ADD_TEMP_SKILL moves a ceiling by the delta of the same expression (its
+      call at 0x48c5d5), so a skill raise carries its ceilings with it, and the
+      setter it calls - 0x4839f0 - is the only writer of the field anywhere in
+      the image. Five sites call that setter in all: the four SET_MAX_MANA_*
+      Lua bindings and ADD_TEMP_SKILL.
+      What is still unread is the effective skill itself: it comes from a
+      virtual call taking (kind 5, raw skill, level, element), clamped to 999,
+      and level is passed to it, so whether it folds in is what
+      quest.base_value_from_level now asks. The port uses the raw skill and
+      says so. The save carries the seven Masteries and no ceiling, so a loaded
+      hero's ceiling recomputes from exactly this formula once that query is
+      read.
     evidence:
-      - kind: code
-        ref: lib/combat.ml
-        note: default_mana_limit
-      - kind: decompiled
-        ref: lib/save_file.ml
-        note: one mana quadruple between cur_life and class_id
       - kind: binary
         ref: game/Puzzle Quest.unpacked.exe
         note: >
-          tools/scan_field_refs.py over 954,645 instruction bytes; +0x84 appears in
-          244 instructions, 3 of them element-indexed, all known mana functions.
-    affects: [lib/combat.ml, lib/spell.ml, lib/spell_ai_manual.ml]
-    notes: Settled by quest.base_value_from_level.
-
+          the recursive-descent walk over 954,645 decoded instruction bytes:
+          0x4661f0 computes each ceiling as 0x478620(3, vtable[0x20](5, skill,
+          level, elem)) + 25, 0x466060 writes 25 flat, 0x48c5d5 moves one by the
+          same delta, and those five sites are the setter's only callers
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEMP_SKILL_478620.c
+        note: case 3 returning (param_2 + 1) / 2
+      - kind: decompiled
+        ref: docs/decompiled/Lua_ADD_TEMP_SKILL.c
+        note: the same expression applied as a delta, under the 999 skill cap
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEMP_SKILL_4839f0.c
+        note: the setter - store the ceiling, then clamp the pool down to it
+      - kind: code
+        ref: lib/combat.ml
+        note: base_mana_limit, mana_limit_for_skill, caps_for, and the make_combatant default
+      - kind: code
+        ref: test/test_combat.ml
+        note: the shape of the formula and the derived default on a combatant
+      - kind: code
+        ref: test/test_companion.ml
+        note: a player's affinities reach the combatant with their ceilings
+    affects: [lib/combat.ml, lib/campaign.ml, lib/spell.ml, lib/spell_ai_manual.ml]
+    notes: >
+      Supersedes this claim's earlier form, which called the base a chosen 20
+      with confidence low - the constant was standing in for a derived one, and
+      20 vs 25 matters for the AI's "pool is full" tests. It answers the
+      constructive half of quest.base_value_from_level; the effective-skill
+      query is the half left. Do not clamp a loaded save with it blindly: the
+      decoded hero that banks 31 Fire at level 5 needs an effective skill of 11,
+      while a profession's raw base of 3 would give it 27 - so either the real
+      Masteries grow with level or the query folds level in, and both belong to
+      the open question.
   - id: mana.yield.formula
     title: Mana yield is (skill + 100) * run_multiplier * 0.01, capped at 999
     area: mana
@@ -3152,29 +3163,379 @@ claims:
       need a per-removal scan the extractor does not do. The equipment
       record's companion field stays the panel's item slot it always was.
 
+  # -------------------------------------------------------------- items ----
+
+  - id: items.event_hook_census
+    title: The item declare tables carry eight hook kinds, all of them counted
+    area: items
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      Beyond OnGiveDamage (53 scripts), OnReceiveDamage (38) and OnStartBattle
+      (6), the 160 item scripts declare OnReceiveMana (17), OnReceiveGold (3),
+      OnReceiveXP (6), OnStartTurn (9), OnMatch4 (5), OnMatch5 (6) and
+      OnVictory (1). Each is read straight out of a script's declare table, the
+      same way the generator already reads OnStartBattle, and every declaring id
+
+      test_item.ml pins the two declare tables as literal lists and checks each
+      id against the two lookups, so a script that gains or loses a hook without
+      the port following fails the suite rather than sitting inert.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IBFH.lua
+        note: OnReceiveMana declared, with its body above the table
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IHTR.lua
+        note: the only OnVictory in the corpus, ADD_XP(characterIdx,50)
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/ITUT.lua
+        note: OnStartTurn calling MISS_TURNS, one of the unported bodies
+      - kind: code
+        ref: lib/item_hooks.ml
+        note: event_hooks, hook_of, hook_receive_of, known_unported, the two censuses
+      - kind: code
+        ref: test/test_item.ml
+        note: the declare tables as literals, checked id by id
+    affects: [lib/item.ml, lib/item_hooks.ml, lib/battle.ml]
+    notes: >
+      The census is over the shipped declare tables. Only OnStartBattle has a
+      generated descriptor field (campaign.item_start_battle); the other kinds
+      are keyed by id in Item_hooks, so a script that declared a body the
+      table does not know about would show up as an inert item rather than an
+      error - which is what the literal-list test exists to catch.
+
+  - id: items.event_hook_dispatch
+    title: Each event hook has one point in the battle loop, named by the script's own comment
+    area: items
+    verdict: mechanic
+    status: inferred
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      OnReceiveMana fires where a match banks mana, OnReceiveGold and
+      OnReceiveXP where the battle accrues them - and where a spell writes its
+      ADD_GOLD / ADD_XP back - OnStartTurn at the top of the acting side's turn,
+      OnMatch4/5 where a four- or five-run grants its extra turn, and OnVictory
+      the moment the winner is decided. The scripts say so above each body:
+      "Called whenever a character receives mana", "Called at the start of
+      player turn before the turn is actually started", "called whenever a
+      character matches 4 gems (and receives an extra turn)". Those are the only
+      places in the loop where the matching thing happens.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IDKH.lua
+        note: the OnReceiveMana comment, including the return contract
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/ISDO.lua
+        note: the OnStartTurn comment, before the turn is actually started
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/ICSA.lua
+        note: OnMatch4 and OnMatch5 both tie themselves to the extra turn
+      - kind: code
+        ref: lib/battle.ml
+        note: receive_mana, receive_gold, receive_xp, start_turn_item_hooks, match_item_hooks, victory_item_hooks
+      - kind: code
+        ref: test/test_item.ml
+        note: each point driven directly, plus take_turn and resolve_cascades end to end
+    affects: [lib/battle.ml, lib/item.ml]
+    notes: >
+      The status-effect pair rides the same two points - Combat.run_match_effects
+      existed for Vigiled without a caller until now. Ordering against the status
+      effects, the size_patterns gate on the match pair, and where the gold and
+      xp folds sit are choices: see port.item_event_dispatch_order.
+
+  - id: items.iaom_is_receive_damage
+    title: IAOM's body is an OnReceiveDamage, and it was installed on the give chain
+    area: items
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      Armor of Minogoth declares its "minus one above one" body under
+      OnReceiveDamage, with the comment "sourceIdx = attacker targetIdx=me!".
+      The port installed it as OnGiveDamage, so the item subtracted from the
+      hits it dealt instead of the hits it took. hook_receive_of now carries it
+      and hooks_of_id puts it on the receive fold - a chain that had been
+      dispatched in the battle loop all along with nothing in it: when this was
+      found, IAOM was the only one of the 38 OnReceiveDamage scripts whose body
+      was ported, and the other 34 landed in the same round.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IAOM.lua
+        note: the declare table lists OnQueryResistance and OnReceiveDamage, never OnGiveDamage
+      - kind: code
+        ref: lib/item_hooks.ml
+        note: hook_receive_of and the unported_receive_damage census
+      - kind: code
+        ref: test/test_item.ml
+        note: the body now driven through receive_damage_hook
+    affects: [lib/item_hooks.ml]
+    notes: >
+      A correction found while writing the damage census for this round, not
+      something the round set out to change.
+
+  - id: items.damage_bodies
+    title: 82 of the 91 damage bodies are ported, and the nine that are not are one thing each
+    area: items
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      OnGiveDamage is ported 50 of 53 scripts and OnReceiveDamage 38 of 38.
+      Both chains were already dispatched in the battle loop - the folds, the
+      items-first-then-status-effect order and the per-event context have been
+      there all along - so what was missing was the bodies, and they are the
+      same handful of shapes: a flat add behind a threshold, a pool or board
+      count divided by k, mana taken off the other side and credited to the
+      wearer, an extra turn or a heal or a point of life, a percentile gate
+      over any of those, and the minus-one arm the receive chain is mostly
+
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IAOR.lua
+        note: "the shape most of the give-side bodies are - if damage >= T then damage + N"
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IBST.lua
+        note: four full-reserve tests against GET_MAX_MANA_*, which the loop models now
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IBSH.lua
+        note: the percentile body that was left unported as the standing example
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IRKT.lua
+        note: damage * 1.5 per full pool, run in float and truncated once
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IADO.lua
+        note: an unported body, DESTROY_GEM inside the damage event
+      - kind: code
+        ref: lib/item_hooks.ml
+        note: the two families, hook_of, hook_receive_of, unported_damage, unported_receive_damage
+      - kind: code
+        ref: test/test_item.ml
+        note: the declare-table census plus a table of (id, damage in, damage out)
+    affects: [lib/item_hooks.ml, lib/item.ml, lib/battle.ml]
+    notes: >
+      Three of the damage bodies share a name with an event body - IFMO, ISST
+      and IDKH declare both - so the damage halves are suffixed in the module
+      rather than left to whichever definition the tables see last. IMAR, IMHE
+      and IMSH are one reflect body three times, and their lightning effect is
+      dropped with every NOTIFY_OF_ACTIVATED_ITEM.
+
+  - id: mana.temp_skill_writes_the_skill_array
+    title: ADD_TEMP_SKILL writes the skill array under a 999 cap and moves the elemental ceilings with it
+    area: mana
+    verdict: mechanic
+    status: inferred
+    confidence: medium
+    source_pass: item_hooks
+    summary: >
+      The Lua binding reads the three arguments, caps the increment so the
+      result cannot pass 999, and adds it straight into the character's skill
+      array at +0x1a - there is no staging. For an elemental skill it then
+      recomputes that element's ceiling as old_ceiling + (base(new) -
+      base(old)), where base is a derived-stat query over the effective skill
+      plus 25: the helper behind it returns (v + 1) / 2 for that case. So the
+      ceiling is 25 plus half the effective skill, moved by the same delta
+
+    evidence:
+      - kind: decompiled
+        ref: docs/decompiled/Lua_ADD_TEMP_SKILL.c
+        note: the 999 cap, the skill-array write at +0x1a, and the ceiling delta
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEMP_SKILL_478620.c
+        note: the derived-stat switch, case 3 returning (param_2 + 1) / 2
+      - kind: decompiled
+        ref: docs/decompiled/Engine_ADD_TEMP_SKILL_4839f0.c
+        note: the setter that writes the ceiling at +0x84 and clamps the pool to it
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: add_temp_skill already writes the skill directly, for spells
+      - kind: code
+        ref: lib/item_hooks.ml
+        note: IGSH and IGPK read it the same way
+    affects: [lib/combat.ml, lib/item_hooks.ml, lib/spell_effects.ml, lib/campaign.ml]
+    notes: >
+      This is what retired the "ADD_TEMP_SKILL stages a bonus" reading the item
+      header carried: staging would mean a bonus applied later, and the write is
+      right there in the binding. The port does not yet move ceilings with the
+      skill (Combat.max_mana is set once), so a temp skill raises the skill and
+      not the cap - recorded rather than fixed, since the construction-time
+      ceiling is the open half of the question.
+
+  - id: items.board_writes
+    title: Nine item bodies write the grid, and the loop makes room for them
+    area: items
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      SET_GEM, DESTROY_GEM and the random-cell pickers turned out to be Lua in
+      Assets/Scripts rather than natives to reverse: GetRandomGrid.lua gives
+      the family - rejection sampling over GET_RANDOM_SYNC(1,8), up to 1001
+      tries, and the last draw returned whether or not it held; NoAdjacentGems
+      checks the four orthogonal neighbours and nothing else, so a diagonal
+      does not count; DestroyAllGems walks the grid y-major. GridUtilities.lua
+      gives SetMultiplierEffects as three SET_*_ENABLED calls. That made nine
+      bodies portable the moment the item context could write: IADO, ITHH and
+      IUHA on the give chain, ICAR, IDSH and INOB on the receive chain, ICOS at
+      turn start, IMGS on a match and ISES's xp half. IDSH and INOB also needed
+      somewhere to keep the per-character counter their Lua keeps in a table
+      keyed by characterIdx, which is Combat.combatant.item_state - a float
+      because IDSH's is damage / 8 and the cap test reads it fractionally.
+      Two placements in the loop follow from it: the cascade advances the board
+      to the clearing state before it walks the runs, so a match hook's write
+      lands in the grid the cascade goes on with; and gravity plus refill run
+      after the damage chain, so a hole a hook dug is filled before the next
+      swap rather than being matched as three empties.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GetRandomGrid.lua
+        note: the pickers, NoAdjacentGems, and the 1001-try give-up
+      - kind: lua
+        ref: game/Assets.zip!Assets/Scripts/GridUtilities.lua
+        note: SetMultiplierEffects and DestroyAllGems
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IADO.lua
+        note: SetMultiplierEffects(false) around the red-skull sweep
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IDSH.lua
+        note: the per-turn counter, reset from the item's own OnStartTurn
+      - kind: code
+        ref: lib/item.ml
+        note: random_pick, no_adjacent, get_random_grid, destroy_all
+      - kind: code
+        ref: lib/battle.ml
+        note: the three board callbacks, the cascade advance, the post-chain refill
+      - kind: code
+        ref: lib/combat.ml
+        note: combatant.item_state and its accessors
+      - kind: code
+        ref: test/test_item.ml
+        note: the pickers, each writing body, and the refill through play_swap_result
+    affects: [lib/item.ml, lib/item_hooks.ml, lib/battle.ml, lib/combat.ml]
+    notes: >
+      The gem ids the Lua passes are names except in ICOS, which passes 5 and
+      15 raw - skull and red skull, which both candidate orderings for the gem
+      ids agree on - so the open question about 3 and 4 never enters these
+      bodies. Reads come from the grid the context was built over rather than
+      the live one: for the sweeps and single writes that follow, a body that
+      empties cells and then reads them sees the grid it started with, which is
+      the same grid either way.
+
+  - id: mana.credit_runs_the_item_fold
+    title: Every mana a character receives runs its items' OnReceiveMana, wherever the credit came from
+    area: mana
+    verdict: mechanic
+    status: recovered
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      The hook's own contract says it: "Called whenever a character receives
+      mana / Must return the amount of mana received". Not "whenever a match
+      banks some" - so a spell's ADD_MANA and a status effect's bonus have to
+      carry the receiver's items the same way a match's harvest does, which is
+      what makes IMOA double the blue a spell granted and not only the blue a
+      gem matched. In the port that means one funnel: Combat.credit_mana is
+      where every capped credit already went (Spell_effects.add_mana,
+      status_effect_hooks.give, the battle's own harvest), so the fold is
+      registered there by Battle.create rather than threaded through the spell
+      bodies' signatures.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IDKH.lua
+        note: the OnReceiveMana contract, verbatim above the declare table
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IMOA.lua
+        note: doubles MANA_BLUE, whichever way the blue was granted
+      - kind: code
+        ref: lib/combat.ml
+        note: mana_credit_hook, bank_mana, credit_mana
+      - kind: code
+        ref: lib/battle.ml
+        note: create installs the hook, receive_mana folds then banks
+      - kind: code
+        ref: test/test_item.ml
+        note: a spell-style credit folds, a foreign combatant does not
+    affects: [lib/combat.ml, lib/battle.ml, lib/spell_effects.ml]
+    notes: >
+      Uncapped credits stay outside it: the OnStartBattle payoffs and the
+      companion ManaBonus write the pool directly, which is the reading
+      port.item_start_battle_dispatch already records as the mana credit being
+      uncapped. SET_MANA_<E> is a store rather than a receive and does not fold
+      either.
+
+  - id: combat.missed_turn_is_spent_at_the_top
+    title: MISS_TURNS sits the actor out of its turn, after the worn items' start hooks and before the status effects'
+    area: combat
+    verdict: mechanic
+    status: inferred
+    confidence: high
+    source_pass: item_hooks
+    summary: >
+      The placement is what the two bodies that use it on a turn boundary
+      require. ITUT is described as "Owner never takes a turn", and its body is
+      an OnStartTurn - so the status it sets has to be read after that hook
+      runs and before anything else, or the owner would take the turn it just
+      asked to miss. The scripts also call OnStartTurn "before the turn is
+      actually started", which is the same window. A missed turn therefore
+      advances the round and the cap, announces itself, and does nothing else:
+      no status ticks, no spell, no swap, no cooldown tick - and the check has
+      to come before the status start hooks anyway, because
+      run_start_of_turn_effects keeps only ids it has a descriptor for and
+      would drop [Missed], a pseudo-status with none, before anything could act
+      on it.
+    evidence:
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/ITUT.lua
+        note: the "Owner never takes a turn" line, with the body under OnStartTurn
+      - kind: lua
+        ref: game/Assets.zip!Assets/Items/IFZT.lua
+        note: MISS_TURNS(targetIdx,2) from a give-damage body
+      - kind: code
+        ref: lib/battle.ml
+        note: spend_missed_turn, placed between start_turn_item_hooks and run_start_of_turn_effects
+      - kind: code
+        ref: lib/spell_effects.ml
+        note: miss_turns, which records the [Missed] pseudo-status
+      - kind: code
+        ref: test/test_item.ml
+        note: the skip, the two-turn decrement, ITUT never acting, IFZT's stun
+    affects: [lib/battle.ml, lib/item_hooks.ml]
+    notes: >
+      SSTU and SWOP set the same status from spell bodies, so they skip turns
+      through this path too - which is the change in AI battle outcomes that
+      kept this out of two earlier rounds.
+
 open_questions:
 
   - id: quest.base_value_from_level
-    question: What sets the per-element mana ceiling at hero construction, and does it scale with level?
+    question: Does the effective-skill query fold level into the mana ceiling, or is it the raw skill?
     why_it_matters: >
-      Every spell and every AI hook that tests GET_MANA_* against a number is
-      being judged against a ceiling that is currently a chosen 20. If the real
-      value is f(level, class), a large fraction of the AI's decisions are wrong
-      in a way no test would catch.
+      The ceiling's shape is recovered - 25 + (effective skill + 1) / 2, computed
+      by the character constructor at 0x4661f0 and moved by ADD_TEMP_SKILL's
+      delta (mana.ceiling.base_value). What "effective" means is not: it comes
+      from a virtual call taking (kind 5, raw skill, level, element), so level is
+      handed to it and may or may not come back out. The port uses the raw skill,
+      and the difference is visible: the decoded hero that banks 31 Fire at level 5
+      needs an effective skill of 11, where a profession's raw base of 3 gives 27 -
+      so either the real Masteries grow with level or the query folds level in,
+      and every ceiling - and with it every "pool is full" test the AI makes -
+      moves by the answer.
     would_be_settled_by:
-      - The hero or party constructor that writes +0x84 outside the battle object.
-      - Whether the save record's single mana quadruple is the pool or the ceiling.
+      - Disassembling the character vtable's slot at +0x20 for the hero class.
+      - A decoded .pqhero's seven Masteries read next to its mana pools, which
+        pins the effective skill the formula had to produce.
+    related: [mana.ceiling.base_value, mana.temp_skill_writes_the_skill_array, mana.ceiling.only_written_by_set_max]
     notes: >
-      Do not look for another binary: `Puzzle Quest.exe` is the only game
-      executable, and quest logic is Lua in `Assets.zip` like everything else. A
-      recursive-descent walk of 89% of non-padding code finds exactly one writer
-      of the ceiling on a battle character, and it is the spell-facing setter;
-      `SET_MAX_MANA` is called once in the entire game, by SLCO. So the base is
-      either native code in the ~11% the walk cannot reach, or it is bulk-loaded
-      from the save. Look at the save loader first - it is a smaller target, and
-      the save record carries level and class but no ceiling, which is itself the
-      clue: if the ceiling is level-derived it has to be computed at load time.
-    related: [mana.ceiling.base_value, mana.ceiling.only_written_by_set_max]
+      The original question asked what sets the ceiling at construction and
+      whether it scales with level; the first half is now recovered and folded
+      into mana.ceiling.base_value, so only the level question is left here. The
+      save carries the seven Masteries and no ceiling, which is what makes a
+      decoded hero the other way to settle it.
     status: open
 
   - id: quest.skull_scaling_consumer
@@ -3360,6 +3721,27 @@ open_questions:
       is ported with the other five; see spells.ai_aim.
     related: [spells.ai.coverage, spells.ai_aim]
     status: recovered
+
+  - id: board.gem_id_air_water_order
+    question: Are the gem ids 3 and 4 Air and Water, or Water and Air?
+    why_it_matters: >
+      docs/BATTLE_AI.md's table, read off the switch in CBoard_AccumulateGem,
+      says 3 water and 4 air, and lib/ai.ml's gem_id follows it.
+      Assets/Scripts/StandardConstants.lua says the opposite - GEM_AIR = 3,
+      GEM_WATER = 4 - and spells compare GET_GEM against those names (SHGO,
+      SSOA), so one of the two sources is wrong about the shipped game.
+      Nothing observable turns on it today: ai.ml matches its ids against its
+      own, the engine's grid never enters the port, and the matcher, the mana
+      yield and the capture parser all work from constructors and characters
+      rather than from ids. A reader that decoded a real grid would pick the
+      wrong element for exactly one id, and two claims - board.gem_ids and the
+      parenthetical in mana.pool_and_ceiling_offsets - currently state the
+      decompile's order as recovered fact. Found while pinning the manaType
+      order the IRO* rings compare against: that is MANA_* - 0 Earth, 1 Fire,
+      2 Air, 3 Water - which is StandardConstants' GEM_* order less one, so the
+      constants file is at least self-consistent.
+    related: [board.gem_ids, mana.pool_and_ceiling_offsets]
+    status: open
 
 # --------------------------------------------------------- port decisions ----
 
@@ -4301,18 +4683,21 @@ port_decisions:
       number with nothing to read it. [RUNEDUP_TEXT] states the dupe rule
       verbatim - "you will not receive an extra item" - so the inventory
       holds one copy and a reforge is a no-op that still answers with the
-      item. Of JXXX's bodies, the wired set is exactly what the port's
-      battle already invokes for fixed items: OnGiveDamage (bases 0/1 add
-      BASEDATA on hits of 3+, 9 on hits of 6+) through the damage pass,
-      and OnStartBattle (powers 0-3 credit POWERDATA of that mana, 4
-      raises max life and life) through Item_hooks' payoff walker, which
-      gained a per-item table for the purpose. The quiet bodies each hit
-      an absence item_hooks already documents: base D reads max-mana caps
-      the loop does not model, base E's reflect damages the attacker from
-      outside the damage-transform signature, powers 9/A want a
-      per-event percentile (the IBSH absence), and the skill, resistance,
-      victory, match and cast hooks are kinds battle never invokes for
-      any item. The [MAXRUNEITEM] cap and the forge UI stay open with it.
+      item. Of JXXX's bodies, the wired set is the two whose rune bodies are
+      written: OnGiveDamage (bases 0/1 add BASEDATA on hits of 3+, 9 on hits
+      of 6+) through the damage pass, and OnStartBattle (powers 0-3 credit
+      POWERDATA of that mana, 4 raises max life and life) through
+      Item_hooks' payoff walker, which gained a per-item table for the
+      purpose. The quiet bodies: base E's reflect damages the attacker from
+      outside the damage-transform signature, powers 9/A want a per-event
+      percentile (the IBSH absence), and the skill, resistance, victory,
+      match and cast bodies are unwritten for runes - of those kinds, battle
+      invokes victory and match now for fixed items (port.item_event_
+      dispatch_order) but nothing has ported JXXX's own version, and the
+      skill and cast kinds still have no dispatch point for any item. Base D
+      reads GET_MAX_MANA, which the loop models since ceilings moved onto
+      Combat.max_mana, so that one is a body to write rather than a hole.
+      The [MAXRUNEITEM] cap and the forge UI stay open with it.
     supersedes: null
     date: 2026-10-10
 
@@ -4390,3 +4775,157 @@ port_decisions:
       skips [FORGEITEMS_HELP0].
     supersedes: port.mount_skill_formula
     date: 2026-10-10
+
+
+  - id: port.item_event_context
+    decision: >
+      Every item hook - the six event kinds and both damage chains - takes an
+      item_context carrying ic_self, ic_level and a set of native callbacks, in
+      place of the Lua's characterIdx argument.
+    rationale: >
+      There is no character array to index - a battle is two combatants - and
+      every ported body wants either the character itself (a mana, life or
+      status read) or a native bound to it (ADD_MANA_<E>, ADD_GOLD, ADD_XP,
+      EXTRA_TURN, Std_InflictDamage, Std_Healing, ADD_STATUS_EFFECT). The
+      callbacks are what let a body credit a second pool through the very fold
+      that is running it, which is how the ADD_MANA native behaves: IBFH
+      crediting Earth from a red credit re-enters OnReceiveMana, and the IRO*
+      cycle goes round four times before a share truncates to zero. The resist,
+      skill and clear bodies go straight at Combat through ic_self instead, so
+      the callback set stays the natives that need the battle to answer - and
+      ADD_STATUS_EFFECT takes the combatant rather than closing over ic_self,
+      because every script that calls it passes its target. Three smaller
+      pieces of the same choice: ic_percentile is a draw-per-call closure
+      rather than a number, so PERCENTILE_CHANCE_SYNC costs a roll only where
+      the Lua spends one and two rolled bodies stacked get two rolls each (an
+      int field forced one phantom draw per damage event, which is what kept
+      sixteen bodies unported); ic_attacker / ic_defender stay empty outside a
+      damage event because they are that event's two parties, filled in by
+      Battle.damage_context; and ic_level carries the hero's level, the only
+      one a battle has, so the one body that reads GET_LEVEL works for the
+      wearer the campaign actually dresses.
+    supersedes: null
+    date: 2026-10-12
+
+  - id: port.item_event_dispatch_order
+    decision: >
+      Items run before status effects at turn start and inside them for
+      experience; the match pair fires under the size_patterns gate and one of
+      OnMatch4 / OnMatch5 only, never both; OnVictory fires at the moment the
+      winner is decided; and the gold and xp folds sit where the battle
+      accrues them rather than where the campaign settles them.
+    rationale: >
+      The damage chain already records items-first as its reading of an
+      unrecovered ordering, and this extends that reading rather than
+      inventing a second one for two more events. A five-run fires match5
+      alone because IRKK's match5 body is a call to its own match4, which
+      would be redundant if the engine fired both, and the Lua comments tie
+      both hooks to the extra turn a four-run grants - so they share the
+      size_patterns gate that grant sits behind. Victory fires at the
+      transition inside take_turn rather than at the end of Battle.run, so a
+      finished fight cannot run it twice. The gold and xp folds are in the
+      battle because every body behind them is only meaningful there: IRBR
+      triples "gold from matching gems", IXHD banks a turn on receiving gold,
+      IMSE doubles experience "during battle", IALR and IAOB pay mana out of
+      it while there is mana to pay into - and IHTR's +50 arrives through the
+      same fold at the end of the fight it won, so the spoils the campaign
+      settles already carry it.
+    supersedes: null
+    date: 2026-10-12
+
+  - id: port.item_board_writes
+    decision: >
+      The item context writes the battle's board through ic_set_gem,
+      ic_destroy_gem and ic_multipliers; reads come from the grid the context
+      was built over; the match hooks run against the clearing grid; and the
+      damage chain refills afterwards.
+    rationale: >
+      The board is a value, so a hook cannot be handed a way to write it that
+      also sees later writes - the context snapshots the grid at hook entry and
+      the callbacks swap a new board into the battle, which is how the spell
+      bodies already reach the grid through fx_board. Snapshots are enough for
+      the nine bodies: a sweep or a single conversion reads the grid it started
+      with and writes through the callback, and the one case where a later body
+      should see an earlier one's write - IADO's sweep on one side, ICAR's pick
+      on the other - is handled by building the defender's context after the
+      attacker's chain has run rather than beside it. Two placements follow.
+      The cascade advances b.board to the clearing state before it walks the
+      runs, because b.board <- cleared after them would throw a match hook's
+      write away; a hook therefore reads the grid with its matches gone, which
+      is the grid the cascade itself works from. And gravity plus refill run
+      after the damage chain, gated on the board having changed: DESTROY_GEM
+      empties cells here the way it does for spells, the next swap must not
+      resolve holes, and on an intact board both steps are the identity and
+      refill draws nothing, so a fight whose items only change numbers pays no
+      rng for it. SetMultiplierEffects is transcribed even though IADO turns
+      the flags off and back on within one event and nothing reads them in
+      between - the moment DESTROY_GEM starts resolving a chain, the flags are
+      what it would consult.
+    supersedes: null
+    date: 2026-10-12
+
+  - id: port.mana_credit_registry
+    decision: >
+      Combat.credit_mana dispatches through a battle-scoped registry that
+      Battle.create installs, guarded by physical membership in that battle''s
+      roster; the fold banks through Combat.bank_mana, which is the clamp with
+      no hook.
+    rationale: >
+      The fold cannot live in Combat - Item opens Combat, so Combat cannot name
+      Item - and threading it through Spell_effects.add_mana would mean widening
+      a signature that fifteen bodies call and every test that builds an
+      effect_context has to keep up with. A callback registered at create gets
+      the same coverage for one hook and no call-site churn, and it is the
+      mechanism status.md already anticipated. The membership test is physical
+      equality rather than a compare on id: every fight has a hero at id 0, so
+      an id check would fold a foreign combatant into this battle''s loadout,
+      and a credit outside any fight has to fall through to the raw clamp.
+      [Battle.receive_mana] ends in bank_mana rather than credit_mana for the
+      same reason in reverse - credit_mana is the dispatcher it would be
+      dispatching to, and the two would chase each other. Uncapped credits (the
+      OnStartBattle payoffs, the companion ManaBonus) write the pool directly
+      and stay outside, as port.item_start_battle_dispatch already records.
+    supersedes: null
+    date: 2026-10-12
+
+  - id: port.missed_turn_placement
+    decision: >
+      A [Missed] turn is spent after the worn items'' OnStartTurn and before
+      the status effects'' start hooks; it advances turns_elapsed, emits
+      MissedTurn, still records the outcome, and ticks neither cooldowns nor
+      effect durations.
+    rationale: >
+      ITUT - "Owner never takes a turn" - is an OnStartTurn body, so the status
+      it sets has to be read after that hook and before the action, or the
+      owner would take the turn it just asked to miss; the scripts'' own
+      "before the turn is actually started" describes the same window. Reading
+      it before the status start hooks is forced anyway: that pass keeps only
+      ids it has a descriptor for and would drop the pseudo-status on the
+      floor. Skipping the cooldown tick follows from what a cooldown counts -
+      the caster''s own turns, and this was not one - while the round and the
+      cap still move, because a fight in which everyone is stunned has to end.
+      The outcome check stays: a corpse that sits out its turn still has to
+      finish the fight rather than hold the loop open until the status expires.
+    supersedes: null
+    date: 2026-10-12
+
+  - id: port.mana_ceiling_from_skills
+    decision: >
+      A combatant's ceilings default to 25 + (skill + 1) / 2 over the skills it
+      was built with, in place of the flat 20 the port used to ship; an explicit
+      max_mana still wins.
+    rationale: >
+      The constructor's formula is recovered (mana.ceiling.base_value), and
+      make_combatant already takes a skills record - so deriving the default
+      from it costs one reordered parameter and fixes every construction site
+      at once: player_to_combatant and monster_to_combatant both pass skills and
+      neither has to know about ceilings, while a test that wants a specific cap
+      says so. base_mana_limit replaces the old chosen 20 as the zero-skill
+      base, and default_mana_limit keeps its name (now equal to it) because the
+      tests compare against the name rather than the number. The raw skill
+      stands in for the effective one until quest.base_value_from_level reads
+      the virtual call - a ceiling derived that way can be too low for a
+      high-level hero, which is why the save path still must not clamp a loaded
+      pool against it.
+    supersedes: null
+    date: 2026-10-12

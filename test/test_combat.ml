@@ -544,9 +544,13 @@ let () =
 
 let () =
   (* A raised ceiling lets the same match bank more, which is the whole point of
-     items that add to max mana. The default is 20, chosen so every threshold the
-     spell scripts test against is reachable; see [Combat.default_mana_limit]. *)
+     items that add to max mana. The ceiling a fresh combatant carries follows
+     its skills now (see [Combat.caps_for]), so the behaviour under test here -
+     clamp at the ceiling, then headroom after a raise - is pinned against an
+     explicit one rather than against whatever a zero-skill character happens
+     to hold. *)
   let c = make_combatant 0 "hero" in
+  set_mana_limit c Fire 20;
   (* Crediting more than the ceiling allows gives back only the room there was. *)
   check_eq "crediting 25 into a cap of 20 banks only 20" (credit_mana c Fire 25) 20;
   check "so the pool is full" (mana_at_limit c Fire);
@@ -556,8 +560,33 @@ let () =
   check_eq "and the pool is full again" (mana_of Fire c.mana) 25
 
 let () =
-  (* The default is a parameter, not a recovered constant, so it is settable per
-     combatant. *)
+  (* The ceiling follows the skills: 25 + (skill + 1) / 2, the character
+     constructor's own formula (0x4661f0) - two points of skill buy a point of
+     ceiling, and an untrained element sits on the base. This is the recovery
+     that replaces the chosen 20; see [Combat.default_mana_limit]. *)
+  check_eq "an untrained skill gets the base" (mana_limit_for_skill 0) 25;
+  check_eq "one point buys nothing yet" (mana_limit_for_skill 1) 26;
+  check_eq "two buy nothing either" (mana_limit_for_skill 2) 26;
+  check_eq "three buy one" (mana_limit_for_skill 3) 27;
+  check_eq "nine buy five" (mana_limit_for_skill 9) 30;
+  check_eq "forty-nine buy twenty-five" (mana_limit_for_skill 49) 50;
+  let skilled = make_combatant ~skills:{ zero_skills with fire = 3 } 0 "hero" in
+  check_eq "a combatant built with skills carries ceilings that agree"
+    (mana_of Fire skilled.max_mana)
+    (mana_limit_for_skill 3);
+  check "and the elements it did not name stay on the base"
+    (mana_of Water skilled.max_mana = default_mana_limit);
+  let over =
+    make_combatant ~skills:{ zero_skills with fire = 3 }
+      ~max_mana:{ zero_caps with fire = 9 } 0 "hero"
+  in
+  check_eq "an explicit max_mana still wins over the derivation"
+    (mana_of Fire over.max_mana)
+    9
+
+let () =
+  (* An explicit ceiling is still a parameter: settable per combatant, which is
+     what makes the derivation a default rather than a rule. *)
   let c = make_combatant ~max_mana:{ zero_caps with fire = 3 } 0 "hero" in
   ignore (credit_mana c Fire 99);
   check_eq "a three-mana cap holds" (mana_of Fire c.mana) 3;

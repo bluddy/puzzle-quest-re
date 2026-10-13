@@ -265,9 +265,19 @@ let () =
       let hero = Combat.make_combatant ~cunning:5 ~max_life:30 ~life:30 1 "Hero" in
       let foe = Combat.make_combatant ~cunning:5 ~max_life:10 ~life:10 2 "Foe" in
       let ctx =
-        { Item.ic_board = None; ic_percentile = 0; ic_roll = (fun _ -> 0);
+        { Item.ic_board = None; ic_percentile = (fun () -> 0);
+          ic_roll = (fun _ -> 0);
           ic_attacker = None; ic_defender = None; ic_hero = hero;
-          ic_enemy = foe }
+          ic_enemy = foe; ic_self = hero; ic_level = Some 10;
+          ic_credit_mana = (fun e n -> ignore (Combat.credit_mana hero e n));
+          ic_credit_gold = (fun _ -> ()); ic_credit_xp = (fun _ -> ());
+          ic_extra_turn = (fun () -> hero.extra_turns <- hero.extra_turns + 1);
+          ic_inflict_damage = (fun n -> foe.life <- max 0 (foe.life - n));
+          ic_heal = (fun n -> hero.life <- min hero.max_life (hero.life + n));
+          ic_apply_status = (fun _ _ -> ());
+          ic_miss_turns = (fun _ _ -> ());
+          ic_set_gem = (fun _ _ -> ()); ic_destroy_gem = (fun _ -> ());
+          ic_multipliers = (fun _ -> ()) }
       in
       check "UDAG adds +1 on a hit of 3 or more"
         (Item.give_damage rt ctx ~damage:4 ~source:1 ~target:2 = 5

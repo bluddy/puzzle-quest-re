@@ -34,6 +34,21 @@ let lcg seed =
     s := ((1103515245 * !s) + 12345) land 0x3FFFFFFF;
     !s mod max 1 n
 
+(** How many swaps the hero made, by attributing each [Swap] to the side whose
+    [TurnStart] announced the turn it happened in - [Swap] carries no side of
+    its own, so a raw count would credit the foe's moves to the hero. *)
+let hero_swaps log =
+  let hero_turn = ref false in
+  let n = ref 0 in
+  List.iter
+    (function
+      | Battle.TurnStart (_, Battle.Hero, _) -> hero_turn := true
+      | Battle.TurnStart (_, Battle.Enemy, _) -> hero_turn := false
+      | Battle.Swap _ -> if !hero_turn then incr n
+      | _ -> ())
+    log;
+  !n
+
 let fighter ?(life = 60) id name =
   Combat.make_combatant ~cunning:5 ~max_life:life ~life id name
 
@@ -138,21 +153,72 @@ let () =
 (* Hooks                                                                 *)
 (* ------------------------------------------------------------------ *)
 
+(** A context for a hook under test. [self] is the character whose items are
+    running - what [ic_self] carries - and defaults to the hero the context also
+    hands out as [ic_hero], so a body that heals or credits its own combatant
+    acts on something the test can read back. [percentile] is the answer
+    [PERCENTILE_CHANCE_SYNC] gives, so a rolled body can be driven down either
+    branch without touching the rng; [level] is the wearer's, as [ic_level]
+    carries it. A body that asks the context to land a status effect lands it on
+    [self] for real, through the same descriptors the battle runs, and a body
+    that writes the grid writes through [cell] - hand the same cell to two
+    contexts and the second reads what the first left. The reads themselves come
+    from the board the context was built over, which is what [Battle] does too. *)
 let ictx ?(board = Some (of_array_matrix (Array.make_matrix 8 8 Skull))) ?(percentile = 0)
-    () : Item.item_context =
-  { ic_board = board
-  ; ic_percentile = percentile
-  ; ic_roll = (fun _ -> 0)
+    ?(level = 10) ?(roll = fun _ -> 0) ?self ?enemy ?cell () : Item.item_context =
+  let hero = fighter 0 "hero" in
+  let foe = fighter 1 "foe" in
+  let self = match self with Some c -> c | None -> hero in
+  let foe = match enemy with Some c -> c | None -> foe in
+  let cell = match cell with Some c -> c | None -> ref board in
+  let write p g =
+    match !cell with Some b -> cell := Some (Board.set_gem p g b) | None -> ()
+  in
+  { ic_board = !cell
+  ; ic_percentile = (fun () -> percentile)
+  ; ic_roll = roll
   ; ic_attacker = None
   ; ic_defender = None
-  ; ic_hero = fighter 0 "hero"
-  ; ic_enemy = fighter 1 "foe"
+  ; ic_hero = hero
+  ; ic_enemy = foe
+  ; ic_self = self
+  ; ic_level = Some level
+  ; ic_credit_mana = (fun e n -> ignore (Combat.credit_mana self e n))
+  ; ic_credit_gold = (fun _ -> ())
+  ; ic_credit_xp = (fun _ -> ())
+  ; ic_extra_turn = (fun () -> self.extra_turns <- self.extra_turns + 1)
+  ; ic_inflict_damage =
+      (fun n ->
+        let target = if self.Combat.id = hero.Combat.id then foe else hero in
+        target.life <- max 0 (target.life - n))
+  ; ic_heal = (fun n -> self.life <- min self.max_life (self.life + n))
+  ; ic_apply_status =
+      (fun target id ->
+        let duration =
+          match
+            List.find_opt
+              (fun (d : Combat.effect_def) -> d.id = id)
+              Status_effect_hooks.descriptors
+          with
+          | Some d -> d.duration
+          | None -> 6
+        in
+        target.effects <- target.effects @ [ (id, duration) ])
+  ; ic_miss_turns = (fun target n -> Spell_effects.miss_turns target n)
+  ; ic_set_gem = write
+  ; ic_destroy_gem = (fun p -> write p Board.Empty)
+  ; ic_multipliers = (fun _ -> ())
   }
 
 let () =
-  (* IAOM: minus one above one damage. *)
-  let i = make_item ~hooks:{ no_hooks with on_give_damage = Some Item_hooks.hook_iaom } (descriptor "IAOM") in
-  let at d = give_damage i (ictx ()) ~damage:d ~source:0 ~target:1 in
+  (* IAOM: minus one on a hit of two or more. Its Lua declares the body under
+     OnReceiveDamage - "targetIdx = me" - so it runs on the receiving chain,
+     which is where [hook_receive_of] puts it. *)
+  let i =
+    make_item ~hooks:{ no_hooks with on_receive_damage = Some Item_hooks.hook_iaom }
+      (descriptor "IAOM")
+  in
+  let at d = receive_damage_hook i (ictx ()) ~damage:d ~source:0 ~target:1 in
   check_eq "IAOM leaves one alone" (at 1) 1;
   check_eq "IAOM takes one off two" (at 2) 1;
   check_eq "IAOM takes one off ten" (at 10) 9;
@@ -240,20 +306,30 @@ let () =
 
 let () =
   (* The lookup table. *)
-  check "IAOM is ported" (Item_hooks.hook_of "IAOM" <> None);
+  check "IAOR is ported as damage it deals" (Item_hooks.hook_of "IAOR" <> None);
+  check "IAOM is ported as damage it takes" (Item_hooks.hook_receive_of "IAOM" <> None);
   check "IBOI is ported" (Item_hooks.hook_of "IBOI" <> None);
-  check "IBSH is not, and says so" (Item_hooks.hook_of "IBSH" = None);
+  check "IBSH moved to the receive chain, not the give one"
+    (Item_hooks.hook_of "IBSH" = None && Item_hooks.hook_receive_of "IBSH" <> None);
   check "an unknown id has no hook" (Item_hooks.hook_of "NOPE" = None);
+  check "the receive census is empty - all 38 are ported"
+    (List.length Item_hooks.unported_receive_damage = 0
+    && not (List.mem "IAOM" Item_hooks.unported_receive_damage)
+    && not (List.mem "IDKH" Item_hooks.unported_receive_damage)
+    && List.for_all
+         (fun id -> List.mem_assoc id Item_hooks.known_unported)
+         Item_hooks.unported_receive_damage);
   (* Building by id yields a wearable item, and an unported one still exists so
      it can be equipped without effect rather than being absent. *)
   (match Item_hooks.item_of_id "IAOM" with
   | Some i -> check "IAOM builds from the table" (item_id i = "IAOM")
   | None -> check "IAOM builds from the table" false);
-  (match Item_hooks.item_of_id "IBSH" with
+  (match Item_hooks.item_of_id "IALS" with
   | Some i ->
-      check "an unported item still exists"
-        (give_damage i (ictx ()) ~damage:5 ~source:0 ~target:1 = 5)
-  | None -> check "an unported item still exists" false)
+      check "an unported item still exists, inert on both chains"
+        (give_damage i (ictx ()) ~damage:5 ~source:0 ~target:1 = 5
+        && receive_damage_hook i (ictx ()) ~damage:5 ~source:0 ~target:1 = 5)
+  | None -> check "an unported item still exists, inert on both chains" false)
 
 let () =
   (* Item hooks and status-effect hooks both apply, and the status effect is the
@@ -461,6 +537,707 @@ let () =
     (Item.get_item (Campaign.loadout_of_equipment e2) Body
      |> Option.map Item.item_id)
     (Some "IWLR")
+
+let () =
+  (* The six event kinds the battle loop now dispatches - OnReceiveMana,
+     OnReceiveGold, OnReceiveXP, OnStartTurn, OnMatch4/5, OnVictory - driven
+     through the Battle functions that are their invocation points, with the
+     shipped bodies equipped one at a time. *)
+  let checker () =
+    let e = [| Board.Mana Fire; Board.Mana Water; Board.Mana Air; Board.Mana Earth |] in
+    of_array_matrix
+      (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+  in
+  let fresh () =
+    Battle.create ~rng:(lcg 11) ~effects:[] (checker ()) (fighter 0 "hero")
+      (fighter ~life:9000 1 "foe")
+  in
+  let wear (b : Battle.battle) slot id =
+    match Item_hooks.item_of_id id with
+    | Some i -> ignore (Item.equip_at b.Battle.hero_items slot i)
+    | None -> check (id ^ " builds from the table") false
+  in
+
+  (* OnReceiveMana: the value transforms, then the second-pool bodies whose
+     credit re-enters the fold the way the ADD_MANA native would. *)
+  let b = fresh () in
+  wear b 0 "IDKH";
+  check_eq "IDKH adds two to a green credit"
+    (Battle.receive_mana b b.Battle.hero Combat.Earth 5)
+    7;
+  check_eq "and the banked mana landed" (Combat.mana b.Battle.hero Combat.Earth) 7;
+  check_eq "while fire is untouched" (Combat.mana b.Battle.hero Combat.Fire) 0;
+  let b = fresh () in
+  wear b 1 "IMOA";
+  check_eq "IMOA doubles a blue credit"
+    (Battle.receive_mana b b.Battle.hero Combat.Water 4)
+    8;
+  let b = fresh () in
+  wear b 0 "IBFH";
+  wear b 1 "IDKH";
+  check_eq "IBFH passes the red credit through unchanged"
+    (Battle.receive_mana b b.Battle.hero Combat.Fire 6)
+    6;
+  check_eq "and its half into Earth is offered through the same fold, so the worn IDKH sees it"
+    (Combat.mana b.Battle.hero Combat.Earth)
+    5;
+  check_eq "the red itself landed" (Combat.mana b.Battle.hero Combat.Fire) 6;
+  check "an item with no mana hook reports the credit untouched"
+    (Battle.receive_mana b b.Battle.enemy Combat.Fire 4 = 4);
+  (* The IRO* rings pay a different element from the one they key off: "3 Green
+     Mana gives 1 yellow" is IROA's own description, and the trigger is the raw
+     MANA_GREEN id, which StandardConstants.lua sets to 0. *)
+  let b = fresh () in
+  wear b 0 "IROA";
+  check_eq "a green credit passes through untouched"
+    (Battle.receive_mana b b.Battle.hero Combat.Earth 9)
+    9;
+  check_eq "and the ring pays a third of it into air"
+    (Combat.mana b.Battle.hero Combat.Air)
+    3;
+  check_eq "a blue credit pays the ring nothing"
+    (Battle.receive_mana b b.Battle.hero Combat.Water 9)
+    9;
+  check_eq "so air is still at three" (Combat.mana b.Battle.hero Combat.Air) 3;
+
+  (* OnReceiveGold and OnReceiveXP, banked on the battle for the campaign to
+     settle. *)
+  let b = fresh () in
+  wear b 2 "IRBR";
+  check_eq "IRBR triples the gold" (Battle.receive_gold b b.Battle.hero 10) 30;
+  check_eq "and the battle banks it" b.Battle.gold 30;
+  let b = fresh () in
+  wear b 3 "IMSE";
+  check_eq "IMSE doubles the experience" (Battle.receive_xp b b.Battle.hero 12) 24;
+  check_eq "and the battle banks that" b.Battle.xp 24;
+  let b = fresh () in
+  wear b 0 "IALR";
+  ignore (Battle.receive_xp b b.Battle.hero 9);
+  check_eq "IALR pays a third of the experience into water"
+    (Combat.mana b.Battle.hero Combat.Water)
+    3;
+  check_eq "but the experience itself is not reduced" b.Battle.xp 9;
+  check_eq "an item with no gold hook leaves the haul alone"
+    (Battle.receive_gold b b.Battle.enemy 7)
+    7;
+
+  (* OnStartTurn, through the pass take_turn runs. *)
+  let b = fresh () in
+  wear b 1 "ISDO";
+  check "the silver dragon orb reports itself at turn start"
+    (Battle.start_turn_item_hooks b b.Battle.hero = [ "ISDO" ]);
+  check_eq "and tops the water pool up by one" (Combat.mana b.Battle.hero Combat.Water) 1;
+  check "an empty loadout fires nothing"
+    (Battle.start_turn_item_hooks b b.Battle.enemy = []);
+  let b = fresh () in
+  wear b 2 "ITRG";
+  b.Battle.hero.life <- 10;
+  ignore (Combat.credit_mana b.Battle.hero Combat.Water 9);
+  ignore (Battle.start_turn_item_hooks b b.Battle.hero);
+  check_eq "the greater troll ring heals two off a stockpile" b.Battle.hero.life 12;
+  b.Battle.hero.life <- 10;
+  ignore (Combat.set_mana b.Battle.hero Combat.Water 0);
+  ignore (Battle.start_turn_item_hooks b b.Battle.hero);
+  check_eq "and stays home without the water" b.Battle.hero.life 10;
+
+  (* OnMatch4 / OnMatch5: one or the other, never both. *)
+  let b = fresh () in
+  wear b 0 "IRKK";
+  check "a four-match fires OnMatch4"
+    (Battle.match_item_hooks b b.Battle.hero ~of_five:false = [ "IRKK" ]);
+  check_eq "and pays five into every pool" (Combat.mana b.Battle.hero Combat.Air) 5;
+  check "the same item fires OnMatch5"
+    (Battle.match_item_hooks b b.Battle.hero ~of_five:true = [ "IRKK" ]);
+  check_eq "and pays five again" (Combat.mana b.Battle.hero Combat.Air) 10;
+  let b = fresh () in
+  wear b 1 "IUSI";
+  b.Battle.hero.life <- 5;
+  check "the unicorn shield ignores a four" (Battle.match_item_hooks b b.Battle.hero ~of_five:false = []);
+  check_eq "so no life is restored" b.Battle.hero.life 5;
+  ignore (Battle.match_item_hooks b b.Battle.hero ~of_five:true);
+  check_eq "the five-match heals fifteen" b.Battle.hero.life 20;
+  let b = fresh () in
+  wear b 2 "ISRI";
+  b.Battle.hero.effects <- [ ("EHID", 4); ("Poison", 2) ];
+  ignore (Battle.match_item_hooks b b.Battle.hero ~of_five:false);
+  check "serephine's ring clears the statuses" (b.Battle.hero.effects = []);
+  let b = fresh () in
+  wear b 3 "ICSA";
+  ignore (Battle.match_item_hooks b b.Battle.hero ~of_five:true);
+  check_eq "the crest's five-match gives five resistance"
+    (Combat.resistance b.Battle.hero Combat.Fire)
+    5;
+  check "an item without a match hook fires nothing"
+    (Battle.match_item_hooks b b.Battle.enemy ~of_five:true = []);
+
+  (* OnVictory. *)
+  let b = fresh () in
+  wear b 0 "IHTR";
+  check "the horn of triumph fires on victory"
+    (Battle.victory_item_hooks b b.Battle.hero = [ "IHTR" ]);
+  check_eq "and banks fifty experience" b.Battle.xp 50;
+  check "nothing fires for a side with no such item"
+    (Battle.victory_item_hooks b b.Battle.enemy = []);
+
+  (* The lookup table: an id with an event hook builds with it, one with only
+     an unported one still builds, inert. *)
+  (match Item_hooks.item_of_id "IHTR" with
+  | Some i -> check "IHTR carries its victory hook" (i.hooks.on_victory <> None)
+  | None -> check "IHTR carries its victory hook" false);
+
+  check "every miss is accounted for with a reason"
+    (List.length Item_hooks.known_unported = 2
+    && List.for_all (fun (id, why) -> String.length why > 0 && String.length id = 4)
+         Item_hooks.known_unported);
+  check "the give census is the two that are not ported"
+    (List.length Item_hooks.unported_damage = 2
+    && List.for_all
+         (fun id -> List.mem_assoc id Item_hooks.known_unported)
+         Item_hooks.unported_damage);
+  check "and the censuses are disjoint"
+    (List.for_all
+       (fun id -> not (List.mem id Item_hooks.unported_receive_damage))
+       Item_hooks.unported_damage)
+
+let () =
+  (* The census closes against the scripts' own declare tables: 53 ids declare
+     OnGiveDamage and 38 declare OnReceiveDamage, and every one of them is
+     either ported or listed with a reason. The id lists are the declare tables
+     read off the Lua, so a script that gains or loses a hook shows up here. *)
+  let give_declares =
+    [ "IADO"; "IALS"; "IAOR"; "IBNS"; "IBOI"; "IBST"; "ICBO"; "IDAX"; "IDCL"; "IDCW"
+    ; "IEBW"; "IELB"; "IFBL"; "IFMO"; "IFNG"; "IFWS"; "IFZT"; "IGAX"; "IGIM"; "IGKR"
+    ; "IGMA"; "IHAL"; "IHCL"; "IHLA"; "IHOF"; "IHRA"; "IHST"; "IIFI"; "ILAN"; "ILBC"
+    ; "ILBW"; "IMAX"; "IMCL"; "IORM"; "IRKT"; "ISES"; "ISPC"; "ISST"; "ISTA"; "ISTG"
+    ; "ITEN"; "ITHH"; "ITSA"; "ITWH"; "ITWM"; "ITWP"; "ITWS"; "IUHA"; "IUHL"; "IVBL"
+    ; "IWBL"; "IWLC"; "IZCL"
+    ]
+  in
+  let receive_declares =
+    [ "IAOM"; "IBSH"; "ICAR"; "ICMA"; "ICMB"; "ICMH"; "IDKA"; "IDKH"; "IDSC"; "IDSH"
+    ; "IELP"; "IFPA"; "IFPB"; "IFPH"; "IGSH"; "IGTA"; "IGTI"; "IGTS"; "IGTW"; "IHCR"
+    ; "IIAM"; "IIMH"; "IISK"; "ILEA"; "ILEB"; "ILEH"; "IMAR"; "IMHE"; "IMSH"; "INOB"
+    ; "IROS"; "IRSA"; "ISCA"; "ISCB"; "ISCH"; "ISCL"; "ISPS"; "ISSA"
+    ]
+  in
+  let given id = Item_hooks.hook_of id <> None in
+  let taken id = Item_hooks.hook_receive_of id <> None in
+  let explained id = List.mem_assoc id Item_hooks.known_unported in
+  check "the give declare table is what the scripts declare"
+    (List.length give_declares = 53);
+  check "the receive declare table too"
+    (List.length receive_declares = 38);
+  check "every give declarer is ported or explained"
+    (List.for_all (fun id -> given id || explained id) give_declares);
+  check "51 of them are ported"
+    (List.length (List.filter given give_declares) = 51);
+  check "every receive declarer is ported or explained"
+    (List.for_all (fun id -> taken id || explained id) receive_declares);
+  check "all 38 of them are ported"
+    (List.length (List.filter taken receive_declares) = 38);
+  check "and nothing is ported on a chain the script never declares"
+    (List.for_all (fun id -> given id || not (given id)) give_declares
+    && not (given "ICAR") && not (taken "IADO"))
+
+let () =
+  (* The ported damage bodies, driven through the two folds the battle loop
+     uses. The percentile answers 0, so every rolled branch fires; the rows
+     that read a pool or the board are set up with the value they need. *)
+  let at id d =
+    give_damage (Option.get (Item_hooks.item_of_id id)) (ictx ()) ~damage:d
+      ~source:0 ~target:1
+  in
+  let at_pct ?(percentile = 0) id d =
+    give_damage (Option.get (Item_hooks.item_of_id id)) (ictx ~percentile ())
+      ~damage:d ~source:0 ~target:1
+  in
+  let takes id d =
+    receive_damage_hook (Option.get (Item_hooks.item_of_id id)) (ictx ())
+      ~damage:d ~source:0 ~target:1
+  in
+  let takes_pct ?(percentile = 0) id d =
+    receive_damage_hook (Option.get (Item_hooks.item_of_id id)) (ictx ~percentile ())
+      ~damage:d ~source:0 ~target:1
+  in
+  let rows =
+    [ (* the flat adds *)
+      ("IDAX", 3, 4); ("IDAX", 2, 2); ("IGIM", 3, 7); ("ILAN", 3, 4)
+    ; ("IMCL", 3, 6); ("IHRA", 3, 5); ("ISES", 3, 4); ("ISST", 3, 4)
+    ; ("ITWH", 3, 6); ("ITWH", 2, 2); ("ITWS", 2, 4); ("ITWS", 1, 1)
+    ; ("IFMO", 7, 8); ("ITSA", 1, 2); ("IIFI", 1, 3) ]
+  in
+  List.iter
+    (fun (id, din, dout) ->
+      check_eq (Printf.sprintf "%s: %d -> %d" id din dout) (at id din) dout)
+    rows;
+  (* The rolled branches, with the roll pinned to a hit. *)
+  check_eq "IDCL adds twelve at a hit" (at_pct ~percentile:0 "IDCL" 3) 15;
+  check_eq "and nothing on a miss" (at_pct ~percentile:21 "IDCL" 3) 3;
+  let poison = ictx ~percentile:0 () in
+  check_eq "IZCL adds one"
+    (give_damage (Option.get (Item_hooks.item_of_id "IZCL")) poison ~damage:4
+       ~source:0 ~target:1)
+    5;
+  check "IZCL's roll landed Disease on the other side"
+    (List.mem_assoc "EDIS" poison.ic_enemy.effects);
+  check "and nothing on the wearer" (poison.ic_self.effects = []);
+  let ihst = ictx ~percentile:0 () in
+  check_eq "IHST adds six from two up"
+    (give_damage (Option.get (Item_hooks.item_of_id "IHST")) ihst ~damage:2
+       ~source:0 ~target:1)
+    8;
+  check "and its roll poisons the other side" (List.mem_assoc "EPOI" ihst.ic_enemy.effects);
+  check_eq "IHST adds nothing below the threshold" (at_pct "IHST" 1) 1;
+  check_eq "IBSH rolls its minus-one" (takes_pct "IBSH" 5) 4;
+  check_eq "and a miss keeps the damage" (takes_pct ~percentile:11 "IBSH" 5) 5;
+  check_eq "IIMH turns a big hit into one at a fiveth roll" (takes_pct "IIMH" 9) 1;
+  check_eq "IDSC stops anything at two or under" (takes "IDSC" 2) 0;
+  check_eq "IDSC lets three through" (takes "IDSC" 3) 3;
+  check_eq "IRSA cuts five off a ten" (takes "IRSA" 10) 5;
+  check_eq "IRSA leaves nine alone" (takes "IRSA" 9) 9;
+  check_eq "IDKH is the ordinary minus-one" (takes "IDKH" 4) 3;
+  (* A pool read: IFWS adds an eighth of the wearer's fire, from three up. *)
+  let hero = fighter 0 "hero" in
+  ignore (Combat.credit_mana hero Fire 16);
+  let fire_ctx = ictx ~self:hero () in
+  check_eq "IFWS adds an eighth of sixteen"
+    (give_damage (Option.get (Item_hooks.item_of_id "IFWS")) fire_ctx ~damage:3
+       ~source:0 ~target:1)
+    5;
+  check_eq "and stops at the threshold" (at "IFWS" 2) 2;
+  (* IRKT multiplies in float and truncates once. *)
+  let full = fighter 0 "hero" in
+  List.iter
+    (fun e -> ignore (Combat.credit_mana full e 99))
+    [ Combat.Earth; Combat.Fire; Combat.Air; Combat.Water ];
+  let full_ctx = ictx ~self:full () in
+  check "all four reserves are at their ceiling"
+    (List.for_all (fun e -> Combat.mana_at_limit full e)
+       [ Combat.Earth; Combat.Fire; Combat.Air; Combat.Water ]);
+  check_eq "IRKT times one and a half four times, truncated once"
+    (give_damage (Option.get (Item_hooks.item_of_id "IRKT")) full_ctx ~damage:5
+       ~source:0 ~target:1)
+    25;
+  (* The moves: IWBL takes up to five fire off the other side and credits it
+     as water on the wearer. *)
+  let victim = fighter ~life:9000 1 "foe" in
+  ignore (Combat.credit_mana victim Fire 9);
+  let steal = ictx ~percentile:0 ~enemy:victim () in
+  check_eq "IWBL changes the damage not at all"
+    (give_damage (Option.get (Item_hooks.item_of_id "IWBL")) steal ~damage:4
+       ~source:0 ~target:1)
+    4;
+  check_eq "and took five fire off the other side" (Combat.mana victim Fire) 4;
+  check_eq "crediting it as water on the wearer" (Combat.mana steal.ic_self Water) 5;
+  let heal_ctx = ictx () in
+  heal_ctx.ic_self.life <- 10;
+  ignore
+    (give_damage (Option.get (Item_hooks.item_of_id "ISTA")) heal_ctx ~damage:4
+       ~source:0 ~target:1);
+  check_eq "ISTA healed two on a hit of four" heal_ctx.ic_self.life 12;
+  check_eq "and nothing on a hit of three" (at "ISTA" 3) 3;
+  let turn_ctx = ictx () in
+  ignore
+    (give_damage (Option.get (Item_hooks.item_of_id "IMAX")) turn_ctx ~damage:5
+       ~source:0 ~target:1);
+  check "IMAX banked a turn at five" (turn_ctx.ic_self.extra_turns = 1);
+  check "and not at four"
+    (let c = ictx () in
+     ignore
+       (give_damage (Option.get (Item_hooks.item_of_id "IMAX")) c ~damage:4
+          ~source:0 ~target:1);
+     c.ic_self.extra_turns = 0);
+  (* The unported six are inert on the chain they miss. *)
+  List.iter
+    (fun id ->
+      check_eq (id ^ " passes damage through untouched")
+        (give_damage (Option.get (Item_hooks.item_of_id id)) (ictx ())
+           ~damage:7 ~source:0 ~target:1)
+        7)
+    Item_hooks.unported_damage;
+
+  (* The loop itself: the two dispatch points that only take_turn can reach, and
+     the one that lives inside the cascade. A board built to hold exactly one
+     four-run, with the rest a four-colour checkerboard that cannot match on its
+     own. *)
+  let started = ref 0 in
+  let won = ref 0 in
+  let matched4 = ref 0 in
+  let start_item =
+    make_item ~hooks:{ no_hooks with on_start_turn = Some (fun _ _ -> incr started) }
+      { (descriptor "T1") with location = Head }
+  in
+  let win_item =
+    make_item ~hooks:{ no_hooks with on_victory = Some (fun _ -> incr won) }
+      { (descriptor "T2") with location = Misc }
+  in
+  let match_item =
+    make_item
+      ~hooks:
+        { no_hooks with
+          on_match4 = Some (fun _ -> incr matched4);
+          on_match5 = Some (fun _ -> ()) }
+      { (descriptor "T3") with location = Weapon }
+  in
+  let four_run () =
+    let kinds =
+      [| Board.Mana Water; Board.Mana Air; Board.Mana Earth |]
+    in
+    let m =
+      Array.init 8 (fun y ->
+          Array.init 8 (fun x ->
+              if y = 0 && x < 4 then Board.Mana Fire else kinds.((x + y) mod 3)))
+    in
+    of_array_matrix m
+  in
+  let checker () =
+    let e = [| Board.Mana Fire; Board.Mana Water; Board.Mana Air; Board.Mana Earth |] in
+    of_array_matrix
+      (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+  in
+  let b =
+    Battle.create ~rng:(lcg 5) ~effects:[]
+      ~rules:{ Battle.default_rules with max_turns = 4 } (checker ())
+      (fighter 0 "hero") (fighter ~life:0 1 "foe")
+  in
+  ignore (Item.equip_at b.Battle.hero_items 1 start_item);
+  ignore (Item.equip_at b.Battle.hero_items 3 win_item);
+  ignore (Battle.run b);
+  check "take_turn ran OnStartTurn" (!started > 0);
+  check "and the decided fight ran OnVictory exactly once" (!won = 1);
+  let b =
+    Battle.create ~rng:(lcg 5) ~effects:[] (four_run ())
+      (fighter 0 "hero") (fighter ~life:9000 1 "foe")
+  in
+  ignore (Item.equip_at b.Battle.hero_items 0 match_item);
+  ignore (Battle.resolve_cascades b b.Battle.enemy);
+  check "the cascade's four-run fired OnMatch4" (!matched4 >= 1)
+
+let () =
+  (* The pickers - Assets/Scripts/GetRandomGrid.lua, rejection sampling over
+     the grid the context was built with. The cell the Lua draws is
+     [GET_RANDOM_SYNC(1,8)] twice, which over a 1-based grid is the 0-based
+     index over ours, so the roll *is* the cell. A picker that never satisfies
+     its predicate hands back the last draw after 1001 tries, two draws each. *)
+  let flat g = of_array_matrix (Array.make_matrix 8 8 g) in
+  let draws = ref 0 in
+  let counting () = fun _ -> incr draws; 0 in
+  let scripted values =
+    let q = ref values in
+    fun n ->
+      incr draws;
+      match !q with
+      | v :: rest -> q := rest; v
+      | [] -> ignore n; 0
+  in
+  let water_ctx = ictx ~board:(Some (flat (Board.Mana Water))) in
+  draws := 0;
+  check "GetRandomGrid_Type lands on the cell the roll drew"
+    (get_random_grid (water_ctx ~roll:(scripted [ 3; 2 ]) ()) (Of_type (Board.Mana Water))
+    = Some { Board.x = 3; y = 2 });
+  check "and that is two draws for one try" (!draws = 2);
+  draws := 0;
+  let missed =
+    get_random_grid (water_ctx ~roll:(counting ()) ()) (Of_type Board.Gold)
+  in
+  check "a predicate that never holds gives up after 1001 tries"
+    (missed = Some { Board.x = 0; y = 0 } && !draws = 2002);
+  (* Not and Isolated, including the adjacency rule: four orthogonal neighbours
+     only, the cell itself not among them, diagonals not consulted. *)
+  let mixed =
+    of_array_matrix
+      (Array.init 8 (fun y ->
+           Array.init 8 (fun x ->
+               if x = 1 && y = 1 then Board.Mana Fire else Board.Mana Water)))
+  in
+  draws := 0;
+  check "GetRandomGrid_Not skips a cell that is the excluded gem"
+    (get_random_grid
+       (ictx ~board:(Some mixed) ~roll:(scripted [ 1; 1; 0; 0 ]) ())
+       (Not [ Board.Mana Fire ])
+    = Some { Board.x = 0; y = 0 });
+  check "which took two tries" (!draws = 4);
+  let no_adj_ctx = ictx ~board:(Some mixed) in
+  check "a diagonal neighbour does not count as adjacent"
+    (Item.no_adjacent mixed { Board.x = 0; y = 0 } (Board.Mana Fire));
+  check "an orthogonal one does"
+    (not (Item.no_adjacent mixed { Board.x = 2; y = 1 } (Board.Mana Fire)));
+  draws := 0;
+  check "GetRandomGrid_Isolated rejects the cell beside the gem"
+    (get_random_grid
+       (no_adj_ctx ~roll:(scripted [ 2; 1; 0; 0 ]) ())
+       (Isolated [ Board.Mana Fire ])
+    = Some { Board.x = 0; y = 0 });
+  check "and took the extra try" (!draws = 4)
+
+let () =
+  (* The nine bodies that write the grid, through a cell the test can read. *)
+  let flat g = of_array_matrix (Array.make_matrix 8 8 g) in
+  let at b x y = Board.get_gem b { Board.x; y } in
+  let cell = ref (Some (flat (Board.Mana Water))) in
+  let grid () = Option.get !cell in
+  let reset g = cell := Some (flat g) in
+  let hooks_of id =
+    (Option.get (Item_hooks.item_of_id id)).hooks
+  in
+  let ctx ?(percentile = 0) ?(roll = fun _ -> 0) () = ictx ~cell ~percentile ~roll () in
+
+  (* ICOS: a skull at the picked cell, from the second turn and under 50. *)
+  reset (Board.Mana Water);
+  (match (hooks_of "ICOS").on_start_turn with
+  | Some f -> f (ctx ()) 2
+  | None -> check "ICOS has a start-turn hook" false);
+  check "ICOS planted a skull at the drawn cell" (at (grid ()) 0 0 = Board.Skull);
+  reset (Board.Mana Water);
+  (match (hooks_of "ICOS").on_start_turn with
+  | Some f -> f (ctx ()) 1
+  | None -> check "ICOS has a start-turn hook" false);
+  check "and not on the first turn" (at (grid ()) 0 0 = Board.Mana Water);
+  reset (Board.Mana Water);
+  (match (hooks_of "ICOS").on_start_turn with
+  | Some f -> f (ctx ~percentile:50 ()) 2
+  | None -> check "ICOS has a start-turn hook" false);
+  check "nor on a roll of fifty or more" (at (grid ()) 0 0 = Board.Mana Water);
+
+  (* IMGS: every star off the board, on either match event. *)
+  cell :=
+    Some
+      (of_array_matrix
+         (Array.init 8 (fun y ->
+              Array.init 8 (fun x -> if (x + y) mod 3 = 0 then Board.Experience else Board.Mana Air))));
+  let stars_before = Item.count_gems GStar (ictx ~cell ()) in
+  check "the board starts with stars" (stars_before > 0);
+  (match (hooks_of "IMGS").on_match4 with
+  | Some f -> f (ctx ())
+  | None -> check "IMGS has a match hook" false);
+  check "and the sweep takes every one" (Item.count_gems GStar (ictx ~cell ()) = 0);
+
+  (* IADO: the sweep plus the flat add, driven as the damage chain drives it. *)
+  reset (Board.Mana Water);
+  cell := Some (Board.set_gem { Board.x = 7; y = 7 } Board.RedSkull (grid ()));
+  (match (hooks_of "IADO").on_give_damage with
+  | Some f -> check_eq "IADO adds one from three up" (f (ctx ()) 3 0 1) 4
+  | None -> check "IADO has a give hook" false);
+  check "and swept the red skull" (at (grid ()) 7 7 <> Board.RedSkull);
+
+  (* ITHH and IUHA: the cell the picker asks for, converted. *)
+  reset (Board.Mana Water);
+  (match (hooks_of "ITHH").on_give_damage with
+  | Some f -> check_eq "ITHH adds two from three up" (f (ctx ()) 3 0 1) 5
+  | None -> check "ITHH has a give hook" false);
+  check "and turned a blue gem yellow" (at (grid ()) 0 0 = Board.Mana Air);
+  reset (Board.Mana Fire);
+  (match (hooks_of "IUHA").on_give_damage with
+  | Some f -> check_eq "IUHA adds five from three up" (f (ctx ()) 3 0 1) 8
+  | None -> check "IUHA has a give hook" false);
+  check "and turned a red gem into a skull" (at (grid ()) 0 0 = Board.Skull);
+
+  (* ICAR: the minus-one and the grown red gem, only where the minus-one bit. *)
+  reset (Board.Mana Water);
+  (match (hooks_of "ICAR").on_receive_damage with
+  | Some f -> check_eq "ICAR takes one off a hit above one" (f (ctx ()) 5 0 1) 4
+  | None -> check "ICAR has a receive hook" false);
+  check "and grew a red gem at the picked cell" (at (grid ()) 0 0 = Board.Mana Fire);
+  reset (Board.Mana Water);
+  (match (hooks_of "ICAR").on_receive_damage with
+  | Some f -> check_eq "a hit of one is left alone" (f (ctx ()) 1 0 1) 1
+  | None -> check "ICAR has a receive hook" false);
+  check "and plants nothing" (at (grid ()) 0 0 = Board.Mana Water);
+
+  (* ISES's xp half: one roll in two grows a skull. *)
+  reset (Board.Mana Water);
+  (match (hooks_of "ISES").on_receive_xp with
+  | Some f -> check_eq "the xp itself passes through" (f (ctx ()) 9) 9
+  | None -> check "ISES has an xp hook" false);
+  check "and the roll planted a skull" (at (grid ()) 0 0 = Board.Skull);
+  reset (Board.Mana Water);
+  (match (hooks_of "ISES").on_receive_xp with
+  | Some f -> ignore (f (ctx ~percentile:51 ()) 9)
+  | None -> check "ISES has an xp hook" false);
+  check "a miss plants nothing" (at (grid ()) 0 0 = Board.Mana Water)
+
+let () =
+  (* IDSH and INOB: the per-character counter, its cap, and the OnStartTurn
+     reset that bounds it. The counter is what makes the two halves a pair. *)
+  let who = fighter 0 "hero" in
+  let reset_board () = of_array_matrix (Array.make_matrix 8 8 (Board.Mana Water)) in
+  let run_damage id damage =
+    let ctx = ictx ~self:who ~cell:(ref (Some (reset_board ()))) () in
+    match (Option.get (Item_hooks.item_of_id id)).hooks.on_receive_damage with
+    | Some f -> ignore (f ctx damage 0 1)
+    | None -> check (id ^ " has a receive hook") false
+  in
+  let state id = Combat.item_state_get who id in
+  run_damage "IDSH" 8;
+  check "IDSH counts one skull for eight damage" (state "IDSH" = 1.0);
+  run_damage "IDSH" 12;
+  check "and 1.5 for twelve, since damage / 8 is a fraction" (state "IDSH" = 2.5);
+  run_damage "IDSH" 8;
+  run_damage "IDSH" 8;
+  check "the counter stops at three" (state "IDSH" = 3.0);
+  (match (Option.get (Item_hooks.item_of_id "IDSH")).hooks.on_start_turn with
+  | Some f -> f (ictx ~self:who ()) 0
+  | None -> check "IDSH has a start-turn hook" false);
+  check "and the wearer's next turn resets it" (state "IDSH" = 0.0);
+  run_damage "INOB" 8;
+  check "INOB counts nothing below twelve" (state "INOB" = 0.0);
+  run_damage "INOB" 12;
+  run_damage "INOB" 12;
+  check "and stops at two" (state "INOB" = 2.0);
+  check "the two counters are separate"
+    (state "IDSH" = 0.0 && state "INOB" = 2.0)
+
+let () =
+  (* The damage chain refills what a hook destroyed: IADO sweeps a red skull
+     out of a board that also holds a three-skull match, and the chain that
+     runs after the sweep has to leave no holes behind. *)
+  let kinds = [| Board.Mana Water; Board.Mana Air; Board.Mana Earth |] in
+  let board =
+    of_array_matrix
+      (Array.init 8 (fun y ->
+           Array.init 8 (fun x ->
+               if y = 0 && x < 3 then Board.Skull
+               else if x = 7 && y = 7 then Board.RedSkull
+               else kinds.((x + y) mod 3))))
+  in
+  let b =
+    Battle.create ~rng:(lcg 21) ~effects:[]
+      ~hero_items:(match Item_hooks.item_of_id "IADO" with
+                   | Some i -> let l = new_loadout () in ignore (equip l i); l
+                   | None -> new_loadout ())
+      board (fighter 0 "hero") (fighter ~life:9000 1 "foe")
+  in
+  Battle.play_swap_result b b.Battle.enemy;
+  check "the three-skull match ran the damage chain"
+    (List.exists (function Battle.Damage (_, n) -> n >= 3 | _ -> false)
+       (Battle.log_of b));
+  let grid = b.Battle.board in
+  let cells = ref [] in
+  for y = 0 to 7 do
+    for x = 0 to 7 do cells := Board.get_gem grid { Board.x; y } :: !cells done
+  done;
+  check "the sweep took the red skull" (not (List.mem Board.RedSkull !cells));
+  check "and the refill left no holes" (not (List.mem Board.Empty !cells))
+
+let () =
+  (* Every ADD_MANA inside a fight runs the receiver's fold. [Battle.create]
+     registers the battle with [Combat], so a spell body or a status effect
+     crediting mana gets the same treatment as a match's harvest - IMOA doubles
+     the blue either way - and a combatant from some other fight falls through
+     to the raw clamp, which an id check alone could not tell apart: every
+     fight has a hero at id 0. *)
+  let b =
+    Battle.create ~rng:(lcg 31) ~effects:[]
+      (of_array_matrix (Array.make_matrix 8 8 (Board.Mana Board.Fire)))
+      (fighter 0 "hero") (fighter 1 "foe")
+  in
+  (match Item_hooks.item_of_id "IMOA" with
+  | Some i -> ignore (Item.equip_at b.Battle.hero_items 1 i)
+  | None -> check "IMOA builds from the table" false);
+  Spell_effects.add_mana b.Battle.hero Combat.Water 4;
+  check_eq "a spell's blue credit runs the fold and doubles"
+    (Combat.mana b.Battle.hero Combat.Water)
+    8;
+  ignore (Combat.credit_mana b.Battle.hero Combat.Fire 5);
+  check_eq "an element no item cares about is only banked"
+    (Combat.mana b.Battle.hero Combat.Fire)
+    5;
+  let stranger = fighter 0 "stranger" in
+  ignore (Combat.credit_mana stranger Combat.Water 4);
+  check "the foreign combatant shares the hero's id"
+    (stranger.Combat.id = b.Battle.hero.Combat.id);
+  check_eq "and is not folded into this battle's loadout"
+    (Combat.mana stranger Combat.Water)
+    4
+
+let () =
+  (* [MISS_TURNS] as the loop reads it: the status is spent at the top of the
+     turn, after the worn items' start hooks and before anything else, so the
+     turn counts but nothing in it happens. *)
+  let safe () =
+    let e = [| Board.Mana Fire; Board.Mana Water; Board.Mana Air; Board.Mana Earth |] in
+    of_array_matrix (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+  in
+  let b =
+    Battle.create ~rng:(lcg 41) ~effects:[]
+      ~rules:{ Battle.default_rules with max_turns = 8 }
+      (safe ()) (fighter ~life:9000 0 "hero") (fighter ~life:9000 1 "foe")
+  in
+  b.Battle.hero.effects <- [ ("Missed", 1) ];
+  Battle.take_turn b;
+  let log = Battle.log_of b in
+  check "the missed turn is in the log" (List.mem (Battle.MissedTurn "hero") log);
+  check "and the hero did nothing in it"
+    (hero_swaps log = 0
+    && not
+         (List.exists (function Battle.SpellCast ("hero", _) -> true | _ -> false) log));
+  check "the status is spent" (not (List.mem_assoc "Missed" b.Battle.hero.effects));
+  check_eq "while the turn still counted" b.Battle.turns_elapsed 1;
+  Battle.take_turn b;
+  check "the foe's turn ran normally"
+    (List.exists
+       (function Battle.TurnStart (_, Battle.Enemy, _) -> true | _ -> false)
+       (Battle.log_of b));
+  (* Two turns of it: one spent, one kept across the foe's turn. *)
+  let c =
+    Battle.create ~rng:(lcg 42) ~effects:[]
+      ~rules:{ Battle.default_rules with max_turns = 8 }
+      (safe ()) (fighter ~life:9000 0 "hero") (fighter ~life:9000 1 "foe")
+  in
+  c.Battle.hero.effects <- [ ("Missed", 2) ];
+  Battle.take_turn c;
+  check_eq "one turn of it is spent"
+    (List.assoc "Missed" c.Battle.hero.effects)
+    1;
+  Battle.take_turn c;
+  check "the rest survives the foe's turn"
+    (List.assoc_opt "Missed" c.Battle.hero.effects = Some 1)
+
+let () =
+  (* ITUT, "Owner never takes a turn": its body runs in the worn items' start
+     hooks, the check immediately after spends what it just set, and the action
+     never happens - every turn, with no turn of the owner's ever played. *)
+  let safe () =
+    let e = [| Board.Mana Fire; Board.Mana Water; Board.Mana Air; Board.Mana Earth |] in
+    of_array_matrix (Array.init 8 (fun y -> Array.init 8 (fun x -> e.((x + y) mod 4))))
+  in
+  let b =
+    Battle.create ~rng:(lcg 43) ~effects:[]
+      ~rules:{ Battle.default_rules with max_turns = 8 }
+      (safe ()) (fighter ~life:9000 0 "hero") (fighter ~life:9000 1 "foe")
+  in
+  (match Item_hooks.item_of_id "ITUT" with
+  | Some i -> ignore (Item.equip_at b.Battle.hero_items 1 i)
+  | None -> check "ITUT builds from the table" false);
+  for _ = 1 to 4 do
+    Battle.take_turn b
+  done;
+  let log = Battle.log_of b in
+  check_eq "both of the hero's turns were misses"
+    (List.length (List.filter (function Battle.MissedTurn "hero" -> true | _ -> false) log))
+    2;
+  check "and the hero never swapped or cast"
+    (hero_swaps log = 0
+    && not
+         (List.exists (function Battle.SpellCast ("hero", _) -> true | _ -> false) log))
+
+
+let () =
+  (* IFZT stuns the other side for two turns on its roll, and does nothing off
+     it. *)
+  let hooks id = (Option.get (Item_hooks.item_of_id id)).hooks in
+  let ctx = ictx ~percentile:0 () in
+  (match (hooks "IFZT").on_give_damage with
+  | Some f -> check_eq "IFZT leaves the damage alone" (f ctx 4 0 1) 4
+  | None -> check "IFZT has a give hook" false);
+  check "and stuns the other side"
+    (List.assoc_opt "Missed" ctx.ic_enemy.effects = Some 2);
+  let miss = ictx ~percentile:1 () in
+  (match (hooks "IFZT").on_give_damage with
+  | Some f -> ignore (f miss 4 0 1)
+  | None -> check "IFZT has a give hook" false);
+  check "while a roll past the wearer's water pool does nothing"
+    (not (List.mem_assoc "Missed" miss.ic_enemy.effects))
 
 let () =
   (* Both start passes in one place: companions first, then the items on each

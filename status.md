@@ -2,40 +2,29 @@
 
 **Date:** 2026-10-12  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree at `790a81a` (the var/item/clause-guard round). Seven follow-ups since mount training. The last gap - chains under untracked tests - closed this round: the guard snapshots learned script-variable and inventory conjunctions, so arms keyed by a done-flag, a local or an item carry `var_test` / `item_test` slots alongside the companion gate, and the runtime's `player.quest_vars` store holds them (`script_var_get` / `script_var_set`, cleared on accept so a re-accept restarts from the Lua's `OnInit` defaults; `has_item_tag` reads the traveling inventory). Every group / query / battle / callback / message row now carries the full arm conjunction plus a `clause` list whose entries pin out the sibling arms of the row's own `if/elseif` chain - the clause fires when the predecessor's key holds, and a row applies only when no clause fires. Q1S0's three `triedToKeepKey` arms, QA03's `doneConv` fight-vs-box split, Q3Q5's necropolis sites (per-site flags + the ISES inventory gate) and Q0Q0's `lostToThief` twins all extract and run as the Lua sequences them; 380 clause-gated groups, 52 var-gated, 8 item-gated, 8 var-gated callback sites. The clause evaluates against the chain's ENTRY snapshot (the fold-start player, advanced past a fired row), not the live accumulator - an arm's own SetQuestState or remove_companion cannot unblock a sibling of its chain (Q1G3 and Q0Q0's OnCompleteAction post one box and advance to state 2; the `elseif questState==2` turn-in arm waits for the next call, exactly the single-entry `if` the Lua writes - three older tests that asserted the sibling co-firing were rewritten as exclusivity pins). Generated shapes widened (`campaign_quests.ml` regenerated, deterministic double-run hash-equal), save/load carries `quest_vars`, and the Q1S0 / QA03 / Q3Q5 chains have first-class tests driving execute with companion/var/inventory setups. All 34 suites pass (2464 checks), extractor `--check` and the evidence validator green. Earlier follow-ups this cycle: deterministic group ordering, the last two QUEST_REMOVE_COMPANION sites, message-row sibling-arm pruning, companion gates on all six tables, and the terminates flag.
+**Sync:** clean tree (mana-ceiling RE round). `quest.base_value_from_level` is answered as far as the binary gives up: the character constructor at **0x4661f0** zeroes the four ceilings and computes each one as **25 + (effective skill + 1) / 2** - the half is `0x478620`'s case 3, `(v + 1) / 2`, and the 25 is also what the sibling constructor `0x466060` writes flat to all four; `ADD_TEMP_SKILL`'s call at `0x48c5d5` moves a ceiling by the delta of that same expression, which is why the two paths agree, and the setter at `0x4839f0` is the only writer of the field anywhere in the image - five callers in all, the four `SET_MAX_MANA_*` Lua bindings and `ADD_TEMP_SKILL`. The walk that found them is the existing recursive-descent map (954,645 decoded instruction bytes, 82.9% of `.text`, 10,478 functions) plus one gap in its seeding: `Lua_ADD_TEMP_SKILL.c` has no address in its filename, so the binding was never a seed until `docs/LUA_API.md`'s va column fed it in - that is what turned "four callers" into the fifth. In the port, `Combat.base_mana_limit = 25` replaces the chosen 20, `mana_limit_for_skill` / `caps_for` are the formula, and `make_combatant` derives `max_mana` from the `skills` it is given (one reordered optional parameter), so `player_to_combatant` and `monster_to_combatant` get skill-derived ceilings without knowing about ceilings at all; `default_mana_limit` keeps its name, now equal to the zero-skill base, because the tests compare against the name rather than the number. Three test blocks that wanted a *specific* cap now pin one explicitly. What is still unread is the effective skill itself - a virtual call taking `(kind 5, raw skill, level, element)` - so the question is narrowed to that and the port uses the raw skill and says so (`port.mana_ceiling_from_skills`). `mana.ceiling.base_value` went from `assumed` / low to `recovered` / high. All 34 suites pass (2625 checks), extractor `--check` and the evidence validator green (98 claims, 11 questions / 5 open, 46 decisions).
 
 ---
 
-## Next Round Options (surveyed 2026-10-12)
+## Next Round Options (surveyed 2026-10-12; six rounds landed the same day)
 
-The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, and the remaining GAPS rows are UI, polish or deliberately-open RE questions. Four candidate directions, ranked by leverage:
+The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), both follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`), and the mana ceiling is recovered rather than chosen. What is left is one RE thread, one map round, one doc audit and one UI chunk. Ranked by leverage:
 
-### 1. Item effects — wire the never-invoked hooks (recommended)
+### 1. The effective-skill query (new)
 
-`Item.hooks` already types `on_receive_mana/gold/xp`, `on_start_turn`, `on_match4/5` and `on_victory`, but **nothing calls them**: the battle loop folds only `on_give_damage` (per damage event) and the start-battle payoffs. The Lua corpus is small and bounded:
+The one unread half of the ceiling formula: `ceiling = 25 + (effective skill + 1) / 2`, where the effective skill comes from a virtual call taking `(kind 5, raw skill, level, element)` and clamping to 999 (`quest.base_value_from_level`). Level is handed to it, so it may or may not fold in - and the difference shows: the decoded hero that banks 31 Fire at level 5 needs an effective skill of 11, where a profession's raw base of 3 gives 27. The port uses the raw skill, so a high-level hero's cap may be understated and every `mana_at_limit` read with it. The work is one function: find the character vtable's slot at +0x20 for the hero class and read it. The other way in is a decoded .pqhero - its seven Masteries beside its mana pools pin what the formula had to produce.
 
-| Hook | Items | Portability |
-|------|-------|-------------|
-| OnReceiveMana | 17 (IBFH, IDKH, IMOA, ...) | mostly value transforms (IDKH `+2` on green, IMOA `*2` on blue) - portable; IBFH credits a second pool via `ADD_MANA_EARTH` (needs the mana-credit call) |
-| OnReceiveGold | 3 (IGPK, IRBR, IXHD) | IGPK's XP body needs `ADD_TEMP_SKILL` (staged bonus - no model); gold bodies to audit |
-| OnReceiveXP | 6 (IALR, IAOB, IGPK, IMSE, ISES, ISKT) | same staging problem for IGPK; others to audit |
-| OnStartTurn | 9 (ICOS, IDSH, IEGM, INOB, ISDO, ITRG, ITRI, ITRU, ITUT) | ICOS needs `SET_GEM` + `GetRandomGrid_Isolated2` + a fresh percentile roll (no model); simpler bodies may exist among the rest |
-| OnMatch4 / OnMatch5 | 5 / 6 (ICSA, IMGS, IRKK, ISRI, IWBC, IUSI) | ICSA needs `ADD_TEMP_RESISTANCE` staging; IUSI is `Std_Healing(15)` - likely portable once healing exists; the match4/5 events themselves are already dispatched in `Combat` |
-| OnVictory | 1 (IHTR) | `ADD_XP(+50)` - portable at the campaign award path |
+### 2. Fog of war and visible range (GAPS row 3)
 
-Work: (a) wire invocation points - mana credit on gem matches, turn start in the battle loop, match4/5 dispatch (the event slots already exist on `Combat.hooks`), victory at battle end, gold/XP at the campaign settle; (b) port the portable bodies into `Item_hooks`, extend `item_of_id` beyond damage-only; (c) keep natives-dependent bodies in `known_unported` with reasons (same discipline as the IBSH/percentile note). Closes GAPS §9's last bullet ("the mana/gold/xp, start-turn, match and victory hooks are still never invoked").
-
-### 2. Mana ceiling RE - settle `quest.base_value_from_level`
-
-Open question: what sets the per-element mana ceiling at hero construction? The port models no cap at all (a chosen 20 for AI judgements), so 8 items' `GET_MAX_MANA_*` comparisons and every AI mana test are judged against a phantom. The question's own guidance: the save stores the pool, not the ceiling, and carries level + class - so the base is computed at load time; the save loader is the smaller target. Needs binary/decompiler work (`tools/scan_field_refs.py`, `DecompileSaveSystem.java`). Unblocks the remaining mana-gated item hooks and AI honesty.
+Visibility flags exist, save correctly and are drawn by the map window, but nothing recomputes what the hero can see from where they stand - a road is visible when both endpoints are, which is the rule the engine recovered, and that is as far as it goes. This is the medium milestone with the most of its machinery already in place: `set_location_visible`, the reveal hooks, the saved live state, and a renderer that already paints the flags. The open half is the range rule itself, which needs the same RE treatment the ceiling just had (what radius, and does it depend on level or on standing at a node?).
 
 ### 3. Close stale open questions - cheap doc round
 
-`quest.difficulty_consumers` still says "the quest layer that would choose taskLevel does not exist yet", but `run_quest_battle` now passes `monster.level_base` and road fights pass `enc.my_level` (`port.campaign_task_level`). An audit of the four remaining open questions (`font.advance_field_mapping`, `quest.base_value_from_level`, `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`) against the landed code could retire at least one and sharpen the others.
+`quest.difficulty_consumers` still says "the quest layer that would choose taskLevel does not exist yet", but `run_quest_battle` now passes `monster.level_base` and road fights pass `enc.my_level` (`port.campaign_task_level`). An audit of the five remaining open questions (`font.advance_field_mapping`, `quest.base_value_from_level`, `quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`, `board.gem_id_air_water_order`) against the landed code could retire at least one and sharpen the others - the gem-id one only needs a second source for the 3/4 order, and one of the five was just narrowed rather than closed.
 
 ### 4. Battle UI / spell list - start the full graphics battle
 
-`pq_play_gfx` exists but minimal: no spell panel with costs, no mana bars, no persistent combat log. The data is all there (130 spells with costs, mana pools, float-text events). Large SDL chunk, different flavour from the engine rounds.
+`pq_play_gfx` exists but minimal: no spell panel with costs, no mana bars, no persistent combat log. The data is all there (130 spells with costs, mana pools, float-text events) and the log now carries `MissedTurn` too. Large SDL chunk, different flavour from the engine rounds.
 
 ---
 
@@ -44,6 +33,16 @@ Open question: what sets the per-element mana ceiling at hero construction? The 
 ### Battle Layer (Complete)
 - **Board & gems:** 8×8 grid, swap validation, match detection, cascades, gravity, refill
 - **Combat:** Hero/foe stats, life/mana, damage, status effects, spell casting
+- **Mana ceilings (NEW):** `25 + (skill + 1) / 2` per element, read out of the
+  character constructor at `0x4661f0` (and confirmed from the other side by the
+  `ADD_TEMP_SKILL` delta at `0x48c5d5`, with `0x4839f0` the only writer of the
+  field in the image). `Combat.caps_for` is the formula and `make_combatant`
+  derives `max_mana` from the skills it is given, so heroes and monsters carry
+  ceilings that agree with their masteries instead of a chosen 20
+  (`port.mana_ceiling_from_skills`). The one unread half is the effective-skill
+  query, a virtual call over (skill, level, element) - `quest.base_value_from_level`
+  - and the port uses the raw skill until it is read.
+
 - **Spells:** 130 spells ported from Lua; 11 spells with 13 grid-effect calls (`Std_GridSpellEffect`); the nine `Input` spells aim from the cast question (`choose_aim` -> `fx_input`) and the six hook picks land as `ctx_aim`
 - **Animation:** Per-gem pop (matched fade/shrink), column-bottom-up fall, entrant slide; `Battle.on_step` observer
 - **Sound:** Full `Audio.play_all` fix; cascade step sounds (1 silent, 2=`snd_cascade1`, 7+=`snd_cascade6`); spell sounds via `Spell_fx.calls_of_spell`
@@ -193,6 +192,74 @@ Open question: what sets the per-element mana ceiling at hero construction? The 
   companion pass; `loadout_of_equipment` folds the eight-field character
   panel into the four battle slots by each item's own location, so a wall
   in the gauntlets field still wears the body slot.
+- **Item event hooks (NEW):** the six kinds beyond damage - `OnReceiveMana`,
+  `OnReceiveGold`, `OnReceiveXP`, `OnStartTurn`, `OnMatch4/5`, `OnVictory` -
+  are invoked, at six points in `Battle` each script's own comment names:
+  `receive_mana` where a match banks a run, `receive_gold` / `receive_xp`
+  where the battle accrues them and where a spell writes `ADD_GOLD` /
+  `ADD_XP` back, `start_turn_item_hooks` at the top of the acting side's
+  turn (before the status effects' own), `match_item_hooks` beside the
+  `size_patterns` extra-turn grant together with `Combat.run_match_effects`
+  (which had never had a caller), and `victory_item_hooks` the instant
+  `take_turn` decides the winner. `Item.item_context` carries `ic_self` plus
+  the natives a body needs - `ic_credit_mana` re-enters the fold so IBFH's
+  second pool and the IRO* cycle behave as `ADD_MANA` would, `ic_credit_gold`,
+  `ic_credit_xp`, `ic_extra_turn`, `ic_inflict_damage`, `ic_heal` - instead of
+  the Lua's `characterIdx`; non-damage contexts draw no percentile, so the rng
+  stream of a fight that only hooks these events is unchanged. 34 of the 41
+  declaring scripts are ported (`event_hooks` in `lib/item_hooks.ml`), the 7
+  that are not are `known_unported` with a reason each, and the two damage
+  censuses sit alongside them (`unported_damage` 51, `unported_receive_damage`
+  37). One correction: IAOM's body is an `OnReceiveDamage` and was on the give
+  chain - it now runs on the receive fold through `hook_receive_of`.
+- **Item damage bodies (NEW):** the two chains the folds have always
+  dispatched are filled in - `OnGiveDamage` 47 of 53 scripts, `OnReceiveDamage`
+  35 of 38 - and the censuses fell to 6 and 3. The bodies are five shapes
+  written once each (a flat add behind a threshold, a pool or board count
+  divided by k, mana drained off the other side and credited to the wearer, a
+  percentile gate over any of them, and the minus-one arm the receive chain is
+  mostly made of), with the id lists in the comments. Two blockers were
+  removed: `ic_percentile` is a draw-per-call closure now, so the sixteen
+  rolled bodies (IBSH and its family) roll exactly as the native does and an
+  item that never asks costs no draw at all; and `ADD_TEMP_SKILL` writes the
+  skill array under a 999 cap (`Lua_ADD_TEMP_SKILL.c`), so IGPK and IGSH are
+  ordinary skill writes. That left thirteen ids, nine of them board writes,
+  each in `known_unported` with a reason - the two rounds below took the rest
+  between them. `test_item.ml` pins both declare tables as literal lists and
+  checks every id against the two lookups, plus a table of (id, damage in,
+  damage out).
+- **Item board writes (NEW):** the nine misses that were board writes are in -
+  `ic_set_gem`, `ic_destroy_gem` and `ic_multipliers` on the item context, the
+  `GetRandomGrid_*` family in `Item` (rejection sampling exactly as
+  `Assets/Scripts/GetRandomGrid.lua` writes it, x drawn before y), and
+  `Combat.combatant.item_state` for the per-turn float counter IDSH and INOB
+  keep in a Lua table keyed by characterIdx. `OnReceiveDamage` is now 38 of
+  38 and `OnGiveDamage` 51 of 53. The loop makes room for the writes
+  (`port.item_board_writes`): the cascade advances the board before it
+  walks the runs, and the damage chain refills after it, gated on the board
+  having changed.
+- **Mana paths (NEW):** every capped mana credit inside a fight runs the
+  receiver's OnReceiveMana fold - `Combat.credit_mana` dispatches through a
+  registry `Battle.create` installs, so a spell's `ADD_MANA` and a status
+  effect's bonus carry the worn items the way a match's harvest does (IMOA
+  doubles the blue a spell granted, not only the blue a gem matched). The hook
+  tests physical membership in its own roster, so a foreign combatant - every
+  fight has a hero at id 0 - falls through to the clamp with no hook, which is
+  also what the fold itself banks through so the two cannot chase each other
+  (`port.mana_credit_registry`). The uncapped start-battle payoffs and the
+  companion ManaBonus stay outside, as they were recorded.
+- **Missed turns (NEW):** the loop spends `MISS_TURNS` at the top of the turn,
+  after the worn items' `OnStartTurn` and before the status effects' start
+  hooks - which is what makes ITUT's "Owner never takes a turn" literally true
+  (its body sets the status, the check spends it, the action never happens),
+  and the only placement that survives `run_start_of_turn_effects` dropping an
+  id it has no descriptor for. A skipped turn advances the round, emits the new
+  `MissedTurn` event, still records the outcome, and ticks neither cooldowns nor
+  effect durations (`port.missed_turn_placement`); SSTU and SWOP skip through
+  the same path. IFZT and ITUT are ported on the back of it, so
+  `known_unported` is two ids - IALS and ILBC, both against natives with
+  nothing behind them - and `OnStartTurn` is 9 of 9: 131 of the 133 hook
+  declarations run.
 - **Tests:** `test/test_campaign.ml` (223), `test/test_capture.ml` (84),
   `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101),
   `test/test_callback_effects.ml` (24), `test/test_location_actions.ml` (30)
@@ -226,9 +293,17 @@ Open question: what sets the per-element mana ceiling at hero construction? The 
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 90 | 10 (4 open) | 40 |
+| `docs/reverse/evidence.yml` | 98 | 11 (5 open) | 46 |
 
 Key decisions recorded:
+- `port.item_event_context` — every item hook takes an item_context with `ic_self`, `ic_level`, the native callbacks and the three board writers where the Lua passed `characterIdx`; `ic_percentile` is a draw-per-call closure, so a body that never asks costs no roll
+- `port.item_event_dispatch_order` — items before status effects (turn start), inside them (xp), one of match4/match5 under `size_patterns`, victory at the winner's transition, gold/xp folded where the battle accrues them
+- `port.item_board_writes` - the context writes the battle's board through three callbacks and reads the grid it was built over; the cascade advances the board before the runs so a match hook's write survives; gravity and refill run after the damage chain, gated on the board having changed
+- `port.mana_credit_registry` - `Combat.credit_mana` dispatches through a registry `Battle.create` installs, guarded by physical roster membership; the fold banks through the clamp with no hook
+- `port.missed_turn_placement` - a `Missed` turn is spent after the worn items' `OnStartTurn` and before the status start hooks; it advances the round, emits `MissedTurn`, and ticks neither cooldowns nor durations
+- `port.mana_ceiling_from_skills` - a combatant's ceilings default to `25 + (skill + 1) / 2` over the skills it was built with, in place of the flat 20; an explicit `max_mana` still wins
+
+
 - `port.item_start_battle_dispatch` — items fire after companions, both sides, panel folds by item location
 - `port.human_aim_click` — one click aims a spell (the bar cancels back to the spell question)
 - `port.ai_aim_fallback` — hooks that store nothing aim at nothing; SCHG's row rides as y, the column slot0 as x
@@ -253,8 +328,10 @@ Key decisions recorded:
 - `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
-Open questions (4): `font.advance_field_mapping`, `quest.base_value_from_level`,
-`quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`.
+Open questions (5): `font.advance_field_mapping`, `quest.base_value_from_level`,
+`quest.difficulty_consumers`, `spell.match_resolution_after_a_spell`,
+`board.gem_id_air_water_order` (the decompile says gem ids 3 water / 4 air,
+`StandardConstants.lua` says the reverse; nothing observable depends on it yet).
 
 ---
 
@@ -282,7 +359,7 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 34 suites pass (exit 0, 2464 checks, 2026-10-12). Extractor `--check` modes validate against
+All 34 suites pass (exit 0, 2625 checks, 2026-10-12). Extractor `--check` modes validate against
 source assets.
 
 ---
@@ -291,7 +368,8 @@ source assets.
 
 | Priority | Area | Description |
 |----------|------|-------------|
-| **High** | **Item effects** | Wire the never-invoked hooks (`OnReceiveMana/Gold/Xp`, `OnStartTurn`, `OnMatch4/5`, `OnVictory`) into the battle/campaign loops; port the portable Lua bodies, account for the rest in `known_unported` - see "Next Round Options" §1 |
+| **High** | **Item effects** | **Landed:** all eight hook kinds dispatched and ported - the six event kinds at the six battle-loop points, both damage chains (`OnGiveDamage` 51/53, `OnReceiveDamage` 38/38), the board writes (`ic_set_gem` / `ic_destroy_gem` / the `GetRandomGrid_*` pickers) behind nine more, every capped mana credit running the fold (`port.mana_credit_registry`), and the turn loop spending `Missed` so IFZT and ITUT are in too (`port.missed_turn_placement`). **131 of the 133 hook declarations run**; `known_unported` is two ids - IALS and ILBC, both against natives with nothing behind them - and the item layer has nothing open (`port.item_event_context`, `port.item_event_dispatch_order`, `port.item_board_writes`). |
+| **High** | **Mana ceiling** | **Landed:** the ceiling is `25 + (skill + 1) / 2` per element, read out of the character constructor at `0x4661f0` and confirmed by the `ADD_TEMP_SKILL` delta at `0x48c5d5` with `0x4839f0` the image's only writer of the field; `Combat.caps_for` feeds `make_combatant`'s default (`port.mana_ceiling_from_skills`), and `mana.ceiling.base_value` went from assumed/low to recovered/high. **Open:** the effective-skill query - one vtable slot (+0x20) taking (skill, level, element), which is what decides whether a high-level hero's cap is understated (`quest.base_value_from_level`) |
 | **High** | **Ruin capture + companions** | Phase 3 landed: capture engine (grid, states, gates, captives, save) and companion hooks (ten OnStartBattle bodies, party dispatch, 8-slot cap, quest battles included, companion removal through enter_location); companion equip landed (roster + party, home-gated pickup, the map Companions tab) |
 | **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, the shared `Conv_window` that opens queued trees over the map, and the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5/QU02, fired inside `execute_callback`) |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags now exist) |
@@ -329,6 +407,8 @@ source assets.
 6. **Conversation branching** — wired: `pq_conv_gfx` walks the `talk_*/wait/end/scriptcall` actions with the speaking character's portrait and name (the data ships no choice nodes, so there is nothing to branch on), and quest state now queues trees (`pending_conversations`: intros, arrivals, nested callback trees); the map window's shared `Conv_window` now opens those queued trees over the map, and the Actions tab drives the location-action flow
 7. **Conditional quest rewards** — if/else reward branches take the first source-order value (recorded as `campaign.quest_rewards_conditional`)
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
+9. **Item hooks, the rest** - the layer is done as far as it can be: all eight kinds dispatched, 131 of the 133 hook declarations ported, and the two that are not (`known_unported`) are IALS's per-character `SUBTRACT_XP` and ILBC's `GET_CHARACTER_ID`, which need a per-character experience pool and a registry id on the combatant respectively - not hooks, just fields the port does not model |
+10. **Mana ceilings** - derived from the skills as `25 + (skill + 1) / 2`, so a character's caps agree with its masteries instead of a chosen 20; open is the effective-skill query behind it (a virtual call over raw skill, level and element, unread), which the port stands in for with the raw skill - and a decoded save's Masteries beside its pools is the other way to settle it
 
 ---
 
@@ -354,6 +434,11 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_play_gfx.exe
 
 ```
 lib/
+  item.ml                  # Equipment: loadout, the hooks record (damage + the six event kinds),
+                             # item_context with ic_self and the native callbacks, the folds/runs
+  item_hooks.ml            # Hand-ported item bodies: damage, OnReceiveMana/Gold/Xp, OnStartTurn,
+                             # OnMatch4/5, OnVictory; event_hooks, known_unported, the two censuses
+  battle.ml                # The playable loop: the six item dispatch points, cascade and turn cycle
   campaign.ml              # Engine core: prerequisites, quest lifecycle, visibility, execute_callback,
                              # pending conversation/message queues, location-action flow
                              # (query/execute/complete/enter + end at turn-in), per-callback effects,

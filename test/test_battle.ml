@@ -295,9 +295,18 @@ let () =
      granting the spell {e after} this one rather than refunding this one. *)
   let rules = { default_rules with difficulty = 2 } in
   let s = make_spell ~cost_fire:3 "SFIRE" "firebolt" in
-  let paid_hero = fighter ~mana:{ zero_mana with fire = 20 } 0 "hero" in
-  let free_hero = fighter ~mana:{ zero_mana with fire = 20 } 0 "hero" in
+  let paid_hero = fighter ~mana:{ zero_mana with fire = 50000 } 0 "hero" in
+  let free_hero = fighter ~mana:{ zero_mana with fire = 50000 } 0 "hero" in
   free_hero.next_spell_free <- true;
+  (* The latch covers one cast, so the whole observable is that spell's cost
+     of three - which a pool sitting on its ceiling would swallow, since
+     [credit_mana] stops there, and which a pool drained low enough to skip a
+     cast would hide behind the two runs diverging. Both heroes therefore
+     start well under a ceiling the fight never reaches: every cast stays
+     affordable in both runs, so the moves match and the only difference left
+     is the one charge. *)
+  paid_hero.max_mana <- { paid_hero.max_mana with fire = 100000 };
+  free_hero.max_mana <- { free_hero.max_mana with fire = 100000 };
   let paid =
     create ~rng:(lcg 13) ~rules ~hero_spells:[ s ] (playable_board ()) paid_hero
       (fighter ~mana:zero_mana 1 "foe")

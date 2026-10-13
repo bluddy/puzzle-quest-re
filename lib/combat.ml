@@ -29,38 +29,46 @@ let zero_mana = { earth = 0; fire = 0; air = 0; water = 0 }
     down to it. So lowering a ceiling can reduce mana you already hold, and the
     four ceilings are contiguous ints at +0x84.
 
-    **Not recovered**: the starting value. Nothing in the save file stores it -
-    [SAVE_FILE_FORMAT.md] has the masteries and the current reserves but no cap
-    field - so the ceiling is a derived runtime quantity and its base value has
-    not been located in the binary. Treat the constant below as a chosen
-    parameter rather than a recovered fact; it is a field on the combatant so a
-    fight can set its own.
+    **Recovered**: the base too, this round. The character constructor at
+    0x4661f0 zeroes the four ceilings and then computes each one from the
+    character's own skill for that element:
 
-    **Why the default is 20 and not 10.** The ceiling has to clear the largest
-    number any script compares a pool against, or the comparison is dead code
-    rather than a conditional. The spell scripts test `GET_MANA_*` against 8, 10,
-    12, 14, 15 and 20, and all nine spells whose turn rule is `KeepsTurnIfMana`
-    need 8 or more. Twenty is therefore the smallest default under which every
-    threshold the game actually uses is reachable, which makes it the right
-    ceiling to ship: too low and mechanics silently switch off, too high and the
-    hooks that gate on "a lot of mana" stop meaning anything.
+        ceiling = base + map(effective skill)
+        base     = 25                          (also written flat by 0x466060)
+        effective = vtable[0x20](5, raw skill, level, element), clamped to 999
+        map(3, v) = (v + 1) / 2                (0x478620, case 3)
 
-    It is a floor, not a model of a real character. Characters raise their
-    ceilings with skills and with the "+N to max Fire Mana" item bonuses, and the
-    ceiling in a real late fight is comfortably above 20 - the AI hooks that scale
-    a modifier by two or three times a pool ([SFBO], [SSOB], [SFSP]) assume pools
-    in the twenties and thirties. Anything testing those should set an explicit
-    ceiling on the combatant rather than inherit this.
+    So an untrained character starts at 25 and every two points of mastery buy
+    a point of ceiling. ADD_TEMP_SKILL moves a ceiling by the delta of that same
+    expression (its call at 0x48c5d5), which is why the two paths agree; and the
+    setter at 0x4839f0 is the only writer of the field in the image - its
+    callers are the four SET_MAX_MANA_* Lua bindings and ADD_TEMP_SKILL, nothing
+    else. [caps_for] below is that formula over a [skills] record.
 
-    **Do not use this to clamp a loaded save.** Four real .pqhero files were
-    decoded with bin/pq_save_tool.exe, and one of them banks 31 Fire at level 5 -
-    more than this default. The quadruple in the save is the {e pool}, not the
-    ceiling (the values track play, not level: a fresh level-1 druid holds 1 in
-    each element), and the save carries no ceiling at all. So whoever wires
-    [Save_file.hero] into a combatant must derive the ceiling or raise it to at
-    least the loaded pool; clamping to [default_mana_limit] would silently
-    destroy 11 points of a real hero's Fire mana. *)
-let default_mana_limit = 20
+    **Still unread**: the effective-skill query. It is a virtual call taking
+    (kind 5, raw skill, level, element), so level may or may not fold in, and
+    this port uses the raw skill and says so. The save carries the seven
+    Masteries, so a loaded hero's ceiling is recomputable the moment that one
+    function is read.
+
+    **Still not a safe clamp for a loaded save.** Four real .pqhero files were
+    decoded with bin/pq_save_tool.exe, and one of them banks 31 Fire at level 5.
+    The quadruple in the save is the {e pool}, not the ceiling, and the file
+    stores no ceiling at all - so whoever wires [Save_file.hero] into a
+    combatant derives it from the loaded Masteries, or at the very least raises
+    it to the loaded pool; clamping to a chosen number would silently destroy
+    11 points of a real hero's Fire mana.
+
+    [base_mana_limit] keeps the old name's role as the zero-skill ceiling: it
+    also has to clear the largest number any script compares a pool against (the
+    spell scripts test 8, 10, 12, 14, 15 and 20, and every [KeepsTurnIfMana]
+    spell wants 8 or more), and 25 does. *)
+let base_mana_limit = 25
+
+(** The zero-skill ceiling - what [make_combatant] starts a character with when
+    no skills are given. Kept under the old name because the tests compare
+    against it by name rather than by number. *)
+let default_mana_limit = base_mana_limit
 
 let zero_caps =
   { earth = default_mana_limit
@@ -113,6 +121,22 @@ type skills = {
 
 let zero_skills =
   { earth = 0; fire = 0; air = 0; water = 0; battle = 0; morale = 0; cunning = 0 }
+
+(** [base + (skill + 1) / 2]: the ceiling one element's mastery implies, as the
+    constructor at 0x4661f0 computes it. The half is integer division, which is
+    what 0x478620's case 3 does: two points of skill buy a point of ceiling, and
+    a raw skill of 0 leaves the base exactly where it is. *)
+let mana_limit_for_skill (skill : int) : int = base_mana_limit + (skill + 1) / 2
+
+(** The four ceilings a [skills] record implies. [make_combatant] uses this as
+    its default, so a combatant built with skills carries ceilings that agree
+    with them instead of a constant that does not. *)
+let caps_for (k : skills) : mana =
+  { earth = mana_limit_for_skill k.earth
+  ; fire = mana_limit_for_skill k.fire
+  ; air = mana_limit_for_skill k.air
+  ; water = mana_limit_for_skill k.water
+  }
 
 let skill_in (s : skill) (k : skills) : int =
   match s with
@@ -226,11 +250,26 @@ type combatant = {
      [SCHV] is the only script that sets it. Separate from [Spell.cost_charged],
      which is set by a spell paying for {e itself} and lives on the spell. *)
   mutable next_spell_free : bool;
+  (* Per-character scratch the item hooks keep between events.
+
+     The Lua keeps these in a table keyed by [characterIdx] - IDSH and INOB
+     count the red skulls their bodies have placed since their owner's last
+     turn, and reset it from their own [OnStartTurn] - and a combatant is the
+     port's character, so the table lives here and comes fresh with the
+     character rather than leaking across battles. Keys are the item id; the
+     value is a float because IDSH's counter is [damage / 8] in Lua and the
+     cap test reads it fractionally. *)
+  mutable item_state : (string * float) list;
 }
 
+(** The default [max_mana] is derived from the [skills] rather than fixed:
+    [caps_for] is the constructor's formula (25 + (skill + 1) / 2), so a
+    combatant built with a skill record carries ceilings that agree with it -
+    the parameter order below is what makes that possible, an optional
+    argument can only default off an earlier one. *)
 let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_mana)
-    ?(max_mana = zero_caps) ?(skills = zero_skills) ?(extra_turns = 0) ?(effects = [])
-    ?(cooldowns = []) ?(gold = 0) ?(is_monster = false) id name =
+    ?(skills = zero_skills) ?(max_mana = caps_for skills) ?(extra_turns = 0) ?(effects = [])
+    ?(cooldowns = []) ?(gold = 0) ?(is_monster = false) ?(item_state = []) id name =
   {
     id;
     name;
@@ -248,7 +287,18 @@ let make_combatant ?(cunning = 0) ?(max_life = 100) ?(life = 100) ?(mana = zero_
     gold;
     is_monster;
     next_spell_free = false;
+    item_state;
   }
+
+(** The item hooks' per-character scratch: [0.0] when a hook asks for a key it
+    has never written, which is what the Lua table's [nil] reads as after the
+    hook that initialises it. *)
+let item_state_get (c : combatant) (key : string) : float =
+  match List.assoc_opt key c.item_state with Some v -> v | None -> 0.0
+
+let item_state_set (c : combatant) (key : string) (value : float) : unit =
+  c.item_state <-
+    (key, value) :: List.filter (fun (k, _) -> k <> key) c.item_state
 
 (** The four resistance slots, in [element] order: Earth, Fire, Air, Water.
 
@@ -823,19 +873,40 @@ let describe (t : turn_manager) : string =
     names.(current_index t) order
 
 
-(** Credits mana, stopping at the element's ceiling.
+(** The ceiling clamp on its own: what [ADD_MANA_<E>] does once the receiver's
+    items have had their say. [Battle] folds through this so the fold cannot
+    re-enter itself; everything else reaches it through [credit_mana].
 
     This is where the cap is enforced going {e up}; [set_mana_limit] enforces it
     going down. Both halves matter: the AI hooks test
     `GET_MANA_X >= GET_MAX_MANA_X` to mean "the pool is full", which only means
     something if the pool can reach the cap and can never pass it. *)
-let credit_mana (c : combatant) (e : element) (amount : int) : int =
+let bank_mana (c : combatant) (e : element) (amount : int) : int =
   if amount <= 0 then 0
   else begin
     let granted = min amount (max 0 (mana_of e c.max_mana - mana_of e c.mana)) in
     if granted > 0 then c.mana <- add_mana e granted c.mana;
     granted
   end
+
+(** The battle's [OnReceiveMana] fold, registered by [Battle.create].
+
+    [Combat] cannot name [Item] - [Item] opens [Combat] - so the fold arrives as
+    a callback rather than as a call, and the battle that registers it decides
+    whose credits it takes: [Battle]'s hook checks physical membership in its own
+    roster, so a combatant from some other fight falls through to [bank_mana]
+    untouched. One hook rather than a path per caller, because everything that
+    credits mana inside a fight gets here - spell bodies through
+    [Spell_effects.add_mana], status effects through [status_effect_hooks.give],
+    and the battle's own per-match harvest through [Battle.receive_mana]. *)
+let mana_credit_hook : (combatant -> element -> int -> int) option ref = ref None
+
+(** Credits mana: through the registered fold when there is one for this
+    combatant, then to the ceiling. *)
+let credit_mana (c : combatant) (e : element) (amount : int) : int =
+  match !mana_credit_hook with
+  | Some f -> f c e amount
+  | None -> bank_mana c e amount
 
 (** Sets an element's ceiling and clamps the pool to it, matching the setter at
     0x4839f0: the pool is reduced if it sat above the new ceiling and left alone

@@ -355,12 +355,17 @@ let caravan = { (active "Q0Q7" 2) with Campaign.companions = [ "NDKH" ] } in
    check "the Wight's roster is on the enemy side"
      (spell_ids bw.Battle.enemy_spells = [ "SSPF"; "SCTO" ]);
     check "the caravan fight runs to a finish" (Battle.log_of bw <> []);
-    (* The seeded caravan fight is winnable and wins: the settle inside
-       run_quest_battle follows Battle.hero_won, so stage 2 advances and
-       the Wight's defeat is on record. *)
+    (* The run's own settle follows the battle's verdict - whichever way the
+       auto-AI happened to fall - and the win bookkeeping is driven against the
+       same battle directly, the way this file settles every other branch: a
+       win at stage 2 advances to 3 and records the Wight's defeat. *)
+    check "the run's settle follows Battle.hero_won"
+      ((state_of q2 "Q0Q7" = Some 3) = Battle.hero_won bw
+      && (Campaign.monster_defeats q2 "MWIG" = 1) = Battle.hero_won bw);
+    let q2w = Campaign.quest_battle_settle caravan "Q0Q7" true bw in
     check "winning at stage 2 advances (extracted advance) and records"
-      (state_of q2 "Q0Q7" = Some 3
-       && Campaign.monster_defeats q2 "MWIG" = 1);
+      (state_of q2w "Q0Q7" = Some 3
+      && Campaign.monster_defeats q2w "MWIG" = 1);
     (* The loss branch: stage 2 has no fail entry, so a loss keeps it -
        settle the same battle by hand, the way both outcomes are driven. *)
     let q2l = Campaign.quest_battle_settle caravan "Q0Q7" false bw in

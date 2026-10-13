@@ -140,22 +140,73 @@ let gem_of_kind = function
     Wider than the spell hook context because the item scripts reach further: they
     read the board, roll dice, and compare against the {e other} combatant.
 
-    [ic_percentile] is [PERCENTILE_CHANCE_SYNC], read once for the whole damage
-    event rather than per item. 27 items call it and the original draws a fresh
-    value per call, so with several items on a character this is a deviation; it
-    is noted in [lib/item_hooks.ml] rather than hidden.
+    [ic_percentile] is [PERCENTILE_CHANCE_SYNC], and it is a {e function} for
+    the same reason the native is one: the original draws a fresh value per
+    call, so a body that asks twice gets two rolls and two items asking get two
+    rolls each. The battle binds it to the fight's rng, which means a hook that
+    never asks costs no draw at all - the phantom per-damage-event roll an
+    [int] field used to force is gone, and with it the deviation that kept the
+    percentile bodies (IBSH and fifteen others) unported.
+
+    [ic_self] is the character whose items are running: the receiver of the
+    mana, the owner at turn start, the matcher, the winner. The Lua passes
+    [characterIdx] alongside the value for the same purpose, and rather than
+    invent an index scheme the port carries the combatant, so [ic_attacker] and
+    [ic_defender] stay what they were - the damage event's two parties - and are
+    [None] outside one.
+
+    [ic_level] is that character's level, where the battle has one to give: only
+    the hero's, from [Battle.rules], so an enemy-worn hook sees [None] and a
+    body that reads the level falls through. Nothing in the campaign puts items
+    on a monster.
+
+    The [ic_*] callbacks are the natives a body reaches for: [ADD_MANA_<E>],
+    [ADD_GOLD], [ADD_XP], [EXTRA_TURN], [Std_InflictDamage], [Std_Healing] and
+    [ADD_STATUS_EFFECT] and [MISS_TURNS], bound by whoever built the context - the
+    first six to [ic_self], the last two taking the combatant the body names,
+    because every script that calls them passes their target. They
+    are callbacks rather than calls because two of them must re-enter the very
+    fold that is running them - a mana credit inside [OnReceiveMana] has to see
+    [OnReceiveMana] again, exactly as the native would - and because [Item]
+    cannot name the battle that owns the loadouts. Bodies that only touch their
+    own combatant ([ADD_TEMP_RESISTANCE], [ADD_TEMP_SKILL],
+    [CLEAR_STATUS_EFFECTS], [ADD_LIFE]) go straight through [Combat] and
+    [ic_self] instead, so the callback set stays the natives that need the
+    battle to answer.
 
     [ic_max_mana] used to be [None] and is no longer a field: the ceilings now
     live on the combatants, as [Combat.max_mana], because they are raised by
-    items and have to persist across the fight rather than being recomputed. *)
+    items and have to persist across the fight rather than being recomputed.
+
+    The three board callbacks are how a body writes the grid: [ic_set_gem] for
+    [SET_GEM], [ic_destroy_gem] for [DESTROY_GEM] (which empties the cell and
+    leaves the gravity to whoever drives the event, the way the spell bodies'
+    [fx_board] writes do), and [ic_multipliers] for [SetMultiplierEffects],
+    the pair of calls GridUtilities.lua wraps a sweep in. Reads go through
+    [ic_board], which whoever built the context took at hook entry - so a body
+    that empties cells and then reads them sees the grid it started with, which
+    for the sweeps the nine bodies make is the same grid either way. *)
 type item_context = {
   ic_board : Board.board option;
-  ic_percentile : int;
+  ic_percentile : unit -> int;
   ic_roll : int -> int;
   ic_attacker : combatant option;
   ic_defender : combatant option;
   ic_hero : combatant;
   ic_enemy : combatant;
+  ic_self : combatant;
+  ic_level : int option;
+  ic_credit_mana : element -> int -> unit;
+  ic_credit_gold : int -> unit;
+  ic_credit_xp : int -> unit;
+  ic_extra_turn : unit -> unit;
+  ic_inflict_damage : int -> unit;
+  ic_heal : int -> unit;
+  ic_apply_status : combatant -> string -> unit;
+  ic_miss_turns : combatant -> int -> unit;
+  ic_set_gem : Board.position -> Board.gem -> unit;
+  ic_destroy_gem : Board.position -> unit;
+  ic_multipliers : bool -> unit;
 }
 
 
@@ -180,30 +231,128 @@ let item_green ctx = count_gems GGreen ctx
 let item_red ctx = count_gems GRed ctx
 let item_blue ctx = count_gems GBlue ctx
 
+(** The other side of a one-on-one fight, from the point of view of [ic_self].
+    A body reaches for it with [GET_ENEMY(idx, 0)] - drain the attacker's mana,
+    double the damage against a wounded foe - and a battle here is one hero
+    against one monster, so that pair is the whole answer. *)
+let other_side (ctx : item_context) : combatant =
+  if ctx.ic_self.Combat.id = ctx.ic_hero.Combat.id then ctx.ic_enemy else ctx.ic_hero
+
+(** The [GetRandomGrid_*] family from `Assets/Scripts/GetRandomGrid.lua`, as
+    three shapes rather than seven functions: the Lua's Not / Not2 / Not3 differ
+    only in how many gems they exclude, and Isolated / Isolated2 only in how
+    many they stay away from. *)
+type random_pick =
+  | Of_type of Board.gem
+      (** [GetRandomGrid_Type]: the cell is this gem. *)
+  | Not of Board.gem list
+      (** [GetRandomGrid_Not/Not2/Not3]: the cell is none of these. *)
+  | Isolated of Board.gem list
+      (** [GetRandomGrid_Isolated/Isolated2]: the cell is none of these and has
+          no orthogonal neighbour that is either. *)
+
+(** [NoAdjacentGems(x,y,typ)]: the four orthogonal neighbours inside the grid -
+    the cell itself is not among them, and diagonals are not consulted, which
+    is what the Lua checks and all it checks. *)
+let no_adjacent (grid : Board.board) (p : Board.position) (g : Board.gem) : bool =
+  let clear dx dy =
+    let q = { Board.x = p.Board.x + dx; y = p.Board.y + dy } in
+    q.Board.x < 0
+    || q.Board.x >= grid.Board.width
+    || q.Board.y < 0
+    || q.Board.y >= grid.Board.height
+    || Board.get_gem grid q <> g
+  in
+  clear (-1) 0 && clear 1 0 && clear 0 (-1) && clear 0 1
+
+(** [GetRandomGrid_*]: rejection-sample the grid until the predicate holds, two
+    draws per try - x then y - and up to 1001 tries, then return whatever the
+    last draw was whether or not it held, which is what the Lua returns.
+
+    [GET_RANDOM_SYNC(1,8)] is a uniform 1..8 over a 1-based grid; the board here
+    is 0-based, so the +1 the Lua adds and the -1 the port would need cancel and
+    [ic_roll 8] lands on the cell directly - same number of draws either way,
+    which is what the rng stream cares about. Returns [None] when there is no
+    board to sample. *)
+let get_random_grid (ctx : item_context) (pick : random_pick) : Board.position option =
+  match ctx.ic_board with
+  | None -> None
+  | Some grid ->
+      let gem_at p = Board.get_gem grid p in
+      let holds p =
+        match pick with
+        | Of_type g -> gem_at p = g
+        | Not gs -> not (List.mem (gem_at p) gs)
+        | Isolated gs ->
+            (not (List.mem (gem_at p) gs))
+            && List.for_all (fun g -> no_adjacent grid p g) gs
+      in
+      let cell = ref { Board.x = 0; y = 0 } in
+      let tries = ref 0 in
+      let satisfied = ref false in
+      while (not !satisfied) && !tries <= 1000 do
+        (* Drawn in the Lua's order - x, then y. A record literal would let
+           the compiler pick the order and the two rolls could land the other
+           way round, which is invisible until a test scripts them. *)
+        let x = ctx.ic_roll 8 in
+        let y = ctx.ic_roll 8 in
+        cell := { Board.x = x; y };
+        satisfied := holds !cell;
+        incr tries
+      done;
+      Some !cell
+
+(** [DestroyAllGems(typ, effect)] from GridUtilities.lua: walk the grid y-major
+    and empty every cell of that gem. The sparkle is presentation and dropped;
+    the empties are left for whoever drives the event to gravity and refill,
+    which is what [DESTROY_GEM] means here - see [Spell_effects.destroy_gem]. *)
+let destroy_all (ctx : item_context) (g : Board.gem) : unit =
+  match ctx.ic_board with
+  | None -> ()
+  | Some grid ->
+      for y = 0 to grid.Board.height - 1 do
+        for x = 0 to grid.Board.width - 1 do
+          let p = { Board.x; y } in
+          if Board.get_gem grid p = g then ctx.ic_destroy_gem p
+        done
+      done
+
 (** The damage hooks an item can define, with the signatures its own scripts use.
 
     Note that the damage hooks name both parties. `OnGiveDamage` is called on the
     {e attacker's} item and receives the defender, and vice versa, which is what
-    lets an item distinguish damage it dealt from damage it took. *)
+    lets an item distinguish damage it dealt from damage it took.
+
+    The five event hooks - receive mana/gold/xp, start turn, match, victory -
+    take the context and the value (or nothing) rather than a character index.
+    Their Lua passes [characterIdx] to say {e whose} event it is, and the port
+    knows that from the loadout it is walking, so the index would be a number
+    with nothing behind it; [item_context.ic_self] carries the combatant instead.
+    [on_match4]/[on_match5] return nothing, as their Lua does - see the
+    [port.match_hooks_return_unit] decision, which the item record now follows
+    too (it used to be typed [int -> int -> int] for no body that ever ran). *)
 type hooks = {
   on_give_damage : (item_context -> int -> int -> int -> int) option;
       (** (ctx, damage, sourceIdx, targetIdx) -> damage *)
   on_receive_damage : (item_context -> int -> int -> int -> int) option;
       (** (ctx, damage, sourceIdx, targetIdx) -> damage *)
-  on_receive_mana : (item_context -> int -> element -> int -> int) option;
-      (** (ctx, value, element, characterIdx) -> value *)
-  on_receive_gold : (int -> int -> int) option;
-  on_receive_xp : (int -> int -> int) option;
+  on_receive_mana : (item_context -> int -> element -> int) option;
+      (** (ctx, value, element) -> value *)
+  on_receive_gold : (item_context -> int -> int) option;
+      (** (ctx, value) -> value *)
+  on_receive_xp : (item_context -> int -> int) option;
+      (** (ctx, value) -> value *)
   on_query_skill : (int -> int -> int -> int) option;
       (** (value, characterIdx, skillIdx) -> value *)
   on_query_resistance : (int -> element -> int -> int) option;
-  on_start_turn : (int -> int -> unit) option;
+  on_start_turn : (item_context -> int -> unit) option;
+      (** (ctx, turnNumber) -> () *)
   on_start_battle : (int -> unit) option;
-  on_match4 : (int -> int -> int) option;
-  on_match5 : (int -> int -> int) option;
+  on_match4 : (item_context -> unit) option;
+  on_match5 : (item_context -> unit) option;
   on_cast_spell : (int -> unit) option;
   on_enemy_cast_spell : (int -> unit) option;
-  on_victory : (int -> unit) option;
+  on_victory : (item_context -> unit) option;
 }
 
 let no_hooks =
@@ -265,17 +414,14 @@ let receive_damage_hook (i : item) (ctx : item_context) ~(damage : int) ~(source
     ~(target : int) : int =
   match i.hooks.on_receive_damage with Some f -> f ctx damage source target | None -> damage
 
-let receive_mana (i : item) (ctx : item_context) ~(value : int) ~(e : element)
-    ~(character : int) : int =
-  match i.hooks.on_receive_mana with
-  | Some f -> f ctx value e character
-  | None -> value
+let receive_mana (i : item) (ctx : item_context) ~(value : int) ~(e : element) : int =
+  match i.hooks.on_receive_mana with Some f -> f ctx value e | None -> value
 
-let receive_gold (i : item) ~(value : int) ~(character : int) : int =
-  match i.hooks.on_receive_gold with Some f -> f value character | None -> value
+let receive_gold (i : item) (ctx : item_context) ~(value : int) : int =
+  match i.hooks.on_receive_gold with Some f -> f ctx value | None -> value
 
-let receive_xp (i : item) ~(value : int) ~(character : int) : int =
-  match i.hooks.on_receive_xp with Some f -> f value character | None -> value
+let receive_xp (i : item) (ctx : item_context) ~(value : int) : int =
+  match i.hooks.on_receive_xp with Some f -> f ctx value | None -> value
 
 (** The items a character is carrying, keyed by slot. *)
 type loadout = {
@@ -395,3 +541,65 @@ let fold_receive_damage (l : loadout) (ctx : item_context) ~(damage : int) ~(sou
   List.fold_left
     (fun acc i -> f i (receive_damage_hook i ctx ~damage:acc ~source ~target))
     damage (equipped l)
+
+(** The same threading for the value hooks: each item sees what the previous one
+    returned, so an item that doubles a mana credit and an item that adds a flat
+    one compose rather than both reading the number the match produced. The
+    side effects - a second pool credited, gold banked, an extra turn granted -
+    happen as each body runs, which is what the natives they call would do. *)
+let fold_receive_mana (l : loadout) (ctx : item_context) ~(value : int) ~(e : element) :
+    int =
+  List.fold_left
+    (fun acc i ->
+      match i.hooks.on_receive_mana with Some f -> f ctx acc e | None -> acc)
+    value (equipped l)
+
+let fold_receive_gold (l : loadout) (ctx : item_context) ~(value : int) : int =
+  List.fold_left
+    (fun acc i -> match i.hooks.on_receive_gold with Some f -> f ctx acc | None -> acc)
+    value (equipped l)
+
+let fold_receive_xp (l : loadout) (ctx : item_context) ~(value : int) : int =
+  List.fold_left
+    (fun acc i -> match i.hooks.on_receive_xp with Some f -> f ctx acc | None -> acc)
+    value (equipped l)
+
+(** [OnStartTurn], walked in the loadout's fixed slot order like every other
+    dispatch, returning the ids that had a body. The turn number is the battle's
+    own elapsed count, which is what [Combat.run_start_of_turn_effects] is
+    handed too. *)
+let run_start_turn (l : loadout) (ctx : item_context) ~(turn : int) : string list =
+  List.fold_left
+    (fun fired i ->
+      match i.hooks.on_start_turn with
+      | Some f ->
+          f ctx turn;
+          fired @ [ item_id i ]
+      | None -> fired)
+    [] (equipped l)
+
+(** [OnMatch4] / [OnMatch5], one or the other: a run of five is the match5
+    event, not both. The Lua says as much - IRKK's match5 body is a call to its
+    own match4, which would be redundant if the engine fired both. *)
+let run_match (l : loadout) (ctx : item_context) ~(of_five : bool) : string list =
+  List.fold_left
+    (fun fired i ->
+      let h = if of_five then i.hooks.on_match5 else i.hooks.on_match4 in
+      match h with
+      | Some f ->
+          f ctx;
+          fired @ [ item_id i ]
+      | None -> fired)
+    [] (equipped l)
+
+(** [OnVictory], for the side that won. *)
+let run_victory (l : loadout) (ctx : item_context) : string list =
+  List.fold_left
+    (fun fired i ->
+      match i.hooks.on_victory with
+      | Some f ->
+          f ctx;
+          fired @ [ item_id i ]
+      | None -> fired)
+    [] (equipped l)
+

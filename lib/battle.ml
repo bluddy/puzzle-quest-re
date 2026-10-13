@@ -25,6 +25,7 @@ type side = Hero | Enemy
 
 type event =
   | TurnStart of int * side * string  (** slot, side, name *)
+  | MissedTurn of string  (** the actor sat this one out under [Missed] *)
   | ExtraTurn of string
   | SpellCast of string * string  (** caster, spell id *)
   | SpellHeld of string
@@ -308,6 +309,167 @@ let element_of_gem (g : gem) : element option =
 let element_index (e : element) : int =
   match e with Earth -> 0 | Fire -> 1 | Air -> 2 | Water -> 3
 
+(* ------------------------------------------------------------------ *)
+(* Item hooks: the context they run in, and the six dispatch points     *)
+(* ------------------------------------------------------------------ *)
+
+(** The other side of a one-on-one fight. The item natives that act on someone
+    else - [Std_InflictDamage] - want the enemy of the character the hook is
+    running for, and a battle here is one hero against one monster, so that pair
+    is the whole answer. *)
+let opponent_of (b : battle) (c : combatant) : combatant =
+  if c.id = b.hero.id then b.enemy else b.hero
+
+(** [Std_InflictDamage(amt, idx)]: direct damage to [self]'s enemy, which is
+    what IJAH, ISTL and IWHP reach for when a mana credit lands on them.
+
+    It does not run the damage hooks, matching [Spell_effects.subtract_life],
+    which does not either, and it raises [is_dead] the way that one does so the
+    sweep at the end of the turn can see the kill. It emits, because a life
+    total that moves with nobody told about it is the kind of silent change the
+    log exists to catch. *)
+let inflict_from_hook (b : battle) (self : combatant) (n : int) : unit =
+  if n <= 0 then ()
+  else begin
+    let target = opponent_of b self in
+    target.life <- max 0 (target.life - n);
+    if target.life < 1 then target.is_dead <- true;
+    emit b (Damage (target.name, n))
+  end
+
+(** The context an item hook runs in outside a damage event.
+
+    [ic_percentile] is the battle's rng behind a closure rather than a number:
+    [PERCENTILE_CHANCE_SYNC] draws per call, so a body that asks gets a fresh
+    roll and a body that does not ask costs none - which is what keeps the rng
+    stream of a fight whose items never ask exactly as it was. Everything a
+    body can do is either read through [ic_self] or one of the callbacks, which
+    are bound to [self] and to {e this} battle: that binding is what lets a body
+    credit a second pool and have that credit run the mana fold again, the way
+    the ADD_MANA native would.
+
+    [ic_credit_xp] and [ic_credit_gold] go through the status-effect fold too,
+    so a hook that banks experience lands on Favored exactly as the per-match
+    experience does. *)
+let rec item_context (b : battle) ~(self : combatant) : Item.item_context =
+  {
+    Item.ic_board = Some b.board;
+    ic_percentile = (fun () -> b.rng 100);
+    ic_roll = b.rng;
+    ic_attacker = None;
+    ic_defender = None;
+    ic_hero = b.hero;
+    ic_enemy = b.enemy;
+    ic_self = self;
+    ic_level =
+      (if self.Combat.id = b.hero.Combat.id then Some b.rules.hero_level else None);
+    ic_credit_mana = (fun e n -> ignore (receive_mana b self e n));
+    ic_credit_gold = (fun n -> ignore (receive_gold b self n));
+    ic_credit_xp = (fun n -> ignore (receive_xp b self n));
+    ic_extra_turn = (fun () -> grant_extra_turn b.tm self.id);
+    ic_inflict_damage = (fun n -> inflict_from_hook b self n);
+    ic_heal = (fun n -> Spell_effects.healing self n);
+    ic_apply_status =
+      (fun target id ->
+        match List.find_opt (fun (d : effect_def) -> d.id = id) b.effects with
+        | Some d -> Spell_effects.apply_status target id d.duration
+        | None -> ());
+    (* MISS_TURNS, which lands as the [Missed] pseudo-status - see
+       [spend_missed_turn] for where the loop spends it. *)
+    ic_miss_turns = (fun target n -> Spell_effects.miss_turns target n);
+    (* The board is the battle's, written through the same way the spell
+       bodies write [fx_board]: a value swapped into [b.board], so the write
+       survives the callback. Gravity is not part of [DESTROY_GEM] here - it
+       runs when the event that fired the hook gets back to the grid, exactly
+       as it does after a spell body. *)
+    ic_set_gem = (fun p g -> b.board <- Board.set_gem p g b.board);
+    ic_destroy_gem = (fun p -> b.board <- Board.set_gem p Board.Empty b.board);
+    ic_multipliers =
+      (fun on ->
+        b.multipliers.Spell.wildcard_chance <- on;
+        b.multipliers.Spell.extra_turn_chance <- on;
+        b.multipliers.Spell.damage_multiplier <- on);
+  }
+
+(** [OnReceiveMana]: fold the receiver's own items over the offered amount,
+    then bank what they turned it into, stopping at the ceiling as the native
+    does. Returns what was actually banked, which is what the [ManaGained]
+    event reports.
+
+    The fold runs against a context whose [ic_credit_mana] is {e this} function,
+    so IBFH crediting a second pool re-enters it - the recursion the Lua gets
+    for free by calling ADD_MANA_EARTH from inside OnReceiveMana. It terminates
+    because every such body credits a shrinking share of a share; see
+    [Item_hooks.hook_ring]. *)
+and receive_mana (b : battle) (c : combatant) (e : element) (n : int) : int =
+  if n <= 0 then 0
+  else begin
+    let v =
+      Item.fold_receive_mana (loadout_of b c) (item_context b ~self:c) ~value:n ~e
+    in
+    (* [bank_mana], not [credit_mana]: this fold {e is} the hook [credit_mana]
+       dispatches to, and calling the dispatcher back would re-enter it. *)
+    Combat.bank_mana c e v
+  end
+
+(** [OnReceiveGold]: fold, then bank into the battle's running total, which is
+    what [Campaign] settles into the player's purse at the end. Returns what was
+    added, so the spell write-back can report the same number. *)
+and receive_gold (b : battle) (c : combatant) (n : int) : int =
+  if n <= 0 then 0
+  else begin
+    let v = Item.fold_receive_gold (loadout_of b c) (item_context b ~self:c) ~value:n in
+    b.gold <- b.gold + v;
+    v
+  end
+
+(** [OnReceiveXP]: the items fold first, then the status effects, which is the
+    inner-then-outer order the damage chain runs in - the item hook is the more
+    specific modifier and the status effect the wrapper over it. Returns what
+    was banked. *)
+and receive_xp (b : battle) (c : combatant) (n : int) : int =
+  if n <= 0 then 0
+  else begin
+    let v = Item.fold_receive_xp (loadout_of b c) (item_context b ~self:c) ~value:n in
+    let v =
+      Combat.receive_xp c b.effects ~enemies:[ opponent_of b c ] ~roll:b.rng
+        ~battle:b.effect_state v
+    in
+    b.xp <- b.xp + v;
+    v
+  end
+
+(** [OnStartTurn] for whoever is about to act, run before the status effects'
+    own start hooks. The split is the unrecovered one the damage chain already
+    records: items first, on the reading that equipment is the more persistent
+    modifier. *)
+let start_turn_item_hooks (b : battle) (actor : combatant) : string list =
+  Item.run_start_turn (loadout_of b actor) (item_context b ~self:actor)
+    ~turn:b.turns_elapsed
+
+(** The same context, dressed for a damage event: [ic_attacker] and
+    [ic_defender] are the two parties the damage bodies name in their
+    signatures. [self] differs between the two chains, so the callbacks bound
+    inside [item_context] point at the right combatant for each. *)
+let damage_context (b : battle) ~(self : combatant) ~(attacker : combatant)
+    ~(defender : combatant) : Item.item_context =
+  let base = item_context b ~self in
+  { base with Item.ic_attacker = Some attacker; ic_defender = Some defender }
+
+(** [OnMatch4] / [OnMatch5] for the side that made the match, and the status
+    effects' own pair at the same point - Vigiled is the only implementer there
+    and [Combat.run_match_effects] existed for it without a caller. The extra
+    turn that makes a four-run special is what the Lua comments tie these hooks
+    to, so they fire under the same [size_patterns] gate it does. *)
+let match_item_hooks (b : battle) (c : combatant) ~(of_five : bool) : string list =
+  Item.run_match (loadout_of b c) (item_context b ~self:c) ~of_five
+
+(** [OnVictory] for the side that won. Fires once, at the moment the winner is
+    decided rather than at the end of [run], so a battle that is already over
+    cannot run it twice. *)
+let victory_item_hooks (b : battle) (winner : combatant) : string list =
+  Item.run_victory (loadout_of b winner) (item_context b ~self:winner)
+
 (** The skill that drives mana yield for an element.
 
     A character's skill is a separate field from its mana balance in the
@@ -330,9 +492,12 @@ let skill_of (c : combatant) (b : battle) (e : element) : int =
 let credit_run (b : battle) (attacker : combatant) (e : element) (n : int) : unit =
   let gained = mana_yield ~skill:(skill_of attacker b e) ~run_length:n in
   (* The original accumulates in float and the pools are integers, so the credit
-     truncates. [credit_mana] also stops at the element's ceiling, which is what
-     the AI's "is the pool full" test depends on. *)
-  let banked = credit_mana attacker e (int_of_float gained) in
+     truncates. [receive_mana] runs the receiver's OnReceiveMana items over the
+     offer first - the ADD_MANA native is what fires them - and [credit_mana]
+     inside it stops at the element's ceiling, which is what the AI's "is the
+     pool full" test depends on. What it returns, and what the event reports, is
+     what was banked after both. *)
+  let banked = receive_mana b attacker e (int_of_float gained) in
   emit b (ManaGained (attacker.name, element_index e, banked));
   if
     extra_turn_roll ~gained ~pending:b.tm.extra_turn_pending
@@ -382,6 +547,14 @@ let resolve_cascades (b : battle) (defender : combatant) : int =
         total := !total + res.damage;
         gold := !gold + res.gold;
         xp := !xp + res.xp;
+        (* The board is advanced to the clearing state *before* the runs run:
+           a match hook that writes a cell - IMGS sweeps every star off the
+           grid - has to land in the grid the cascade goes on with, and the
+           [b.board <- cleared] that used to follow the runs would throw that
+           write away. A hook therefore reads the grid with its matches already
+           gone, which is the grid the cascade itself is working from. *)
+        let before = b.board in
+        b.board <- cleared;
         (* Mana and the extra turn roll are per run, from the board's grouping. *)
         List.iter
           (fun (coords, g) ->
@@ -390,26 +563,32 @@ let resolve_cascades (b : battle) (defender : combatant) : int =
             | Some e -> credit_run b attacker e n
             | None -> ());
             (* A 4- or 5-of-a-kind grants a deterministic extra turn, independent
-               of the stat roll. *)
+               of the stat roll. The match hooks - items and status effects -
+               hang off the same test: the Lua ties OnMatch4 to "matches 4 gems
+               (and receives an extra turn)", so a fight with size patterns off
+               has no event to fire them on either. They emit nothing of their
+               own, the way the start-battle payoffs do not. *)
             if b.rules.size_patterns && n >= 4 then begin
+              let of_five = n >= 5 in
               grant_extra_turn b.tm attacker.id;
-              emit b (SizeTurn attacker.name)
+              emit b (SizeTurn attacker.name);
+              ignore (match_item_hooks b attacker ~of_five);
+              run_match_effects attacker b.effects ~of_five ~enemies:[ defender ]
+                ~roll:b.rng ~battle:b.effect_state
             end)
           res.runs;
 emit b (MatchResolved (!step, res));
         if res.gold > 0 then emit b (GoldGained (attacker.name, res.gold));
         if res.xp > 0 then emit b (XpGained (attacker.name, res.xp));
-        (* The three boards, captured around the two assignments rather than
-           reconstructed afterwards: [before] is what the player was looking at,
-           [cleared] is the same board with the matches gone and the gaps still
-           open, and [after] is gravity having pulled everything down and the gaps
-           been refilled. *)
-        let before = b.board in
-        b.board <- cleared;
+        (* The three boards: [before] is what the player was looking at, [cleared]
+           is the same board with the matches gone and the gaps still open - plus
+           whatever a match hook wrote into it - and [after] is gravity having
+           pulled everything down and the gaps been refilled. *)
+        let post_hooks = b.board in
         refill b;
         step_to b
           (Cascaded
-             { step = !step; before; cleared; after = b.board; runs = res.runs })
+             { step = !step; before; cleared = post_hooks; after = b.board; runs = res.runs })
     done;
   (* Heroic Effort: the original's [FUN_0047AE80] fires when a swap's cascade
      counter reaches 5, awarding +100 XP and an extra turn. The counter is the
@@ -428,14 +607,15 @@ emit b (MatchResolved (!step, res));
   (* Added to the battle's running totals rather than assigned: this is called
      once per swap, and the original's ADD_GOLD and ADD_XP both accumulate.
 
-     The xp total goes through [receive_xp] first, because Favored's
-     [OnReceiveXP] converts a share of it into healing on the spot rather than
-     into a later award. The battle total still gets the {e whole} amount: the
-     hook returns the value unchanged and only adds life, so nothing is lost
-     either way. *)
-  b.gold <- b.gold + !gold;
-  b.xp <- b.xp + receive_xp attacker b.effects ~enemies:[ defender ] ~roll:b.rng
-      ~battle:b.effect_state !xp;
+     Both go through their hook: [receive_gold] folds the mover's OnReceiveGold
+     items (IRBR triples, IXHD banks a turn) over the haul, and [receive_xp]
+     folds OnReceiveXP first - IMSE doubling, IALR paying mana out of it -
+     and then the status effects, Favored's [OnReceiveXP] converting a share of
+     the experience into healing on the spot rather than into a later award.
+     That a hook sees the amount before the ceiling and the folds is the point:
+     the natives are what the Lua calls with the raw number. *)
+  if !gold > 0 then ignore (receive_gold b attacker !gold);
+  if !xp > 0 then ignore (receive_xp b attacker !xp);
   !total
 
 (** Plays a swap for whichever side is acting, then resolves the cascade.
@@ -515,18 +695,10 @@ and play_swap_result (b : battle) (defender : combatant) : unit =
        attacker's chain first, so the defender's receive hooks see the
        already-amplified number. *)
     let attacker = attacker_of b defender in
-    let ictx =
-      Item.
-        {
-          ic_board = Some b.board;
-          ic_percentile = b.rng 100;
-          ic_roll = b.rng;
-          ic_attacker = Some attacker;
-          ic_defender = Some defender;
-          ic_hero = b.hero;
-          ic_enemy = b.enemy;
-        }
-    in
+    (* One percentile per [PERCENTILE_CHANCE_SYNC] call rather than one per
+       event: the contexts carry the battle's rng behind a closure, so nothing
+       is drawn until a body asks, and two bodies asking get two rolls. *)
+    let give_ctx = damage_context b ~self:attacker ~attacker ~defender in
     (* Items first, then status effects, each as its own chain.
 
        The {e relative} order of an item hook against a status-effect hook is not
@@ -540,29 +712,42 @@ and play_swap_result (b : battle) (defender : combatant) : unit =
        What {e is} recovered is the order across the two combatants: the
        attacker's chain runs before the defender's, so a defender's reduction
        sees the already-amplified number. *)
+    let grid_before = b.board in
     let outgoing =
       give_damage ~attacker ~defender b.effects ~enemies:[ defender ] ~roll:b.rng
         ~battle:b.effect_state
-        (Item.fold_give_damage (loadout_of b attacker) ictx ~damage:dealt
+        (Item.fold_give_damage (loadout_of b attacker) give_ctx ~damage:dealt
            ~source:attacker.id ~target:defender.id
            ~f:(fun (i : Item.item) n ->
-             Item.give_damage i ictx ~damage:n ~source:attacker.id
+             Item.give_damage i give_ctx ~damage:n ~source:attacker.id
                ~target:defender.id))
     in
+    (* Built here rather than beside [give_ctx] so the defender's chain reads the
+       grid the attacker's hooks left behind - IADO's sweep is on one side and
+       ICAR's cell pick is on the other, and the Lua's live grid would show the
+       sweep to the second body. The contexts draw no rng either way. *)
+    let take_ctx = damage_context b ~self:defender ~attacker ~defender in
     let taken =
       receive_damage ~defender ~attacker b.effects ~enemies:[ attacker ] ~roll:b.rng
         ~battle:b.effect_state
-        (Item.fold_receive_damage (loadout_of b defender) ictx ~damage:outgoing
+        (Item.fold_receive_damage (loadout_of b defender) take_ctx ~damage:outgoing
            ~source:attacker.id ~target:defender.id
            ~f:(fun (i : Item.item) n ->
-             Item.receive_damage_hook i ictx ~damage:n ~source:attacker.id
+             Item.receive_damage_hook i take_ctx ~damage:n ~source:attacker.id
                ~target:defender.id))
     in
     defender.life <- max 0 (defender.life - taken);
     (* The defeat sweep keys off the flag, not the life total, so it has to be
        raised here or nobody is ever reported dead. *)
     if defender.life < 1 then defender.is_dead <- true;
-    emit b (Damage (defender.name, taken))
+    emit b (Damage (defender.name, taken));
+    (* A hook that destroyed a cell - IADO's red-skull sweep is the only one -
+       leaves the grid short, and the next swap would resolve the holes. Gravity
+       and refill run here for the reason they run after a spell body; on an
+       intact board both are the identity and refill draws nothing, so a fight
+       whose items only change numbers pays no rng for this. *)
+    b.board <- Board.refill_board ~rng:b.rng (Board.apply_gravity b.board);
+    if b.board <> grid_before then emit b Refilled
   end
 
 (** Builds the context the AI spell hooks are evaluated against.
@@ -751,8 +936,17 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
                 the board as it was before the spell and every cell the spell edited
                 is thrown away. *)
              b.board <- !(fx.Spell.fx_board);
-             b.gold <- !(fx.Spell.fx_gold);
-             b.xp <- !(fx.Spell.fx_xp);
+             (* What the body added to the boxed gold and xp is what its
+                ADD_GOLD / ADD_XP calls banked, so that delta - not the whole
+                boxed total, which started as a copy of the battle's - is what
+                runs through the receiver's hooks. A body that spends rather
+                than earns writes the total straight back. *)
+             let gained_gold = !(fx.Spell.fx_gold) - b.gold in
+             if gained_gold > 0 then ignore (receive_gold b actor gained_gold)
+             else b.gold <- !(fx.Spell.fx_gold);
+             let gained_xp = !(fx.Spell.fx_xp) - b.xp in
+             if gained_xp > 0 then ignore (receive_xp b actor gained_xp)
+             else b.xp <- !(fx.Spell.fx_xp);
              (* A board sweep empties cells; the board has to resolve them before
                 the next move or the grid is left short of gems. *)
              b.board <- Board.apply_gravity b.board;
@@ -767,6 +961,47 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
   in
   if still_turn then play_move b defender
 
+(** The life-based verdict, recorded the moment it becomes true, with OnVictory
+    firing at the same transition - so it runs once per battle, however many
+    times [run] is called afterwards. It runs after a skipped turn as well as a
+    played one: a corpse that sits out its turn under [Missed] still has to end
+    the fight rather than hold the loop open until the status runs out. *)
+let record_outcome (b : battle) : unit =
+  match b.hero.life, b.enemy.life with
+  | 0, 0 -> b.winner <- Some Draw
+  | 0, _ ->
+      b.winner <- Some EnemyVictory;
+      ignore (victory_item_hooks b b.enemy)
+  | _, 0 ->
+      b.winner <- Some HeroVictory;
+      ignore (victory_item_hooks b b.hero)
+  | _ -> ()
+
+(** [MISS_TURNS] as the loop reads it: spend one turn of the [Missed] status
+    and say so. Returns [true] when the actor sat this one out.
+
+    The placement is the whole behaviour. It runs after the worn items'
+    [OnStartTurn] and before the status effects' own start hooks, which is what
+    makes ITUT - "Owner never takes a turn" - do exactly that: its body runs
+    first and sets [Missed], this spends it, and the action never happens. It
+    also means a missed turn ticks nothing else: [run_start_of_turn_effects]
+    would drop [Missed] on the floor, because it keeps only ids it has a
+    descriptor for and [Missed] is a pseudo-status with none - so the check has
+    to come before it, or the status would be gone before anything could act on
+    it. *)
+let spend_missed_turn (b : battle) (actor : combatant) : bool =
+  match List.assoc_opt "Missed" actor.effects with
+  | Some n when n > 0 ->
+      actor.effects <-
+        (if n <= 1 then List.filter (fun (id, _) -> id <> "Missed") actor.effects
+         else
+           List.map
+             (fun (id, d) -> if id = "Missed" then (id, d - 1) else (id, d))
+             actor.effects);
+      emit b (MissedTurn actor.name);
+      true
+  | _ -> false
+
 (** One turn for the current combatant. *)
 let take_turn (b : battle) : unit =
   if b.winner <> None then ()
@@ -776,27 +1011,37 @@ let take_turn (b : battle) : unit =
     let defender = if is_hero then b.enemy else b.hero in
     let spells = if is_hero then b.hero_spells else b.enemy_spells in
     emit b (TurnStart (b.tm.current_slot, (if is_hero then Hero else Enemy), actor.name));
-    run_start_of_turn_effects actor b.effects ~turn:b.turns_elapsed ~enemies:[ defender ]
-      ~roll:b.rng ~battle:b.effect_state;
-    take_action b actor defender spells;
-    if sweep_deaths b.tm then
-      List.iter (fun c -> if c.life = 0 then emit b (Death c.name)) [ b.hero; b.enemy ];
-    (* The outcome has to be recorded here, not only at the end of [run]. A dead
-       combatant keeps taking turns until the loop exits otherwise, which both
-       wastes the cap and lets a corpse deal damage. *)
-    (match b.hero.life, b.enemy.life with
-    | 0, 0 -> b.winner <- Some Draw
-    | 0, _ -> b.winner <- Some EnemyVictory
-    | _, 0 -> b.winner <- Some HeroVictory
-    | _ -> ());
-    (* Cooldowns count the caster's own turns, so this is the natural tick: by
-       the time the next turn starts the spell that was just cast has one fewer
-       turn left. Ticking after the cast rather than before means a cooldown of
-       3 blocks the next two casts, not three. *)
-    tick_cooldowns actor;
-    b.turns_elapsed <- b.turns_elapsed + 1;
-    emit b (TurnEnd b.turns_elapsed);
-    ignore (advance_turn b.tm)
+    (* The worn items' OnStartTurn run before the status effects' own start
+       hooks, for the reason the damage chain gives: items first. ISDO tops up
+       water, the troll rings heal off a stockpile, IEGM pays out of full
+       reserves. *)
+    ignore (start_turn_item_hooks b actor);
+    if spend_missed_turn b actor then begin
+      (* The turn advances - the round, the cap and any banked extra turn all
+         move on - but nothing of the turn happens: no status ticks, no spell,
+         no swap, and no cooldown tick either, since cooldowns count the actor's
+         own turns and this was not one. *)
+      record_outcome b;
+      b.turns_elapsed <- b.turns_elapsed + 1;
+      emit b (TurnEnd b.turns_elapsed);
+      ignore (advance_turn b.tm)
+    end
+    else begin
+      run_start_of_turn_effects actor b.effects ~turn:b.turns_elapsed ~enemies:[ defender ]
+        ~roll:b.rng ~battle:b.effect_state;
+      take_action b actor defender spells;
+      if sweep_deaths b.tm then
+        List.iter (fun c -> if c.life = 0 then emit b (Death c.name)) [ b.hero; b.enemy ];
+      record_outcome b;
+      (* Cooldowns count the caster's own turns, so this is the natural tick: by
+         the time the next turn starts the spell that was just cast has one fewer
+         turn left. Ticking after the cast rather than before means a cooldown of
+         3 blocks the next two casts, not three. *)
+      tick_cooldowns actor;
+      b.turns_elapsed <- b.turns_elapsed + 1;
+      emit b (TurnEnd b.turns_elapsed);
+      ignore (advance_turn b.tm)
+    end
   end
 
 (** The outcome as the rest of the game asks for it: did the hero win?
@@ -838,36 +1083,52 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
      against one monster, and [SRGN] is the only script that reads the flag. *)
   enemy.is_monster <- true;
   hero.is_monster <- false;
-  {
-    rules;
-    board;
-    hero;
-    enemy;
-    tm = initialise [ hero; enemy ];
-    turns_elapsed = 0;
-    mana_burns = 0;
-    gold = 0;
-    xp = 0;
-    winner = None;
-    log = [];
-    (* Nobody is watching by default, which is what every faithful test and the
-       headless runner rely on. See [Battle.on_event]. *)
-    on_event = None;
-    on_step = None;
-    on_grid_fx = None;
-    rng;
-    multipliers =
-      { Spell.wildcard_chance = true
-      ; extra_turn_chance = rules.extra_turns_enabled
-      ; damage_multiplier = true
-      };
-    hero_spells;
-    enemy_spells;
-    effects;
-    effect_state = { Combat.spells_disallowed = false };
-    hero_items = (match hero_items with Some l -> l | None -> Item.new_loadout ());
-    enemy_items = (match enemy_items with Some l -> l | None -> Item.new_loadout ());
-  }
+  let battle =
+    {
+      rules;
+      board;
+      hero;
+      enemy;
+      tm = initialise [ hero; enemy ];
+      turns_elapsed = 0;
+      mana_burns = 0;
+      gold = 0;
+      xp = 0;
+      winner = None;
+      log = [];
+      (* Nobody is watching by default, which is what every faithful test and the
+         headless runner rely on. See [Battle.on_event]. *)
+      on_event = None;
+      on_step = None;
+      on_grid_fx = None;
+      rng;
+      multipliers =
+        { Spell.wildcard_chance = true
+        ; extra_turn_chance = rules.extra_turns_enabled
+        ; damage_multiplier = true
+        };
+      hero_spells;
+      enemy_spells;
+      effects;
+      effect_state = { Combat.spells_disallowed = false };
+      hero_items = (match hero_items with Some l -> l | None -> Item.new_loadout ());
+      enemy_items = (match enemy_items with Some l -> l | None -> Item.new_loadout ());
+    }
+  in
+  (* Register this fight as the one [ADD_MANA_<E>] answers to, so a spell body
+     crediting mana and a status effect doing the same run the receiver's
+     OnReceiveMana fold instead of banking behind it - IMOA doubles the blue a
+     spell granted, not only the blue a match banked. The membership test is
+     physical equality rather than a compare on [id]: every fight has a hero at
+     id 0, so an id check would fold a foreign combatant into this loadout, and
+     a combatant that is not one of these two has to fall through to the raw
+     clamp instead. *)
+  Combat.mana_credit_hook :=
+    Some
+      (fun c e n ->
+        if c == battle.hero || c == battle.enemy then receive_mana battle c e n
+        else Combat.bank_mana c e n);
+  battle
 
 (** Puts [i] on [c]'s side, if [c] may wear it. Returns the item it displaced, or
     [None]. Used at battle setup rather than mid-fight, so there is no turn cost
@@ -887,6 +1148,7 @@ let format_event = function
       Printf.sprintf "turn %2d  [%s] %s" slot
         (match side with Hero -> "hero" | Enemy -> "enemy")
         name
+  | MissedTurn name -> Printf.sprintf "             %s is stunned and misses the turn" name
   | ExtraTurn name -> Printf.sprintf "             %s replays" name
   | SpellCast (who, id) -> Printf.sprintf "             %s casts %s" who id
   | SpellHeld who -> Printf.sprintf "             %s holds" who

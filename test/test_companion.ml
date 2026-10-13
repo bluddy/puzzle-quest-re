@@ -225,6 +225,8 @@ let () =
 let () =
   let p = fresh () in
   let hero = Campaign.player_to_combatant p in
+  check "and the ceilings follow those skills"
+    (hero.Combat.max_mana = Combat.caps_for hero.Combat.skills);
   check "the player's affinities reach the combatant"
     (hero.Combat.skills = Campaign.to_combat_skills p.Campaign.skills
     && hero.Combat.skills.battle = 1);

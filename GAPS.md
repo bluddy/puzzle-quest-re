@@ -105,7 +105,7 @@
 | Gap | Details |
 |-----|---------|
 | Equip logic | `equipment` record exists; no `can_equip` checks, no stat bonuses applied |
-| Item effects | Damage hooks fold in battle; `OnStartBattle` wired for the six items (`campaign.item_start_battle`) and per-minted-item for runes (`port.rune_item_mint`); the mana/gold/xp, start-turn, match and victory hooks are still never invoked |
+| Item effects | All eight hook kinds are dispatched and ported: `OnStartBattle` for the six items (`campaign.item_start_battle`) and per-minted-item for runes (`port.rune_item_mint`), the six event kinds at the six battle-loop points (`OnReceiveMana/Gold/Xp` where the battle banks them and where a spell writes `ADD_GOLD`/`ADD_XP` back, `OnStartTurn` at the top of the turn, `OnMatch4/5` beside the `size_patterns` grant, `OnVictory` at the winner's transition), both damage chains (`OnGiveDamage` 51/53, `OnReceiveDamage` 38/38), the board writes behind nine more (`ic_set_gem` / `ic_destroy_gem` / the `GetRandomGrid_*` pickers, `port.item_board_writes`), every capped mana credit running the fold (`port.mana_credit_registry`), and the turn loop spending `Missed` so IFZT and ITUT are in (`port.missed_turn_placement`). 131 of the 133 hook declarations run; the two misses are IALS (per-character `SUBTRACT_XP`) and ILBC (`GET_CHARACTER_ID`), both against natives with nothing behind them (`port.item_event_context`, `port.item_event_dispatch_order`). Open: a per-character experience pool and a registry id on the combatant - fields, not hooks |
 | Inventory limits | No capacity, no sorting, no discard |
 
 ### 10. Companion / Mount System
@@ -241,13 +241,13 @@ bin/
 
 Phases 1, 2, 3 and 4 are landed (prerequisites, rewards, visibility, text,
 campaign tests, capture, companion hooks, quest battle loop, item start
-hooks, companion removal, cell selection, AI aiming, monster rosters,
-conversation triggers + per-callback effects, companion equip, grid-spell
-aim hover, mount speed, mount combat bonuses, capture UI, capture
-surfaces, banner slot, runes, rune items, forge UI, mount training), and the
-conversation UI now walks actions, renders portraits/backdrops, fires
+hooks, item event hooks, companion removal, cell selection, AI aiming,
+monster rosters, conversation triggers + per-callback effects, companion
+equip, grid-spell aim hover, mount speed, mount combat bonuses, capture UI,
+capture surfaces, banner slot, runes, rune items, forge UI, mount training),
+and the conversation UI now walks actions, renders portraits/backdrops, fires
 battle callbacks and applies each scriptcall's extracted body effects.
 Pick one:
 
 - **Forge minigame** - the skill game [FORGEITEMS_FAIL] expects (the ten Easy..Godlike bands become targets) and the [MAXRUNEITEM] cap
-- **Item hook invocation** - the mana/gold/xp, start-turn, match and victory hooks battle never calls
+- **The effective-skill query** - the one unread half of the ceiling formula: a vtable slot at +0x20 taking (kind 5, raw skill, level, element) and clamping to 999, which decides whether level folds into `25 + (effective skill + 1) / 2`; the port uses the raw skill until it is read, and a decoded .pqhero's Masteries beside its mana pools would pin it from the other side
