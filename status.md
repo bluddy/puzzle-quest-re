@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree (the font-pen-rule round of the open-question audit). `font.advance_field_mapping` asked what the glyph field at +0x1c is and how it relates to leading/trailing, with the old notes reading +0x18 as a full advance and getting a "25 against 10" disagreement out of a single Small 'A'. The settle was finding the parser the old evidence claimed could not exist: the `FontData`/`Glyph`/`leading`/`trailing` strings sit at VA **0x52bc60** and the previous scan had searched for the RVA's bytes (0x12bc60) - so `FUN_004c7f80`, reached from the face loader `FUN_004c8700` (which composes "<face>.xml"/".png"), parses each face's XML at runtime and writes the raw attributes into the 32-byte records: **+0x18 is trailing, +0x1c is leading**, +0x14/+0x16 width/height. Both consumers (`FUN_004c7650` measure, `FUN_004c7720` draw) then run the same three branches - first char `leading+trailing` with ink at the pen, middle `trailing` with ink `leading` pixels left of it, last `width-leading` - so the "25 against 10" dissolves (the real numbers are 11 and 10, and a single-character string takes the first branch unambiguously); measure is the last ink edge for multi-char strings, glyphs overlap by their leading, and a trailing space goes negative. The fallback character is recovered too: `FUN_004c7510` writes 0x2a - '*' - at +0x44, so missing codes draw '*' rather than nothing. The port was re-ported (`Font_layout.step_at`/`bearing`/`resolve_code`, `measure`/`place_line` on the engine's rule, `font.ml` drops its nothing-to-draw filter); `font.glyph_advance_is_stored` rewritten as recovered, `font.glyph_tables_not_parsed_at_runtime` refuted (RVA/VA confusion), `port.advance_is_ink_width` superseded by `port.pen_rule_is_recovered`, `tools/graphics_plan.md`'s stale section replaced, and `test_gfx_font_layout` rewritten against real System/Small numbers (the per-code "advance" API is gone - the rule is position-dependent). Evidence 103 claims, 12 questions (2 open), 49 decisions; 35 suites, 2699->2715 checks.
+**Sync:** working tree (the spell-cascade round of the open-question audit, on top of the committed font round `3ad2033`). `spell.match_resolution_after_a_spell` asked whether the engine resolves matches that a spell's own board edits create - the port only gravity-refilled after a cast, so a line a spell completed sat until the next swap scored it. The settle is the turn's state machine: `Engine_CAST_SPELL` (FUN_0043FE30, only call site 0x47C467) runs the effect (FUN_00475120) and returns, and the action handler's sub-state 3 (0x47C557) then calls `CommitBestMove` (FUN_0043FAF0) and sets the battle manager's state (+0x34c) to 1 or 2; `PickSpell` (FUN_00440FB0) clears the best-move flag (+0x2c) at 0x441172 when a cast is chosen, so CommitBestMove returns 0 and the state goes straight to **1 - the cascade-check state**, whose driver (FUN_0047E500) scans the whole board, pops every match (FUN_0047E470) and loops through state 2 (gravity/refill, FUN_0047C590) until none remain - the same code the swap path uses. The port follows: the damage chain is extracted to `apply_cascade_damage` (shared with `play_swap_result`), and the cast path runs `resolve_cascades` + it, replacing the unconditional gravity+refill (which the engine does not do on a failed cascade check). `test_battle.ml` pins it with a spell that completes a 3-skull line. Evidence 103 claims, 12 questions (1 open), 50 decisions; 35 suites, 2715->2718 checks, all green; `xp.difficulty_scaling` is the last open question.
 
 ---
 
@@ -12,13 +12,15 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
 
 ### 1. Finish the open-question audit's leftovers - cheap RE round
 
-Two of the four questions the audit started with are still open, and it opened a fourth: `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling) and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the -/+25 %, i.e. what `turn_manager+0x30` means). The third, `font.advance_field_mapping`, was retired on 2026-10-14 - see Closed.
+Only one of the four open questions from the audit remains: `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the -/+25 %, i.e. what `turn_manager+0x30` means). The others are retired: `quest.difficulty_consumers` on 2026-10-13, then `font.advance_field_mapping` and `spell.match_resolution_after_a_spell` both on 2026-10-14 - see Closed. Retiring the spell question landed a real fix (see the Closed bullet); the last one is pure RE on the results screen, with `Score.compute_co_op_payout` already holding the arithmetic.
 
 ### 2. Campaign → battle: fight screens for quest battles
 
 The battle front now renders a real fight, but the campaign's quest and callback battles still run headless behind a banner in `conv_window`. Lifting `pq_play_gfx`'s screen onto `Campaign.run_quest_battle`'s result - the stage, the spoils and the capture offer around a played fight - is the seam the map window has been building toward, and everything it needs (the panels, the rows, the log) is now in place.
 
 ### Closed rounds from this list
+
+- ~~Spell-created matches cascade~~ (landed 2026-10-14): `spell.match_resolution_after_a_spell` retired - the engine resolves matches a spell's board edits complete, immediately, through the same cascade driver the swap path uses. The path: the action handler `FUN_0047C3E0` runs `PickSpell` (FUN_00440FB0), then `Engine_CAST_SPELL` (FUN_0043FE30, only call site 0x47C467) runs the effect and returns; sub-state 3 (0x47C557) calls `CommitBestMove` (FUN_0043FAF0) and sets the manager's state (+0x34c) to 1 or 2. PickSpell clears the stored-move flag (+0x2c) at 0x441172 when a cast is chosen, so CommitBestMove returns 0 and the state goes to **1**, the cascade-check state whose driver (FUN_0047E500) scans the board, pops every match (FUN_0047E470) and loops through state 2 (gravity/refill, FUN_0047C590) until none remain - the swap path reaches the same driver via state 2. The port shares the swap path's code: the damage chain is extracted to `apply_cascade_damage` and the cast path runs `resolve_cascades` + it, replacing the old unconditional gravity+refill (the engine does not gravity a board that failed the cascade check). `test_battle.ml` pins it with a spell that completes a 3-skull line; `port.cast_cascade_resolves_matches` records it and `port.effect_context_is_written_back`'s "does not settle" note now points at the retirement (2718 checks green).
 
 - ~~Font pen rule~~ (landed 2026-10-14): `font.advance_field_mapping` retired by finding the face-XML parser the old evidence said could not exist - the attribute-name strings live at VA 0x52bc60, and the scan that "proved" they were unreferenced had searched for the RVA 0x12bc60's bytes. `FUN_004c7f80` (called by the loader `FUN_004c8700`, which composes "<face>.xml"/".png") writes the raw attributes: trailing dword +0x18, leading +0x1c, width/height words +0x14/+0x16. Both consumers run the same three-branch rule (first `leading+trailing`, middle `trailing`, last `width-leading`; later glyphs' ink `leading` left of the pen), so the "25 against 10" was arithmetic on a misread field (11 vs 10 in truth) and a single-char string takes the first branch. Fallback recovered as '*' (0x2a at +0x44, `FUN_004c7510`). Port re-ported; `font.glyph_tables_not_parsed_at_runtime` refuted; `port.advance_is_ink_width` superseded by `port.pen_rule_is_recovered`; `graphics_plan.md` section replaced; `test_gfx_font_layout` rewritten (2715 checks green).
 
@@ -333,18 +335,10 @@ graphics) - 601
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 12 (2 open) | 49 |
+| `docs/reverse/evidence.yml` | 103 | 12 (1 open) | 50 |
 
-The two open questions and what each is waiting on:
+The one open question and what it is waiting on:
 
-- `spell.match_resolution_after_a_spell` — does the engine resolve matches a
-  spell's own board edits create (SBAC drops a red skull, SWTD rewrites a kind)?
-  The port applies gravity and a refill after a cast but does not resolve, so a
-  line a spell completes sits until the next swap. Waited on by
-  `port.effect_context_is_written_back`. Settled by reading the engine's
-  post-CastSpell board handling (whether the swap path's resolve-and-cascade
-  runs after a script's CastSpell returns) or a save where a spell completes a
-  line.
 - `xp.difficulty_scaling` — where the -/+25 % XP the Difficulty rows advertise
   is applied. Ruled out: `Engine_ADD_XP`'s kind-15 query falls through to the
   default, so no difficulty term sits in the write. The one place difficulty
@@ -385,6 +379,7 @@ Key decisions recorded:
 - `port.mount_skill_formula` - bonus = addstat + ((level - 1) / addlevel) * addperlevel on the combatant (never player.skills); mount_stat is skill_of_index; the mount spell is prepended to all three hero lists
 - `port.conversation_ui` — portrait at (96,50), dialogue at y=170, choices at y=350; text wraps at 560px; `--conv --shot` pixel-checks
 - `port.effect_context_is_written_back` — spell board/gold/XP write-back contract
+- `port.cast_cascade_resolves_matches` — a cast runs the swap path's `resolve_cascades` + `apply_cascade_damage` (the engine's state machine sends every cast to cascade-check state 1); the old unconditional gravity+refill after a cast is gone
 - `port.grid_effects_are_an_observer_not_an_event` — `Battle.on_grid_fx` third observer
 - `campaign.map_visibility` — road/neighbour rule from `Engine_QUEST_SET_VISIBILITY_450e40.c`
 - `campaign.quest_rewards_conditional` — branching reward callbacks take the first source-order branch
@@ -395,11 +390,12 @@ Key decisions recorded:
 - `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
-Open questions (3): `font.advance_field_mapping`,
-`spell.match_resolution_after_a_spell` and `xp.difficulty_scaling`
+Open questions (1): `xp.difficulty_scaling`
 (which branch of the results screen at 0x43e5f0 pays the ∓25 % XP, i.e.
 what `turn_manager+0x30` means).
-`board.gem_id_air_water_order` is closed (recovered): 3 is Air, 4 is Water -
+`spell.match_resolution_after_a_spell` and `font.advance_field_mapping` are
+closed (recovered, 2026-10-14); `board.gem_id_air_water_order` is closed
+(recovered): 3 is Air, 4 is Water -
 the harvest's per-pool sound calls and `StandardConstants.lua` agree, and the
 ids are the character order with no transposition (also 6 star, 7 coin).
 `quest.base_value_from_level` and `quest.difficulty_consumers` are likewise

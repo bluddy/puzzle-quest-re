@@ -1251,6 +1251,53 @@ let () =
     (Combat.mana b2.hero Combat.Earth <= 7)
 
 let () =
+  (* A spell-completed line resolves immediately. The engine runs the cascade
+     driver (state 1, FUN_0047E500) after every cast: [PickSpell] clears the
+     best-move flag when a cast is chosen (0x441172), so [CommitBestMove]
+     returns 0 and the turn's state machine goes straight to the cascade check
+     rather than through the swap's gravity step - and the driver pops any
+     match it finds, the same code the swap path uses. Before this was
+     recovered the port only gravity-refilled after a cast, so a line a spell
+     completed sat on the board until the next swap scored it.
+
+     The body completes a 3-skull line on [locked_board] (which has no skulls
+     and no matches), so the cascade is the spell's own doing. A 3-skull run
+     deals 3 damage, which runs the same GIVE/RECEIVE chain a swap's cascade
+     does. *)
+  let body (fx : Spell.effect_context) =
+    Spell_effects.set_gem fx 0 0 Board.Skull;
+    Spell_effects.set_gem fx 1 0 Board.Skull;
+    Spell_effects.set_gem fx 2 0 Board.Skull
+  in
+  let s = Spell.make_spell ~cast_spell:body "TESTM" "Matcher" in
+  let b =
+    create ~rng:(lcg 59)
+      ~rules:
+        {
+          default_rules with
+          player =
+            Some
+              {
+                choose_spell = (fun spells -> match spells with sp :: _ -> Some sp | [] -> None);
+                choose_aim = (fun _ -> None);
+                choose_swap = (fun _ -> None);
+              };
+        }
+      ~hero_spells:[ s ] (locked_board ()) (fighter 0 "hero") (fighter 1 "foe")
+  in
+  take_turn b;
+  check "a spell-completed line resolves in the same turn"
+    (List.exists
+       (fun (e : event) -> match e with MatchResolved _ -> true | _ -> false)
+       (log_of b));
+  check "and its damage runs the cascade chain, landing on the foe"
+    (List.exists
+       (fun (e : event) -> match e with Damage ("foe", n) -> n > 0 | _ -> false)
+       (log_of b));
+  check "so the foe's life dropped from the cast's own cascade"
+    (b.enemy.Combat.life < 40)
+
+let () =
   if !failures = 0 then print_endline "\nAll battle tests passed."
   else begin
     Printf.printf "\n%d battle test(s) failed.\n" !failures;

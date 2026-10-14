@@ -4175,7 +4175,31 @@ open_questions:
         A save game where a spell completes a line, played through the original, and
         whether the cascade fires immediately or on the next move.
     related: [pres.add_effect_to_grid]
-    status: open
+    status: recovered
+    resolution: >
+      The engine resolves them immediately, via the same cascade driver the swap path
+      uses. The cast path is a state machine, and every route through it ends at the
+      cascade check: `Engine_CAST_SPELL` (FUN_0043FE30, whose only call site is
+      0x47C467 in the turn's action handler FUN_0047C3E0) runs the effect
+      (FUN_00475120 dispatches OnCastSpell/OnEnemyCastSpell) and returns; the
+      handler's sub-state machine (+0x354) then reaches sub-state 3 (0x47C557),
+      which calls CommitBestMove (FUN_0043FAF0) and sets the battle manager's outer
+      state (+0x34c) to 1 or 2. PickSpell (FUN_00440FB0) clears the best-move flag
+      (+0x2c = 0) at 0x441172 when it chooses a cast, so CommitBestMove returns 0
+      and the state becomes 1 - the cascade-check state. The cascade driver
+      (FUN_0047E500) scans the whole board with CBoard_CheckMatch, pops every match
+      it finds (FUN_0047E470), and on a pop sets state 2 (gravity/refill,
+      FUN_0047C590) then state 1 again, looping until no matches remain - the same
+      resolve-and-cascade the swap path reaches. A swap reaches state 1 through
+      state 2 first; a cast goes straight to 1 because PickSpell has already
+      invalidated the stored move. Either way the driver is the same code.
+
+      The port now runs resolve_cascades and the shared damage chain after a cast,
+      exactly as after a swap, replacing the old gravity+refill-only aftermath - see
+      `port.cast_cascade_resolves_matches`. The state-1 writers are only two
+      (0x43964C in the mana-burn path, 0x47C806 in FUN_0047C590), and neither is
+      the spell path; the spell path reaches state 1 through the sub-state machine's
+      edx = CommitBestMove() + 1.
 
   - id: spell.sfba_target_writeback
     question: How does SFBA's SET_INPUT_DATA target reach CastSpell?
@@ -4569,9 +4593,35 @@ port_decisions:
       asserted too so the asymmetry is on the record rather than re-discovered.
 
       What it does not settle is whether a line completed by a spell should then
-      resolve - see `spell.match_resolution_after_a_spell`.
+      resolve - that is `spell.match_resolution_after_a_spell`, since retired: the
+      engine does resolve it, and `port.cast_cascade_resolves_matches` records the
+      follow-up.
     supersedes: null
     date: 2026-10-06
+
+  - id: port.cast_cascade_resolves_matches
+    decision: A cast runs the same cascade resolution and damage chain a swap does
+    rationale: >
+      The engine runs the cascade driver (state 1, FUN_0047E500) after every cast -
+      `spell.match_resolution_after_a_spell` recovered the path: PickSpell clears the
+      best-move flag when a cast is chosen (0x441172), so the turn's sub-state
+      machine goes straight to state 1 rather than through the swap's state 2, and
+      the driver pops any match the spell's board edits completed. Before this was
+      recovered the port only gravity-refilled after a cast, so a line a spell
+      completed sat on the board until the next swap scored it as part of whoever
+      swapped next's cascade.
+
+      The fix shares the swap path's code rather than reimplementing it: the damage
+      chain that used to live inline in `play_swap_result` is extracted to
+      `apply_cascade_damage`, and both `play_swap_result` and the cast path call
+      `resolve_cascades` then `apply_cascade_damage`. A spell whose edits complete
+      no match costs nothing - `resolve_matches` returns None immediately, the same
+      no-rng no-op the swap path's quiet board gets - and the old unconditional
+      gravity+refill is gone: the engine does not gravity a board that failed the
+      cascade check, so a spell that leaves holes without matching leaves them until
+      the next match, exactly as the original does.
+    supersedes: null
+    date: 2026-10-14
 
   - id: port.grid_effects_are_an_observer_not_an_event
     decision: A spell's effect on a grid cell is reported through a third observer, not through the log

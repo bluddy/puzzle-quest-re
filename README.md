@@ -371,8 +371,13 @@ found by asking a question the new seam made askable - *is the cell the spell re
 the cell the board now holds?* - and getting `no`.
 
 What it does not settle is whether a line completed by a spell should then resolve.
-It is now reachable for the first time, and recorded as
-`spell.match_resolution_after_a_spell` rather than guessed at.
+That question, `spell.match_resolution_after_a_spell`, was retired on 2026-10-14:
+the engine does resolve it immediately - every cast routes through the manager's
+cascade-check state (PickSpell clears the stored-move flag, so the turn machine
+goes to state 1 rather than the swap's state 2), whose driver pops the line the
+spell made - and the port now shares the swap path's `resolve_cascades` and
+damage chain instead of only gravity-refilling (see
+`port.cast_cascade_resolves_matches`).
 
 Three things it deliberately does not interpret, each recorded rather than papered
 over: `Shape steps` (2 in seven particles), the planar `planes` codes, and
@@ -479,17 +484,22 @@ rather than a fixed glyph set - true, and beside the point, because the glyph
 tables cover codes 32..8482. So text needed no dependency and no font pipeline.
 `tsdl-ttf` is installed but **linked by nothing**.
 
-One number is an inference rather than a recovery: the per-glyph advance.
-`FUN_004c7650` sums a stored advance field, but adds a second field for the first
-character and subtracts it for the last, and the two disagree for a one-character
-string - so what that field is, is unknown. It cannot be settled from the binary
-either, because the `FontData` attribute names are present but unreferenced: the
-engine never parses these files. The port advances by the ink width instead,
-supported by measuring the atlas - the table's two bearings sum to the ink width
-rather than adding to it, and cells are packed edge to edge. The exception is the
-space, which has a 1px placeholder rectangle, so the advance is
-`max width (leading + trailing)`. See `gfx/font_layout.ml`,
-`port.advance_is_ink_width` and the open question `font.advance_field_mapping`.
+The per-glyph pen rule is recovered, not inferred (retired 2026-10-14 as
+`font.advance_field_mapping`). The attribute-name strings (`FontData`, `Glyph`,
+`leading`, `trailing`) sit at VA 0x52bc60 - an earlier scan had searched for the
+RVA's bytes and wrongly concluded the engine never parses these files. It does:
+`FUN_004c7f80`, reached from the face loader `FUN_004c8700` (which composes
+"<face>.xml"/".png"), parses each face's XML at runtime and writes the raw
+attributes into the 32-byte glyph records - **+0x18 is trailing, +0x1c is
+leading**. Both consumers (`FUN_004c7650` measure, `FUN_004c7720` draw) then run
+one three-branch rule: the first character advances `leading+trailing` with its
+ink at the pen, a middle character advances `trailing` with its ink `leading`
+pixels to the left, the last advances `width-leading`; measure is the last ink
+edge for multi-char strings, glyphs overlap by their leading, and a single-char
+string unambiguously takes the first branch. Missing codes draw the fallback
+`*` (`FUN_004c7510` writes 0x2a at +0x44). See `gfx/font_layout.ml`,
+`port.pen_rule_is_recovered` (superseding the old `port.advance_is_ink_width`)
+and the retired question's resolution in `docs/reverse/evidence.yml`.
 
 Float-message placement is a transcription, not a guess: `gfx/font_layout.ml`
 anchors on the box's smaller corner, then clamps to a 20px margin with the

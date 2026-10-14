@@ -637,6 +637,81 @@ emit b (MatchResolved (!step, res));
   if !xp > 0 then ignore (receive_xp b attacker !xp);
   !total
 
+(** Runs the two damage chains over a cascade's [dealt] and applies the result.
+
+    Shared by the swap path ([play_swap_result]) and the cast path
+    ([take_action]): the engine's post-cascade flow is one code path - the
+    cascade driver (state 1, [FUN_0047E500]) pops matches and the damage lands
+    through the same GIVE_DAMAGE / RECEIVE_DAMAGE chains whichever action
+    created the match. [defender] is the combatant being damaged; the attacker
+    is derived from it. *)
+let apply_cascade_damage (b : battle) ~(defender : combatant) (dealt : int) :
+    unit =
+  if dealt > 0 then begin
+    (* Two chains run, and within each the attacker's side is the inner one.
+
+       The order matters and is not arbitrary. For a given combatant the original
+       runs GIVE_DAMAGE before RECEIVE_DAMAGE, so an item that amplifies what it
+       deals and an item that reduces what it takes compose as amplify-then-reduce
+       rather than the other way round. Across the two combatants it runs the
+       attacker's chain first, so the defender's receive hooks see the
+       already-amplified number. *)
+    let attacker = attacker_of b defender in
+    (* One percentile per [PERCENTILE_CHANCE_SYNC] call rather than one per
+       event: the contexts carry the battle's rng behind a closure, so nothing
+       is drawn until a body asks, and two bodies asking get two rolls. *)
+    let give_ctx = damage_context b ~self:attacker ~attacker ~defender in
+    (* Items first, then status effects, each as its own chain.
+
+       The {e relative} order of an item hook against a status-effect hook is not
+       recovered: the original dispatches both through the same name-based
+       callback table, and nothing in the binary or the scripts fixes whether a
+       character's worn item runs before or after the status effects on it. Items
+       are placed first here on the assumption that equipment is the more
+       persistent modifier, and this comment is the record of that being a choice
+       rather than a recovery.
+
+       What {e is} recovered is the order across the two combatants: the
+       attacker's chain runs before the defender's, so a defender's reduction
+       sees the already-amplified number. *)
+    let grid_before = b.board in
+    let outgoing =
+      give_damage ~attacker ~defender b.effects ~enemies:[ defender ] ~roll:b.rng
+        ~battle:b.effect_state
+        (Item.fold_give_damage (loadout_of b attacker) give_ctx ~damage:dealt
+           ~source:attacker.id ~target:defender.id
+           ~f:(fun (i : Item.item) n ->
+             Item.give_damage i give_ctx ~damage:n ~source:attacker.id
+               ~target:defender.id))
+    in
+    (* Built here rather than beside [give_ctx] so the defender's chain reads the
+       grid the attacker's hooks left behind - IADO's sweep is on one side and
+       ICAR's cell pick is on the other, and the Lua's live grid would show the
+       sweep to the second body. The contexts draw no rng either way. *)
+    let take_ctx = damage_context b ~self:defender ~attacker ~defender in
+    let taken =
+      receive_damage ~defender ~attacker b.effects ~enemies:[ attacker ] ~roll:b.rng
+        ~battle:b.effect_state
+        (Item.fold_receive_damage (loadout_of b defender) take_ctx ~damage:outgoing
+           ~source:attacker.id ~target:defender.id
+           ~f:(fun (i : Item.item) n ->
+             Item.receive_damage_hook i take_ctx ~damage:n ~source:attacker.id
+               ~target:defender.id))
+    in
+    defender.life <- max 0 (defender.life - taken);
+    (* The defeat sweep keys off the flag, not the life total, so it has to be
+       raised here or nobody is ever reported dead. *)
+    if defender.life < 1 then defender.is_dead <- true;
+    emit b (Damage (defender.name, taken));
+    (* A hook that destroyed a cell - IADO's red-skull sweep is the only one -
+       leaves the grid short, and the next swap would resolve the holes. Gravity
+       and refill run here for the reason they run after a spell body; on an
+       intact board both are the identity and refill draws nothing, so a fight
+       whose items only change numbers pays no rng for this. *)
+    b.board <- Board.refill_board ~rng:b.rng (Board.apply_gravity b.board);
+    if b.board <> grid_before then emit b Refilled
+  end
+
 (** Plays a swap for whichever side is acting, then resolves the cascade.
 
     [defender] is the combatant whose turn it is - the naming is the engine's,
@@ -704,70 +779,7 @@ let rec play_move (b : battle) (defender : combatant) : unit =
     chosen; everything from here on is the recovered code path. *)
 and play_swap_result (b : battle) (defender : combatant) : unit =
   let dealt = resolve_cascades b defender in
-  if dealt > 0 then begin
-    (* Two chains run, and within each the attacker's side is the inner one.
-
-       The order matters and is not arbitrary. For a given combatant the original
-       runs GIVE_DAMAGE before RECEIVE_DAMAGE, so an item that amplifies what it
-       deals and an item that reduces what it takes compose as amplify-then-reduce
-       rather than the other way round. Across the two combatants it runs the
-       attacker's chain first, so the defender's receive hooks see the
-       already-amplified number. *)
-    let attacker = attacker_of b defender in
-    (* One percentile per [PERCENTILE_CHANCE_SYNC] call rather than one per
-       event: the contexts carry the battle's rng behind a closure, so nothing
-       is drawn until a body asks, and two bodies asking get two rolls. *)
-    let give_ctx = damage_context b ~self:attacker ~attacker ~defender in
-    (* Items first, then status effects, each as its own chain.
-
-       The {e relative} order of an item hook against a status-effect hook is not
-       recovered: the original dispatches both through the same name-based
-       callback table, and nothing in the binary or the scripts fixes whether a
-       character's worn item runs before or after the status effects on it. Items
-       are placed first here on the assumption that equipment is the more
-       persistent modifier, and this comment is the record of that being a choice
-       rather than a recovery.
-
-       What {e is} recovered is the order across the two combatants: the
-       attacker's chain runs before the defender's, so a defender's reduction
-       sees the already-amplified number. *)
-    let grid_before = b.board in
-    let outgoing =
-      give_damage ~attacker ~defender b.effects ~enemies:[ defender ] ~roll:b.rng
-        ~battle:b.effect_state
-        (Item.fold_give_damage (loadout_of b attacker) give_ctx ~damage:dealt
-           ~source:attacker.id ~target:defender.id
-           ~f:(fun (i : Item.item) n ->
-             Item.give_damage i give_ctx ~damage:n ~source:attacker.id
-               ~target:defender.id))
-    in
-    (* Built here rather than beside [give_ctx] so the defender's chain reads the
-       grid the attacker's hooks left behind - IADO's sweep is on one side and
-       ICAR's cell pick is on the other, and the Lua's live grid would show the
-       sweep to the second body. The contexts draw no rng either way. *)
-    let take_ctx = damage_context b ~self:defender ~attacker ~defender in
-    let taken =
-      receive_damage ~defender ~attacker b.effects ~enemies:[ attacker ] ~roll:b.rng
-        ~battle:b.effect_state
-        (Item.fold_receive_damage (loadout_of b defender) take_ctx ~damage:outgoing
-           ~source:attacker.id ~target:defender.id
-           ~f:(fun (i : Item.item) n ->
-             Item.receive_damage_hook i take_ctx ~damage:n ~source:attacker.id
-               ~target:defender.id))
-    in
-    defender.life <- max 0 (defender.life - taken);
-    (* The defeat sweep keys off the flag, not the life total, so it has to be
-       raised here or nobody is ever reported dead. *)
-    if defender.life < 1 then defender.is_dead <- true;
-    emit b (Damage (defender.name, taken));
-    (* A hook that destroyed a cell - IADO's red-skull sweep is the only one -
-       leaves the grid short, and the next swap would resolve the holes. Gravity
-       and refill run here for the reason they run after a spell body; on an
-       intact board both are the identity and refill draws nothing, so a fight
-       whose items only change numbers pays no rng for this. *)
-    b.board <- Board.refill_board ~rng:b.rng (Board.apply_gravity b.board);
-    if b.board <> grid_before then emit b Refilled
-  end
+  apply_cascade_damage b ~defender dealt
 
 (** Builds the context the AI spell hooks are evaluated against.
 
@@ -952,9 +964,9 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
                 their own - which is precisely why this stayed hidden: the visible
                 half of every cast worked.
 
-                Read back *before* the sweep below, or the gravity and refill run on
-                the board as it was before the spell and every cell the spell edited
-                is thrown away. *)
+                Read back *before* the cascade below, or it runs on the board as it
+                was before the spell and every cell the spell edited is thrown
+                away. *)
              b.board <- !(fx.Spell.fx_board);
              (* What the body added to the boxed gold and xp is what its
                 ADD_GOLD / ADD_XP calls banked, so that delta - not the whole
@@ -967,10 +979,18 @@ let take_action (b : battle) (actor : combatant) (defender : combatant)
              let gained_xp = !(fx.Spell.fx_xp) - b.xp in
              if gained_xp > 0 then ignore (receive_xp b actor gained_xp)
              else b.xp <- !(fx.Spell.fx_xp);
-             (* A board sweep empties cells; the board has to resolve them before
-                the next move or the grid is left short of gems. *)
-             b.board <- Board.apply_gravity b.board;
-             b.board <- Board.refill_board ~rng:b.rng b.board;
+             (* After a cast the engine runs the cascade driver (state 1 ->
+                FUN_0047E500): a spell-completed line resolves immediately, with
+                the same mana, gold, XP, extra-turn and damage hooks a swap's
+                cascade gets. [PickSpell] (0x440FB0) clears the best-move flag
+                when a cast is chosen (0x441172), so [CommitBestMove] (0x43FAF0)
+                returns 0 and the turn's state machine goes straight to state 1
+                rather than through the swap's state 2 gravity step - but the
+                driver itself is the same code either way. Before this was
+                recovered only gravity and refill ran here, so a line a spell
+                completed sat on the board until the next swap scored it. *)
+             let dealt = resolve_cascades b defender in
+             apply_cascade_damage b ~defender dealt;
              if actor.is_dead then emit b (Death actor.name)
          | None -> ());
         (* Charged last, and only if the body did not charge itself. See
