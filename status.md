@@ -1,6 +1,6 @@
 # Puzzle Quest Clean-Room Reimplementation — Status
 
-**Date:** 2026-10-13  
+**Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
 **Sync:** clean tree (the gem-id round, the third of this date's). `board.gem_id_air_water_order` asked for a second source for which of ids 3 and 4 is Air; the second source was one function downstream of the first: the harvest at `0x47D091` consumes the exact buckets `CBoard_AccumulateGem` writes (the 0x1C-stride counter array anchored at `+0x14`) and, for the four mana rows, credits a pool index beside a pushed sound - pool 0 with `snd_earth`, 1 with `snd_fire`, 2 with `snd_air` (0x523510), 3 with `snd_water` (0x5234FC). Case 3 writes `+0x4C` = row 2 and case 4 `+0x68` = row 3, so **3 is Air and 4 is Water**: `StandardConstants.lua` was right and `docs/BATTLE_AI.md` §5 (plus `lib/ai.ml`) were wrong. The row alignment is pinned by rows the question never looked at - gem 5 (skull) writes `+0x84` = row 4 and row 4 pushes `snd_damage`; gem 6 writes `+0xBC` = row 6 → `snd_xp`; gem 7 writes `+0xA0` = row 5 → `snd_gold` - which means **6 is the star and 7 the coin**, two more transpositions than suspected, and `GEM_STAR=6`/`GEM_GOLD=7` in the constants file agree. So the ids are the character order with no transposition at all (`ai.anchor_term_is_the_row`'s sibling myth, `board.gem_ids` rewritten). The corrections landed in `lib/ai.ml` (gem_id, gem_of_id, the bucket fold, the weight and bucket labels), `docs/BATTLE_AI.md` §4/§5, `combat.ml`/`spell_effects.ml` comments that asserted the old swap - and one **live** bug the audit flushed out: `Sound_map.element_sound` was keyed on the board's 1-based gem ids while `ManaGained` carries the 0-based pool index `Battle.element_index` produces, so an Earth gain was silent, Fire played earth and Air played fire; it now maps 0→earth, 1→fire, 2→air, 3→water with a pipeline test through `element_index`. (The AI itself scored identically either way - the affected weights are equal - which is why the question could sit open.) `mana.pool_and_ceiling_offsets`' parenthetical, which had the same wrong order, is corrected too. Evidence 103 claims, 12 questions (3 open), 48 decisions; 35 suites, 2690→2699 checks.
 
@@ -89,7 +89,7 @@ The battle front now renders a real fight, but the campaign's quest and callback
 
 ### Campaign Layer (Data + engine complete; UI started)
 - **Map data:** 20 cities, 40 waypoints, 28 ruins, 93 roads (typed graph)
-- **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua); road fights load the monster's spell roster and compute their difficulty band from `my_level`
+- **Encounters:** 57 road encounters with appearance logic (`my_level`, `chance` extracted from Lua); road fights load the monster's spell roster, and `my_level` still gates the spawn test (it no longer feeds difficulty - that is the player's option, `port.difficulty_source`)
 - **Quests:** 142 quests with state machines, prerequisites, per-quest text, battle rewards
 - **Items/Professions/Monsters:** 160 items, 4 classes (Warrior/Druid/Knight/Wizard), 60 monsters with capture grids
 - **Conversations:** 273 dialogue trees (233 `scriptcall` actions; no choice nodes in the data)
@@ -300,8 +300,8 @@ The battle front now renders a real fight, but the campaign's quest and callback
 - **Tests:** `test/test_campaign.ml` (223), `test/test_capture.ml` (84),
   `test/test_companion.ml` (77), `test/test_quest_battle.ml` (101),
   `test/test_callback_effects.ml` (24), `test/test_location_actions.ml` (30)
-  and `test/test_runes.ml` (62) - 601
-  assertions over prerequisites (every
+graphics) - 601
+   assertions over prerequisites (every
   extracted condition), the accept -> battle -> turn-in lifecycle with real
   rewards, the both-endpoints road rule, the ruin registry (refcounts, shared
   ruins, the three release paths, the abandonable gate), capture grid parsing
@@ -318,7 +318,8 @@ The battle front now renders a real fight, but the campaign's quest and callback
   chains, arrivals, travel arrival through advance_travel_with_events, the
   message queue and the OnEnd box), and companion equip (roster vs party,
   the four refusals, the home gate, the hook following the party, the save
-  keeping the roster separate).
+   keeping the roster separate). (These seven are a subset of the 35 suites'
+   ~2699 checks - the whole campaign-side surface, not the full run.)
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → a real quest battle through `run_quest_battle`
   (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
@@ -331,6 +332,39 @@ The battle front now renders a real fight, but the campaign's quest and callback
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
 | `docs/reverse/evidence.yml` | 103 | 12 (3 open) | 48 |
+
+The three open questions and what each is waiting on:
+
+- `font.advance_field_mapping` — the glyph field at +0x1c, and how it relates to
+  the table's leading/trailing. `FUN_004c7650` sums +0x18 per character but adds
+  +0x1c for the first and subtracts it for the last, and for a single 'A' those
+  two branches disagree (25 vs 10); one must be wrong. Waited on by every
+  measured string, so anything that has to line up with the original's screen is
+  affected. Settled by the asset-build tool (not in this repo) or by measuring a
+  known string in the original. Related: `font.glyph_advance_is_stored`,
+  `font.glyph_tables_not_parsed_at_runtime`.
+- `spell.match_resolution_after_a_spell` — does the engine resolve matches a
+  spell's own board edits create (SBAC drops a red skull, SWTD rewrites a kind)?
+  The port applies gravity and a refill after a cast but does not resolve, so a
+  line a spell completes sits until the next swap. Waited on by
+  `port.effect_context_is_written_back`. Settled by reading the engine's
+  post-CastSpell board handling (whether the swap path's resolve-and-cascade
+  runs after a script's CastSpell returns) or a save where a spell completes a
+  line.
+- `xp.difficulty_scaling` — where the -/+25 % XP the Difficulty rows advertise
+  is applied. Ruled out: `Engine_ADD_XP`'s kind-15 query falls through to the
+  default, so no difficulty term sits in the write. The one place difficulty
+  multiplies XP is `FUN_0043E400` (`Score.compute_co_op_payout`, ×3/4 at 0 and
+  ×5/4 at 2 - exactly the advertised amounts), called by the results screen at
+  `0x43E5F0` with (gold, xp) out-params feeding ADD_GOLD/ADD_XP, on the branch
+  gated by `turn_manager+0x30`. Waited on by what `turn_manager+0x30` means -
+  docs/BATTLE_SCORE.md labels that branch co-op at medium confidence, so either
+  the label is wrong (single-player reward path) or Easy/Hard pays its XP only in
+  a party. Settled by the flag's meaning or a difficulty read inside an XP path.
+
+The questions carry `related`, `would_be_settled_by` and (where closed)
+`resolution` in `docs/reverse/evidence.yml` — read the entry, not just this
+summary.
 
 Key decisions recorded:
 - `port.item_event_context` — every item hook takes an item_context with `ic_self`, `ic_level`, the native callbacks and the three board writers where the Lua passed `characterIdx`; `ic_percentile` is a draw-per-call closure, so a body that never asks costs no roll
@@ -386,7 +420,7 @@ not re-derived.
 # Build everything
 opam exec -- dune build
 
-# Run all tests (34 suites: engine + graphics)
+# Run all tests (35 suites: engine + graphics)
 opam exec -- dune runtest --force
 
 # Campaign demo
@@ -404,8 +438,10 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 35 suites pass (exit 0, 2699 checks, 2026-10-13). Extractor `--check` modes validate against
-source assets.
+All 35 suites pass (exit 0, ~2699 checks, 2026-10-14). The check count is
+~2699 and moves by one between runs when a suite prints a variable count, so
+read `dune runtest`'s exit code (0 = green), not the number. Extractor
+`--check` modes validate against source assets.
 
 ---
 
