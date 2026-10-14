@@ -87,6 +87,29 @@ let warrior lvl =
 
 let fresh () = warrior 1
 
+(* The spoils formula, driven directly (FUN_0043E400). A max-roll rng picks
+   the top of each Reward range, so the roll is predictable and only the gap
+   and difficulty scales vary. MRAT sits at level_base 1 with xp 12-25 and
+   gold 25-60. *)
+let () =
+  let max_rng n = if n <= 0 then 0 else n - 1 in
+  let mrat = Campaign_monsters.monster_by_id "MRAT" in
+  let gs, xs = Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:1 in
+  check_int "spoils: max roll at level parity is the range top" gs 60;
+  check_int "spoils: xp max roll is the range top" xs 25;
+  let g0, x0 = Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:0 in
+  check_int "spoils: easy scales gold by 3/4" g0 45;
+  check_int "spoils: easy scales xp by 3/4" x0 18;
+  let g2, x2 = Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:2 in
+  check_int "spoils: hard scales gold by 5/4" g2 75;
+  check_int "spoils: hard scales xp by 5/4" x2 31;
+  (* A hero 15 levels over a base-1 enemy is excess 12, which floors the
+     gap at 1/10. *)
+  let gg, gx = Campaign.spoils_of_victory max_rng ~hero_level:15 mrat ~difficulty:1 in
+  check_int "spoils: a far-overlevel hero floors gold at 1/10" gg 6;
+  check_int "spoils: a far-overlevel hero floors xp at 1/10" gx 2;
+  ()
+
 let state_of (p : Campaign.player) qid = List.assoc_opt qid p.Campaign.active_quests
 
 let quest id : Campaign_quests.quest = Campaign_quests.quest_by_id id
@@ -282,9 +305,9 @@ check "a quest with no active entry has no battle"
      (Campaign.monster_defeats pw "MTRO" = 1);
    check "the ruin released OnCompleteAction"
      (Campaign.ruin_count "REGB" = 0 && Campaign.ruin_is_done "REGB");
-   check "spoils went to the player"
-     (pw.Campaign.gold = p1.Campaign.gold + b.Battle.gold
-      && pw.Campaign.xp = p1.Campaign.xp + b.Battle.xp);
+    check "spoils went to the player (match harvest plus the carried spoils)"
+      (pw.Campaign.gold >= p1.Campaign.gold + b.Battle.gold
+       && pw.Campaign.xp >= p1.Campaign.xp + b.Battle.xp);
    let p3 = Campaign.quest_turn_in pw "Q0I0" in
    check "turn-in completes the quest"
      (state_of p3 "Q0I0" = None
@@ -527,8 +550,13 @@ let guardian = active "Q0I2" 1 in
         (p.Campaign.life = b.Battle.hero.life);
       let won = Battle.hero_won b in
       check "spoils follow the outcome"
-        (p.Campaign.gold = guardian.Campaign.gold + (if won then b.Battle.gold else 0)
-         && p.Campaign.xp = guardian.Campaign.xp + (if won then b.Battle.xp else 0));
+        (if won then
+           (* a win takes the match harvest plus the carried spoils *)
+           p.Campaign.gold >= guardian.Campaign.gold + b.Battle.gold
+           && p.Campaign.xp >= guardian.Campaign.xp + b.Battle.xp
+         else
+           p.Campaign.gold = guardian.Campaign.gold
+           && p.Campaign.xp = guardian.Campaign.xp);
       check "a capturing win records the rat"
         (Campaign.monster_defeats p "MRAT" = (if won then 1 else 0))));
 

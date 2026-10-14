@@ -1768,8 +1768,10 @@ claims:
       machine that never saved the settings runs at 0 (Easy) until the option
       is written back; the port models the settings object's default of 1
       instead, because a fresh install's registry state cannot be recovered
-      from the image. The three rows also advertise the -/+25% XP, whose code
-      path is xp.difficulty_scaling. "Difficulty" sits next to "Time Limit" in
+      from the image. The three rows also advertise the -/+25% XP, which lands
+      on the victory spoils of every decisive win - see the retired question
+      xp.difficulty_scaling (Score.compute_victory_spoils). "Difficulty" sits
+      next to "Time Limit" in
       the same settings object, which is the other dropdown the hero view
       offers - the two facts corroborate each other.
 
@@ -4017,21 +4019,36 @@ open_questions:
         The meaning of turn_manager+0x30, which gates the only
         difficulty-scaled XP writer found so far.
     related: [ai.difficulty_is_the_player_option]
+    status: recovered
+    resolution: >
+      The -/+25% multiplies the victory spoils of every decisive win, solo
+      included - the co-op label was wrong. The one difficulty-scaled XP (and
+      gold) writer is FUN_0043E400, the port's spoils function: it reads
+      CBattleManager+0x48 (the registry Difficulty, copied at battle start at
+      0x44bb39) and multiplies both out-params by x3/4 at 0 and x5/4 at 2,
+      skipped entirely in game mode 4. The results screen FUN_0043E5F0 calls it
+      with (gold, xp) out-params feeding ADD_GOLD/ADD_XP only when the flag at
+      turn_manager+0x30 is set, and feeds zeros when it is clear. That flag is
+      not a co-op marker: it is cleared at battle start (FUN_00464730) and set
+      at battle end by FUN_004648f0 to (the first standing character == the
+      primary hero), where standing is the per-character +0x12 the death sweep
+      FUN_00464870 clears when life (+0x70) drops below 1 - i.e. a decisive
+      victory with the human leader alive and leading the roster, on any team
+      size. The same function's spoils also carry an anti-farm level gap
+      (FUN_0043d4c0: a graduated reduction when the hero is 3+ levels above the
+      enemy, flooring at 1/10) and a Time Limit bonus ((turn_manager+0x34 * 5)
+      percent, where +0x34 is the Time Limit setting written once at battle
+      start - the same field the turn-clock delay table indexes). The port
+      wires the difficulty scale and the level gap; the Time Limit bonus stays
+      unported because the port has no Time Limit model.
     notes: >
       Ruled out this round: Engine_ADD_XP routes its amount through the
       character's value query with kind 0xf, and that query's switch
       (0x46672A, cases for kinds 1..10) falls through to the default for 15,
       so no difficulty term sits in the XP write itself. The one place
       difficulty multiplies XP is FUN_0043E400 - the port's
-      Score.compute_co_op_payout, (raw*3)/4 at 0 and (raw*5)/4 at 2, which is
-      exactly the advertised -/+25% - called by the results screen at
-      0x43E5F0 with (gold, xp) out-params that feed ADD_GOLD/ADD_XP. That call
-      sits on the branch gated by turn_manager+0x30, which docs/BATTLE_SCORE.md
-      labels co-op at medium confidence; the other branch feeds the same
-      out-params zeros. So either the label is wrong and this is the
-      single-player reward path, or Easy/Hard pays its XP only in a party -
-      and the branch flag is what would tell them apart.
-    status: open
+      Score.compute_victory_spoils (renamed from compute_co_op_payout), (raw*3)/4
+      at 0 and (raw*5)/4 at 2, which is exactly the advertised -/+25%.
 
   - id: quest.grid_patterns_unread
     question: What are the 4/5-of-a-kind pattern rules in GridPatterns.lua?
@@ -4620,6 +4637,29 @@ port_decisions:
       gravity+refill is gone: the engine does not gravity a board that failed the
       cascade check, so a spell that leaves holes without matching leaves them until
       the next match, exactly as the original does.
+    supersedes: null
+    date: 2026-10-14
+
+  - id: port.victory_spoils_pay_the_difficulty_scale
+    decision: A decisive win pays the monster's carried spoils, scaled by the level gap and the Difficulty option
+    rationale: >
+      `xp.difficulty_scaling` recovered the spoils path: the results screen pays
+      FUN_0043E400's (gold, xp) only when turn_manager+0x30 - the decisive-victory
+      flag, set when the primary hero is standing at battle end - and FUN_0043E400
+      multiplies both by x3/4 at Difficulty 0 and x5/4 at 2 (skipped in game mode
+      4), after an anti-farm level gap (FUN_0043d4c0) and a Time Limit bonus. The
+      port paid only the match harvest (b.gold/b.xp, the in-battle gold/xp gem
+      haul), so the -/+25% the menu advertises was unwired and the monster's
+      Reward range (mingold/maxgold/minxp/maxxp, extracted but unused) went unpaid.
+
+      `Campaign.spoils_of_victory` rolls the carried gold and xp from the monster
+      record's Reward range, applies `Score.level_gap_scale` (the graduated
+      reduction, flooring at 1/10 when the hero is 12+ levels above) and
+      `Score.compute_victory_spoils` (the difficulty scale, renamed from
+      compute_co_op_payout). Both the road settle (`process_battle_result`) and
+      the quest settle (`quest_battle_settle`) add it to the match harvest on a
+      win. The Time Limit bonus is left out - the port has no Time Limit model -
+      so the term is 0, which matches the untimed default.
     supersedes: null
     date: 2026-10-14
 

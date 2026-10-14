@@ -207,30 +207,46 @@ let () =
   ()
 
 (* ------------------------------------------------------------------ *)
-(* The co-op payout helper, whose difficulty sense is inverted         *)
+(* The victory-spoils difficulty scale and the anti-farm level gap     *)
 (* ------------------------------------------------------------------ *)
 
 let () =
-  check_eq "payout: easy multiplies by 3/4" (compute_co_op_payout ~game_mode:0 ~difficulty:0 1000) 750;
-  check_eq "payout: normal is unscaled" (compute_co_op_payout ~game_mode:0 ~difficulty:1 1000) 1000;
-  check_eq "payout: hard multiplicates by 5/4" (compute_co_op_payout ~game_mode:0 ~difficulty:2 1000) 1250;
-  check_eq "payout: game mode 4 is unscaled" (compute_co_op_payout ~game_mode:4 ~difficulty:0 1000) 1000;
+  check_eq "spoils: easy multiplies by 3/4" (compute_victory_spoils ~game_mode:0 ~difficulty:0 1000) 750;
+  check_eq "spoils: normal is unscaled" (compute_victory_spoils ~game_mode:0 ~difficulty:1 1000) 1000;
+  check_eq "spoils: hard multiplies by 5/4" (compute_victory_spoils ~game_mode:0 ~difficulty:2 1000) 1250;
+  check_eq "spoils: game mode 4 is unscaled" (compute_victory_spoils ~game_mode:4 ~difficulty:0 1000) 1000;
   (* Both functions rise with difficulty; neither is inverted. The discrepancy
      is the baseline: this one leaves difficulty 1 alone while the score
      function discounts it. Pinned so a future reader does not "fix" one to
      match the other without noticing. *)
-  check "the payout is monotonic in difficulty"
-    (compute_co_op_payout ~game_mode:0 ~difficulty:0 1000
-    < compute_co_op_payout ~game_mode:0 ~difficulty:1 1000
-    && compute_co_op_payout ~game_mode:0 ~difficulty:1 1000
-       < compute_co_op_payout ~game_mode:0 ~difficulty:2 1000);
+  check "the spoils scale is monotonic in difficulty"
+    (compute_victory_spoils ~game_mode:0 ~difficulty:0 1000
+    < compute_victory_spoils ~game_mode:0 ~difficulty:1 1000
+    && compute_victory_spoils ~game_mode:0 ~difficulty:1 1000
+       < compute_victory_spoils ~game_mode:0 ~difficulty:2 1000);
   let score_at d =
     compute_score ~inputs:{ (coop ~turns:0 ()) with difficulty = d } ~hero_index:0 [ hero () ]
   in
   check "difficulty 1 is discounted for the score"
     (score_at 1 < score_at 2);
-  check "difficulty 1 is untouched for the payout"
-    (compute_co_op_payout ~game_mode:0 ~difficulty:1 1000 = 1000);
+  check "difficulty 1 is untouched for the spoils"
+    (compute_victory_spoils ~game_mode:0 ~difficulty:1 1000 = 1000);
+  (* FUN_0043d4c0: excess = hero - enemy - 2; <=0 untouched, 1..9 scales by
+     (10-excess)/10, 10+ floors at 1/10. *)
+  check_eq "gap: hero at or below enemy is untouched"
+    (level_gap_scale ~hero_level:5 ~enemy_level:5 1000) 1000;
+  check_eq "gap: one hero level above is untouched (excess -1)"
+    (level_gap_scale ~hero_level:6 ~enemy_level:5 1000) 1000;
+  check_eq "gap: three above scales by 9/10 (excess 1)"
+    (level_gap_scale ~hero_level:8 ~enemy_level:5 1000) 900;
+  check_eq "gap: five above scales by 7/10 (excess 3)"
+    (level_gap_scale ~hero_level:10 ~enemy_level:5 1000) 700;
+  check_eq "gap: eleven above scales by 1/10 (excess 9)"
+    (level_gap_scale ~hero_level:16 ~enemy_level:5 1000) 100;
+  check_eq "gap: twelve above floors at 1/10 (excess 10)"
+    (level_gap_scale ~hero_level:17 ~enemy_level:5 1000) 100;
+  check_eq "gap: far above floors at 1/10 (excess 40)"
+    (level_gap_scale ~hero_level:46 ~enemy_level:5 1000) 100;
   ()
 
 let () =

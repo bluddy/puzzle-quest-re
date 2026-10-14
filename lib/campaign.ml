@@ -1327,6 +1327,26 @@ let train_mount ?(rng = Random.int) (player: player) (mid: string)
       in
       Some (player, b, trained))
 
+(* The victory spoils from FUN_0043E400: the defeated monster's carried gold
+   and xp, rolled from its Reward range (mingold..maxgold, minxp..maxxp as the
+   XML loader stores them), reduced by the anti-farm level gap and scaled by
+   the Difficulty option. The engine also folds in a Time Limit bonus -
+   (turn_manager+0x34 * 5) percent, where +0x34 is the Time Limit setting
+   written once at battle start - but the port has no Time Limit model (it
+   sits beside Difficulty in the registry and is unported), so that term is 0
+   here. Paid only on a decisive victory; see the retired question
+   xp.difficulty_scaling in docs/reverse/evidence.yml. *)
+let spoils_of_victory (rng: int -> int) ~(hero_level: int)
+    (m: Campaign_monsters.monster) ~(difficulty: int) : int * int =
+  let roll lo hi = if hi <= lo then lo else rng (hi - lo + 1) + lo in
+  let gold = roll m.Campaign_monsters.mingold m.Campaign_monsters.maxgold in
+  let xp = roll m.Campaign_monsters.minxp m.Campaign_monsters.maxxp in
+  let enemy_level = m.Campaign_monsters.level_base in
+  let gold = Score.level_gap_scale ~hero_level ~enemy_level gold in
+  let xp = Score.level_gap_scale ~hero_level ~enemy_level xp in
+  (Score.compute_victory_spoils ~game_mode:0 ~difficulty gold,
+   Score.compute_victory_spoils ~game_mode:0 ~difficulty xp)
+
 (* Process battle result and update player/quest state *)
 type battle_result = {
   player_won: bool;
@@ -1338,8 +1358,21 @@ type battle_result = {
 let process_battle_result (player: player) (enc: encounter) (battle: battle) : player * battle_result =
   let hero = battle.hero in
   let player_won = Battle.hero_won battle in
-  let gold_gained = battle.gold in
-  let xp_gained = battle.xp in
+  let monster =
+    if enc.sprite <> "" then
+      (try Some (Campaign_monsters.monster_by_sprite enc.sprite) with Not_found -> None)
+    else None
+  in
+  (* a decisive win also pays the spoils of the defeated monster *)
+  let spoils =
+    if player_won then
+      match monster with
+      | Some m -> spoils_of_victory battle.rng ~hero_level:player.level m ~difficulty:!difficulty
+      | None -> (0, 0)
+    else (0, 0)
+  in
+  let gold_gained = battle.gold + fst spoils in
+  let xp_gained = battle.xp + snd spoils in
   let new_player = {
     player with
       gold = player.gold + gold_gained;
@@ -1348,12 +1381,10 @@ let process_battle_result (player: player) (enc: encounter) (battle: battle) : p
     } in
   (* a road win counts toward capture eligibility *)
   let new_player =
-    if player_won && enc.sprite <> "" then begin
-      try
-        let m = Campaign_monsters.monster_by_sprite enc.sprite in
-        record_defeat new_player m.id
-      with Not_found -> new_player
-    end
+    if player_won then
+      match monster with
+      | Some m -> record_defeat new_player m.id
+      | None -> new_player
     else new_player
   in
   let result = {
@@ -1665,10 +1696,37 @@ let quest_battle_complete ?capture ?monster (player: player) (qid: string)
             player.active_quests }
       | None -> player
 
+(* The monster a quest battle fights, resolved the way quest_battle_complete
+   resolves it: the current stage's battle action when one matches, else the
+   quest's default battle_monster. None when the quest is inactive or the id is
+   empty. Separated so the spoils settle and the completion bookkeeping agree
+   on which monster was defeated. *)
+let quest_battle_monster (player: player) (qid: string) : string option =
+  match List.assoc_opt qid player.active_quests with
+  | None -> None
+  | Some stage ->
+    let q = quest_by_id qid in
+    let mid =
+      match List.find_opt
+              (fun (st, _, _, cnd, vnd, ind, ncl) ->
+                 st = stage
+                 && cond_ok player player qid ~st:stage ~loc:""
+                      ~suc:(Some true)
+                      (cnd, vnd, ind, ncl))
+              q.battle_actions with
+      | Some (_, idx, _, _, _, _, _) ->
+        (match List.nth_opt q.battles idx with
+         | Some (mid, _) -> mid
+         | None -> q.battle_monster)
+      | None -> q.battle_monster
+    in
+    if mid = "" then None else Some mid
+
 (* Settle a finished quest battle against the player: life follows the fight
-   either way, a win also takes the battle spoils (gold and xp, as a road win
-   does), then quest_battle_complete runs the stage, capture and ruin
-   bookkeeping ([?capture]/[?monster] pass through for callback battles).
+   either way, a win also takes the battle spoils - the match harvest (gold
+   and xp, as a road win does) plus the defeated monster's carried spoils - then
+   quest_battle_complete runs the stage, capture and ruin bookkeeping
+   ([?capture]/[?monster] pass through for callback battles).
    Split from run_quest_battle so both outcomes can be driven
    directly - the auto-AI loses most fights at the heroes the data hands it,
    and the win bookkeeping has to be testable regardless. *)
@@ -1676,7 +1734,21 @@ let quest_battle_settle ?capture ?monster (player: player) (qid: string)
     (success: bool) (b: battle) : player =
   let p = { player with life = b.hero.life } in
   let p =
-    if success then { p with gold = p.gold + b.gold; xp = p.xp + b.xp }
+    if success then
+      let mid = match monster with
+        | Some m when m <> "" -> Some m
+        | _ -> quest_battle_monster player qid
+      in
+      let spoils =
+        match mid with
+        | Some mid ->
+          (try
+             let m = Campaign_monsters.monster_by_id mid in
+             spoils_of_victory b.rng ~hero_level:player.level m ~difficulty:!difficulty
+           with Not_found -> (0, 0))
+        | None -> (0, 0)
+      in
+      { p with gold = p.gold + b.gold + fst spoils; xp = p.xp + b.xp + snd spoils }
     else p
   in
   quest_battle_complete ?capture ?monster p qid success

@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree (the spell-cascade round of the open-question audit, on top of the committed font round `3ad2033`). `spell.match_resolution_after_a_spell` asked whether the engine resolves matches that a spell's own board edits create - the port only gravity-refilled after a cast, so a line a spell completed sat until the next swap scored it. The settle is the turn's state machine: `Engine_CAST_SPELL` (FUN_0043FE30, only call site 0x47C467) runs the effect (FUN_00475120) and returns, and the action handler's sub-state 3 (0x47C557) then calls `CommitBestMove` (FUN_0043FAF0) and sets the battle manager's state (+0x34c) to 1 or 2; `PickSpell` (FUN_00440FB0) clears the best-move flag (+0x2c) at 0x441172 when a cast is chosen, so CommitBestMove returns 0 and the state goes straight to **1 - the cascade-check state**, whose driver (FUN_0047E500) scans the whole board, pops every match (FUN_0047E470) and loops through state 2 (gravity/refill, FUN_0047C590) until none remain - the same code the swap path uses. The port follows: the damage chain is extracted to `apply_cascade_damage` (shared with `play_swap_result`), and the cast path runs `resolve_cascades` + it, replacing the unconditional gravity+refill (which the engine does not do on a failed cascade check). `test_battle.ml` pins it with a spell that completes a 3-skull line. Evidence 103 claims, 12 questions (1 open), 50 decisions; 35 suites, 2715->2718 checks, all green; `xp.difficulty_scaling` is the last open question.
+**Sync:** working tree (the difficulty-spoils round - `xp.difficulty_scaling`, the last open question, retired; on top of the committed cascade round `327034a`). `xp.difficulty_scaling` asked where the -/+25 % XP the Difficulty rows advertise is applied. The settle: the one difficulty-scaled XP (and gold) writer is FUN_0043E400 - the port's spoils function - which multiplies both out-params by x3/4 at 0 and x5/4 at 2 from CBattleManager+0x48 (the registry Difficulty, copied at battle start at 0x44bb39), skipped entirely in game mode 4; the results screen FUN_0043E5F0 feeds those (gold, xp) out-params to ADD_GOLD/ADD_XP only when turn_manager+0x30 is set, and that flag is NOT a co-op marker - it is the decisive-victory flag, cleared at battle start (FUN_00464730) and set at battle end by FUN_004648f0 to (the first standing character == the primary hero), standing being the per-character +0x12 the death sweep FUN_00464870 clears on life < 1, so a solo decisive win pays it and the co-op label is refuted. The same function's spoils carry a graduated anti-farm level gap (FUN_0043d4c0: excess = hero - enemy - 2; <= 0 untouched, 1..9 x (10-excess)/10, > 9 /10 - continuous at 9, floored at 1/10) and a Time Limit bonus ((turn_manager+0x34 * 5) percent, where +0x34 is the Time Limit setting written once at battle start, not a turn counter - the turn loop increments +0x28/+0x2c only, and the {0,16000,12000,8000,4000} delay table indexes the same field). The port wires both scales: Score.compute_co_op_payout is renamed compute_victory_spoils, new Score.level_gap_scale holds the gap, and Campaign.spoils_of_victory rolls the monster record's Reward range (minxp/maxxp/mingold/maxgold, extracted at def+0xe4..0xf0 but unused until now) and feeds the road settle (process_battle_result) and the quest settle (quest_battle_settle, resolved through the new quest_battle_monster helper) additively on top of the match harvest; the TimeLimit term is 0 because the port has no Time Limit model. The enemy char vtable behind the carried gold/xp virtuals (+0x38/+0x34) stayed unidentified - the ctor FUN_0047E980 sets a one-slot table at 0x52360c and the roster is a raw 0xa8 array - so the flat roll from the extracted min..max is the only data-supported reading. Evidence 103 claims, 12 questions (0 open), 51 decisions; 35 suites, 2718->2733 checks, all green; the open-question audit is closed.
 
 ---
 
@@ -10,15 +10,13 @@
 
 The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. What is left is one UI chunk and a few sharpening threads. Ranked by leverage:
 
-### 1. Finish the open-question audit's leftovers - cheap RE round
-
-Only one of the four open questions from the audit remains: `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the -/+25 %, i.e. what `turn_manager+0x30` means). The others are retired: `quest.difficulty_consumers` on 2026-10-13, then `font.advance_field_mapping` and `spell.match_resolution_after_a_spell` both on 2026-10-14 - see Closed. Retiring the spell question landed a real fix (see the Closed bullet); the last one is pure RE on the results screen, with `Score.compute_co_op_payout` already holding the arithmetic.
-
-### 2. Campaign → battle: fight screens for quest battles
+### 1. Campaign → battle: fight screens for quest battles
 
 The battle front now renders a real fight, but the campaign's quest and callback battles still run headless behind a banner in `conv_window`. Lifting `pq_play_gfx`'s screen onto `Campaign.run_quest_battle`'s result - the stage, the spoils and the capture offer around a played fight - is the seam the map window has been building toward, and everything it needs (the panels, the rows, the log) is now in place.
 
 ### Closed rounds from this list
+
+- ~~Difficulty ±25 % XP~~ (landed 2026-10-14): `xp.difficulty_scaling` retired - the ±/+25 % multiplies the victory spoils of every decisive win, solo included; the co-op label on `FUN_0043E400` was wrong. The results screen `FUN_0043E5F0` feeds the function's (gold, xp) out-params to ADD_GOLD/ADD_XP only when `turn_manager+0x30` is set, and that flag is the decisive-victory marker (the primary hero standing at battle end, set by `FUN_004648f0`; standing is the per-character +0x12 the death sweep clears on life < 1), not a co-op one. The scale is ×3/4 at Difficulty 0 and ×5/4 at 2 (skipped in game mode 4), read from `CBattleManager+0x48` - the registry value copied at battle start at 0x44bb39 - exactly the `[AILEVEL0]`/`[AILEVEL2]` menu rows. The same function's spoils carry a graduated anti-farm level gap (`FUN_0043d4c0`: excess = hero - enemy - 2; <= 0 untouched, 1..9 × (10-excess)/10, > 9 /10, floored at 1/10) and a Time Limit bonus ((`turn_manager+0x34` × 5) %, where +0x34 is the Time Limit setting written once at battle start - the same field the {0,16000,12000,8000,4000} delay table indexes, not a turn counter). The port: `Score.compute_co_op_payout` renamed `compute_victory_spoils`, new `Score.level_gap_scale`, new `Campaign.spoils_of_victory` rolling the monster record's Reward range (minxp/maxxp/mingold/maxgold, extracted but unused) and feeding the road settle and the quest settle (via the new `quest_battle_monster` helper) additively on top of the match harvest; the TimeLimit term is 0 - no Time Limit model. The enemy char vtable behind the carried gold/xp virtuals stayed unidentified (ctor sets a one-slot table at 0x52360c), so the flat roll from the extracted min..max is the only data-supported reading. `port.victory_spoils_pay_the_difficulty_scale` records it; 2733 checks green.
 
 - ~~Spell-created matches cascade~~ (landed 2026-10-14): `spell.match_resolution_after_a_spell` retired - the engine resolves matches a spell's board edits complete, immediately, through the same cascade driver the swap path uses. The path: the action handler `FUN_0047C3E0` runs `PickSpell` (FUN_00440FB0), then `Engine_CAST_SPELL` (FUN_0043FE30, only call site 0x47C467) runs the effect and returns; sub-state 3 (0x47C557) calls `CommitBestMove` (FUN_0043FAF0) and sets the manager's state (+0x34c) to 1 or 2. PickSpell clears the stored-move flag (+0x2c) at 0x441172 when a cast is chosen, so CommitBestMove returns 0 and the state goes to **1**, the cascade-check state whose driver (FUN_0047E500) scans the board, pops every match (FUN_0047E470) and loops through state 2 (gravity/refill, FUN_0047C590) until none remain - the swap path reaches the same driver via state 2. The port shares the swap path's code: the damage chain is extracted to `apply_cascade_damage` and the cast path runs `resolve_cascades` + it, replacing the old unconditional gravity+refill (the engine does not gravity a board that failed the cascade check). `test_battle.ml` pins it with a spell that completes a 3-skull line; `port.cast_cascade_resolves_matches` records it and `port.effect_context_is_written_back`'s "does not settle" note now points at the retirement (2718 checks green).
 
@@ -60,7 +58,9 @@ The battle front now renders a real fight, but the campaign's quest and callback
   `Spell.difficulty_for_levels` - the hero/task band - keeps its boundary test
   and no caller, exactly as the asset ships it, and `ai.difficulty_from_levels`
   is kept refuted so nobody re-wires it. The three `[AILEVEL0..2]` rows also
-  advertise -/+25 % XP, whose code path is the open `xp.difficulty_scaling`
+  advertise -/+25 % XP, whose code path (`xp.difficulty_scaling`) was retired
+  this round: it multiplies the victory spoils of every decisive win, solo
+  included (see the Closed bullet)
 - **AI scoring (NEW):** the unweighted coordinate in `score_match_result` is
   the match anchor's **row** - `CBoard_CheckMatch` stores `(x, y)` and the
   scorer adds the `y`, so the bias runs toward the bottom of the board, which
@@ -335,24 +335,12 @@ graphics) - 601
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 12 (1 open) | 50 |
+| `docs/reverse/evidence.yml` | 103 | 12 (0 open) | 51 |
 
-The one open question and what it is waiting on:
-
-- `xp.difficulty_scaling` — where the -/+25 % XP the Difficulty rows advertise
-  is applied. Ruled out: `Engine_ADD_XP`'s kind-15 query falls through to the
-  default, so no difficulty term sits in the write. The one place difficulty
-  multiplies XP is `FUN_0043E400` (`Score.compute_co_op_payout`, ×3/4 at 0 and
-  ×5/4 at 2 - exactly the advertised amounts), called by the results screen at
-  `0x43E5F0` with (gold, xp) out-params feeding ADD_GOLD/ADD_XP, on the branch
-  gated by `turn_manager+0x30`. Waited on by what `turn_manager+0x30` means -
-  docs/BATTLE_SCORE.md labels that branch co-op at medium confidence, so either
-  the label is wrong (single-player reward path) or Easy/Hard pays its XP only in
-  a party. Settled by the flag's meaning or a difficulty read inside an XP path.
-
-The questions carry `related`, `would_be_settled_by` and (where closed)
-`resolution` in `docs/reverse/evidence.yml` — read the entry, not just this
-summary.
+There are no open questions: the last one, `xp.difficulty_scaling`, was retired
+this round (see the Closed bullet). Questions carry `related`,
+`would_be_settled_by` and `resolution` in `docs/reverse/evidence.yml` — read
+the entry, not just this summary.
 
 Key decisions recorded:
 - `port.item_event_context` — every item hook takes an item_context with `ic_self`, `ic_level`, the native callbacks and the three board writers where the Lua passed `characterIdx`; `ic_percentile` is a draw-per-call closure, so a body that never asks costs no roll
@@ -390,9 +378,9 @@ Key decisions recorded:
 - `campaign.companion_start_battle` - the ten OnStartBattle bodies as guards over payoffs
 - `port.companion_hooks_fire_for_the_party` - party-wide dispatch, eight-slot cap, ACTIVATE_COMPANION as bookkeeping
 
-Open questions (1): `xp.difficulty_scaling`
-(which branch of the results screen at 0x43e5f0 pays the ∓25 % XP, i.e.
-what `turn_manager+0x30` means).
+Open questions (0). `xp.difficulty_scaling` is closed (recovered, 2026-10-14):
+the ±/+25 % multiplies the victory spoils of every decisive win, solo included
+(`turn_manager+0x30` is the decisive-victory flag, not a co-op marker).
 `spell.match_resolution_after_a_spell` and `font.advance_field_mapping` are
 closed (recovered, 2026-10-14); `board.gem_id_air_water_order` is closed
 (recovered): 3 is Air, 4 is Water -
@@ -480,7 +468,7 @@ read `dune runtest`'s exit code (0 = green), not the number. Extractor
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
 9. **Item hooks, the rest** - the layer is done as far as it can be: all eight kinds dispatched, 131 of the 133 hook declarations ported, and the two that are not (`known_unported`) are IALS's per-character `SUBTRACT_XP` and ILBC's `GET_CHARACTER_ID`, which need a per-character experience pool and a registry id on the combatant respectively - not hooks, just fields the port does not model
 10. **Mana ceilings** - derived from the skills as `25 + (skill + 1) / 2`, so a character's caps agree with its masteries instead of a chosen 20; the effective-skill query is now closed - level does not fold in, and the port models the full formula (raw skill + item/status OnQuerySkill hooks + temp accumulator). `ADD_TEMP_SKILL` moves the ceiling with the skill, caps the increment at 999 effective, and moves life/max on Morale
-11. **Difficulty, the rest** - the option is modelled (`Campaign.difficulty`, default Normal, clamped 0..2) but there is no settings screen to change it and no Time Limit dropdown beside it, and the -/+25 % XP `[AILEVEL0]`/`[AILEVEL2]` advertise is not applied anywhere yet: `xp.difficulty_scaling` is open on which branch of the results screen (`0x43e5f0`) pays it, i.e. what `turn_manager+0x30` means. `Score.compute_co_op_payout` already holds the arithmetic (`×3/4`, `×5/4`) and is the only difficulty-scaled XP writer in the image
+11. **Difficulty, the rest** - the option is modelled (`Campaign.difficulty`, default Normal, clamped 0..2) and the -/+25 % XP `[AILEVEL0]`/`[AILEVEL2]` advertise now pays: `xp.difficulty_scaling` was retired this round, and `Campaign.spoils_of_victory` rolls the monster's Reward range and applies the level gap plus `Score.compute_victory_spoils` on every decisive win's settle. What remains is the settings surface: there is no screen to change Difficulty and no Time Limit dropdown beside it, so the Time Limit bonus (`turn_manager+0x34` × 5 %, worth up to +20 % on the 4-second clock) stays unported - the port has no Time Limit model
 
 ---
 

@@ -95,27 +95,47 @@ let compute_score ?(party_member_contributes = fun _ _ -> true) ~inputs ~hero_in
     in
     clamp (scale_by_difficulty ~game_mode:inputs.game_mode ~difficulty:inputs.difficulty total)
 
-(** [FUN_0043E400], the co-op counterpart, applied to one of its two
-    out-parameters.
+(** [FUN_0043D4C0], the anti-farm level-gap scale applied to the spoils of a
+    decisive victory. [hero_level] and [enemy_level] are the two characters'
+    levels (field [+0x68]).
 
-    The caller applies a [turns * 5] percent bonus first, so [raw] here is
-    the post-bonus value.
+    The excess is [hero_level - enemy_level - 2]. At or below zero the spoils
+    are untouched; from one to nine they are multiplied by [10 - excess] / 10
+    (a graduated reduction, nine tenths down to one tenth); at ten or above the
+    reduction floors at one tenth. The engine spells the hard branch as a
+    separate [> 9] test that divides by ten directly, which agrees with the
+    floor because [excess = 9] also yields one tenth. *)
+let level_gap_scale ~hero_level ~enemy_level n =
+  let excess = hero_level - enemy_level - 2 in
+  if excess <= 0 then n
+  else
+    let factor = if excess > 9 then 1 else 10 - excess in
+    (n * factor) / 10
+
+(** [FUN_0043E400]'s difficulty scaling, applied to one of its two
+    out-parameters (gold or xp).
+
+    The retired question `xp.difficulty_scaling` pinned the branch this runs
+    on: the results screen at 0x43E5F0 calls FUN_0043E400 with (gold, xp)
+    out-params only when the decisive-victory flag at turn_manager+0x30 is set
+    (the primary hero standing at battle end), and feeds zeros when it is
+    clear. The flag is not a co-op marker - it is set on every decisive win,
+    solo included - so the +/-25 % the Difficulty option advertises
+    ([AILEVEL0] "Easy (-25% XP)" / [AILEVEL2] "Hard (+25% XP)") pays on every
+    such spoils payout. This is the only place in the image difficulty
+    multiplies XP.
 
     Both this and {!compute_score} scale monotonically upward with difficulty;
     neither is inverted. They differ on the baseline: this one treats
     difficulty 1 as unscaled and pays a bonus at 2, while {!compute_score}
-    treats 2 and above as unscaled and discounts 0 and 1. So difficulty 1 is
-    discounted for the score and untouched for the payout.
+    treats 2 and above as unscaled and discounts 0 and 1 - so difficulty 1 is
+    discounted for the score and untouched for the payout. The Difficulty menu
+    proves difficulty 1 is the neutral setting, which is what this function
+    models.
 
-    The `*3/4` and `*5/4` are the -/+25 % XP the Difficulty option advertises
-    ([AILEVEL0] "Easy (-25% XP)" / [AILEVEL2] "Hard (+25% XP)"), and this is
-    the only place in the image difficulty multiplies XP - which is what makes
-    the branch this runs on worth pinning down. See the open question
-    `xp.difficulty_scaling`: the results screen at 0x43E5F0 calls it with
-    (gold, xp) out-params on the branch gated by turn_manager+0x30, labelled
-    co-op in docs/BATTLE_SCORE.md at medium confidence, so whether a solo
-    fight pays the modifier at all is still open. *)
-let compute_co_op_payout ~game_mode ~difficulty raw =
+    [game_mode] 4 (the engine's reduced-value mode) skips the scale entirely;
+    campaign and road fights are never that mode. *)
+let compute_victory_spoils ~game_mode ~difficulty raw =
   if game_mode = 4 then raw
   else if difficulty = 0 then (raw * 3) / 4
   else if difficulty = 2 then (raw * 5) / 4

@@ -193,16 +193,28 @@ play, however much they look like it.
 
 ## 3. The sibling function
 
-`FUN_0043E400` is the co-op counterpart, called on the same path when the branch
-flag is set. It fills two out-parameters with `other->vfunc_0x38()` and
-`other->vfunc_0x34()`, applies a `turns * 5` percent bonus to each, and then
-applies its own difficulty scaling:
+`FUN_0043E400` is the **victory-spoils** function, not a co-op counterpart.
+The results screen at `0x43E5F0` calls it with two `(gold, xp)` out-params,
+but only on the branch gated by `turn_manager+0x30` - and that flag is a
+**decisive-victory** marker, not a co-op one (see below). It fills the
+out-parameters from each defeated enemy's carried gold and xp
+(`other->vfunc_0x38()` and `other->vfunc_0x34()`), reduces them by an
+anti-farm level gap, applies a Time Limit bonus, and then applies its own
+difficulty scaling:
 
 ```c
 if (difficulty == 0)      out = out * 3 / 4;
 else if (difficulty == 2) out = out * 5 / 4;
 // difficulty == 1: unscaled
 ```
+
+The `turn_manager+0x30` flag is set at battle end (`FUN_004648f0`) to "the
+first standing character is the primary hero", where standing is the
+per-character `+0x12` the death sweep clears on life < 1. It is therefore true
+on every decisive win - solo included - and false on a defeat or a pyrrhic
+finish. The `xp.difficulty_scaling` question that used to live here is retired:
+the -/+25 % the Difficulty menu advertises pays on every decisive spoils
+payout, and the earlier "co-op branch" reading of this function was wrong.
 
 ### The oddity: the two functions disagree about which difficulty is neutral
 
@@ -242,15 +254,16 @@ function pays a bonus on top of an already-reduced score.
 one that matches it.** The three rows are `[AILEVEL0]` "Easy (-25% XP)",
 `[AILEVEL1]` "Normal" and `[AILEVEL2]` "Hard (+25% XP)" - baseline at
 difficulty 1, ×3/4 at 0, ×5/4 at 2, which is `FUN_0043E400` exactly, and the
-menu proves difficulty 1 is the neutral setting. What that leaves open is
-whether a *solo* fight pays the modifier at all: the results screen calls this
-function with its `(gold, xp)` out-params only on the branch gated by
-`turn_manager+0x30`, which the table below still labels co-op at medium
-confidence, while the other branch feeds the same out-params zeros. That is
-recorded as the open question `xp.difficulty_scaling`, and
-`docs/GAME_KNOWLEDGE_BASE.md` carries the menu side of it. The score curve's
-own 1/3, 2/3, 1 calibration is then the odd one out, and it is a different
-quantity (the displayed score, not experience), so it no longer has to agree.
+menu proves difficulty 1 is the neutral setting. Whether a *solo* fight pays
+the modifier was the open question `xp.difficulty_scaling`, now retired: the
+results screen calls this function with its `(gold, xp)` out-params on the
+branch gated by `turn_manager+0x30`, and that flag is a decisive-victory
+marker (the primary hero standing at battle end), not a co-op one - so a solo
+decisive win pays the ±25 %, and the other branch (defeat or pyrrhic) feeds
+zeros. `docs/GAME_KNOWLEDGE_BASE.md` carries the menu side of it. The score
+curve's own 1/3, 2/3, 1 calibration is then the odd one out, and it is a
+different quantity (the displayed score, not experience), so it no longer has
+to agree.
 
 ---
 
@@ -266,7 +279,7 @@ quantity (the displayed score, not experience), so it no longer has to agree.
 | The two branches are solo vs co-op | Medium — inferred from the 10x scaling and the `turn_manager[0x2C]` term |
 | The branch flag at `[ESP + 0xC6]` | Low — not resolved to a source field |
 | `vfunc_0x24` on a character | Low — unidentified, and a large term |
-| The `local_150 != local_a8` loop guard | Low — comparison against a second copy of the same character, purpose unconfirmed |
+| The `local_150 != local_a8` loop guard | High — it skips same-team characters, so only enemy-team members pay spoils (part of the `xp.difficulty_scaling` retirement) |
 
 The two low-confidence items in the co-op branch are the two that matter. The
 `vfunc_0x24` term in particular is scaled by 100 and is probably the single
@@ -288,4 +301,14 @@ Both unresolved co-op items are left as explicit seams rather than guesses:
 `character.power` stands in for `vfunc_0x24`. The tests exercise the formula's
 arithmetic, not the parts still in the dark, and `docs/BATTLE_SCORE.md` keeps
 the confidence table honest about which is which.
+
+The spoils sibling is wired too. `Score.compute_victory_spoils` (renamed from
+`compute_co_op_payout`, because `xp.difficulty_scaling` retired the co-op
+reading) holds the ±25 % difficulty scale, and `Score.level_gap_scale` holds
+the anti-farm reduction from `FUN_0043d4c0`. `Campaign.spoils_of_victory`
+rolls a defeated monster's carried gold and xp from its Reward range and runs
+both scales over them; the road settle (`process_battle_result`) and the quest
+settle (`quest_battle_settle`) add the result to the match harvest on a win.
+The Time Limit bonus (`turn_manager+0x34 * 5` %) is left out - the port has no
+Time Limit model - so that term is 0, matching the untimed default.
 
