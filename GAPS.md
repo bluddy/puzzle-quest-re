@@ -162,7 +162,8 @@
 | **6 ✅** | Monster spell AI + difficulty | Road rosters load; campaign fights compute their band from the levels |
 | **7 ✅** | World map SDL2 + travel UI | `pq_map_gfx`: segments, roads, nodes, hero, click-to-walk, encounter popup |
 | **7 ✅** | City UI (shop, spells, tavern) | The panel buys, tabs and reads rumors on ShopMenu's own geometry |
-| **8 ✅** | Conversation UI + portraits | Narrative delivery — `pq_conv_gfx`: action walk, portraits/backdrop, callback-battle banner (choice nodes do not exist in the data) |
+| **8 ✅** | Conversation UI + portraits | Narrative delivery — `pq_conv_gfx`: action walk, portraits/backdrop, callback battles (choice nodes do not exist in the data) |
+| **8 ✅** | Campaign fight screens | Road, quest-stage and callback fights play on the hosted `Battle_screen` instead of running headless (`port.quest_battle_fight_screen`): the runners split into open + settle with `?human`, the map hosts the screen and feeds `complete_action` the real verdict |
 | **8** | Equipment/item effects + mount | Stat progression depth |
 | **9** | Character creation + main menu | Polish for "game" feel |
 | **10** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
@@ -245,9 +246,12 @@ campaign tests, capture, companion hooks, quest battle loop, item start
 hooks, item event hooks, companion removal, cell selection, AI aiming,
 monster rosters, conversation triggers + per-callback effects, companion
 equip, grid-spell aim hover, mount speed, mount combat bonuses, capture UI,
-capture surfaces, banner slot, runes, rune items, forge UI, mount training),
-and the conversation UI now walks actions, renders portraits/backdrops, fires
-battle callbacks and applies each scriptcall's extracted body effects.
-Pick one:
+capture surfaces, banner slot, runes, rune items, forge UI, mount training,
+campaign fight screens), and the conversation UI now walks actions, renders
+portraits/backdrops, fires battle callbacks and applies each scriptcall's
+extracted body effects - with road, quest-stage and callback fights played
+on the hosted `Battle_screen` rather than bannered
+(`port.quest_battle_fight_screen`). Pick one:
 
 - **Forge minigame** - the skill game [FORGEITEMS_FAIL] expects (the ten Easy..Godlike bands become targets) and the [MAXRUNEITEM] cap
+- **Settings surface** - a screen to change Difficulty (and the Time Limit dropdown beside it), which is what the unported Time Limit bonus waits on (Known Gap 11)

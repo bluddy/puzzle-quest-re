@@ -128,6 +128,29 @@ let seed n =
 
 let active qid stage = { (fresh ()) with Campaign.active_quests = [ (qid, stage) ] }
 
+(* A human that always declines: [choose_spell] and [choose_swap] answer
+   None, so a fight opened with these hooks runs headlessly to a finish
+   without a window - the AI enemy still plays. This is how the human seam
+   is exercised where a real front would pump SDL events. *)
+let pass_human : Battle.player =
+  { choose_spell = (fun _ -> None);
+    choose_aim = (fun _ -> None);
+    choose_swap = (fun _ -> None) }
+
+(* The first road encounter whose sprite resolves to a registry monster -
+   enough for the open/settle split tests below, which are about the split,
+   not about any one road. *)
+let road_enc =
+  List.find
+    (fun e ->
+      match
+        (try Some (Campaign_monsters.monster_by_sprite e.Campaign_encounters.sprite)
+         with Not_found -> None)
+      with
+      | Some _ -> true
+      | None -> false)
+    Campaign_encounters.encounters
+
 (* ------------------------------------------------------------------ *)
 (* The extracted tables                                                *)
 (* ------------------------------------------------------------------ *)
@@ -576,6 +599,107 @@ let ambush = active "Q1Q6" 1 in
       let won = Battle.hero_won b in
       check "and OnCompleteAction advances the stage only on a win"
         (state_of p "Q1Q6" = (if won then Some 2 else Some 1))));
+
+(* ------------------------------------------------------------------ *)
+(* The open/settle splits a playable front hosts fights through        *)
+(* ------------------------------------------------------------------ *)
+
+(* quest_battle_open hands back the un-run battle the front plays itself:
+   the split's whole point is that the campaign builds and the caller runs
+   and settles. *)
+(match Campaign.quest_battle_open ~rng:seed (active "Q0I0" 1) "Q0I0" with
+ | None -> check "quest_battle_open opens the stage's fight" false
+ | Some qf ->
+   check "quest_battle_open hands back an un-run battle"
+     (qf.Campaign.qf_battle.Battle.winner = None);
+   check "without ~human the rules carry no player (auto-AI both sides)"
+     ((let r : Battle.rules = qf.Campaign.qf_battle.Battle.rules in
+       r.Battle.player) = None));
+
+(match Campaign.quest_battle_open ~rng:seed ~human:pass_human
+        (active "Q0I0" 1) "Q0I0" with
+ | None -> check "quest_battle_open ~human opens the stage's fight" false
+ | Some qf ->
+   (* The hooks cannot be compared structurally - they are functions - so
+      the installed record is exercised instead: a pass-human declines both
+      questions, which is what [pass_human] is. *)
+   check "~human installs the choices in the battle's rules"
+     (match (let r : Battle.rules = qf.Campaign.qf_battle.Battle.rules in
+             r.Battle.player) with
+      | None -> false
+      | Some h ->
+        h.Battle.choose_spell [] = None && h.Battle.choose_swap [] = None));
+
+(* The human-hooked path runs to a finish without a window: the hero passes
+   every turn, the AI enemy plays, and the fight ends on death or the
+   stalemate guard. *)
+(match Campaign.run_quest_battle ~rng:seed ~human:pass_human
+        (active "Q0I0" 1) "Q0I0" with
+ | None -> check "a human-hooked quest battle runs" false
+ | Some (p, b) ->
+   check "a human-hooked quest battle runs to a finish"
+     (b.Battle.winner <> None || b.Battle.turns_elapsed > 0);
+   check "and its settle lands (life follows the fight)"
+     (p.Campaign.life = b.Battle.hero.life));
+
+(* callback_open is the same split on the conversation path: the body's
+   effects apply, the fight comes back un-run, and the settle is the
+   caller's to run once it has played the fight. *)
+(match Campaign.callback_open ~rng:seed (active "Q0I2" 1) "Q0I2"
+         "CallbackGuardian" with
+ | None -> check "callback_open opens the callback's fight" false
+ | Some cf ->
+   check "CallbackGuardian has no body effects, so the stage stands"
+     (state_of cf.Campaign.cf_player "Q0I2" = Some 1);
+   (match cf.Campaign.cf_battle with
+    | None -> check "callback_open hands back the fight to play" false
+    | Some b ->
+      check "callback_open hands back an un-run battle" (b.Battle.winner = None);
+      (* Settling the un-run fight is settling a loss - [hero_won] on a
+         battle that never ran is false - so the no-spoils branch is what
+         the finish takes when the front has not run it. *)
+      let p', offer = cf.Campaign.cf_settle b in
+      check "settling the un-run fight takes the loss branch"
+        (p'.Campaign.gold = cf.Campaign.cf_player.Campaign.gold
+         && p'.Campaign.xp = cf.Campaign.cf_player.Campaign.xp);
+      check "and no capture offer comes off a loss" (offer = None)));
+
+(match Campaign.callback_open ~rng:seed ~human:pass_human (active "Q0I2" 1)
+         "Q0I2" "CallbackGuardian" with
+ | None -> check "callback_open ~human opens the callback's fight" false
+ | Some cf -> (
+   match cf.Campaign.cf_battle with
+   | None -> check "callback_open ~human hands back the fight" false
+   | Some b ->
+     check "~human installs the choices on the callback fight too"
+       (match (let r : Battle.rules = b.Battle.rules in r.Battle.player) with
+        | None -> false
+        | Some h ->
+          h.Battle.choose_spell [] = None && h.Battle.choose_swap [] = None)));
+
+(* The road path's split: encounter_battle_open builds, the caller runs and
+   settles through process_battle_result, exactly as run_encounter_battle
+   fuses for the headless callers. *)
+(match Campaign.encounter_battle_open ~rng:seed (fresh ()) road_enc with
+ | None -> check "encounter_battle_open opens the road fight" false
+ | Some b ->
+   check "encounter_battle_open hands back an un-run battle"
+     (b.Battle.winner = None);
+   check "the road fight's enemy is the encounter's monster"
+     (b.Battle.enemy.Combat.name
+      = (Campaign_monsters.monster_by_sprite road_enc.Campaign_encounters.sprite)
+          .Campaign_monsters.name_text));
+
+(match
+   Campaign.encounter_battle_open ~rng:seed ~human:pass_human (fresh ()) road_enc
+ with
+ | None -> check "encounter_battle_open ~human opens the road fight" false
+ | Some b ->
+   check "~human installs the choices on the road fight too"
+     (match (let r : Battle.rules = b.Battle.rules in r.Battle.player) with
+      | None -> false
+      | Some h ->
+        h.Battle.choose_spell [] = None && h.Battle.choose_swap [] = None));
 
 (* ------------------------------------------------------------------ *)
 (* Global state cleanup                                                *)

@@ -8,12 +8,13 @@
     lone OnEnd). This window pops them in the game's own order - a battle
     banner holds everything until clicked, then the modal message box, then
     the current conversation's actions. Walking an action hands each
-    [scriptcall] to [Campaign.execute_callback]: the callback's extracted
-    body effects apply first (quest-state writes, grants, nested
-    conversations), then a battle-table callback runs its headless fight
-    and the outcome banner waits for a click. A [ShowMessage] box draws
-    title, wrapped text and an OK hint; dismissing it fires the box's
-    callback through [execute_callback].
+    [scriptcall] to [Campaign.callback_open]: the callback's extracted body
+    effects apply first (quest-state writes, grants, nested conversations),
+    then a battle-table callback's fight runs through the host's runner -
+    [Battle.run] headless by default, or the world map's battle screen when
+    it installs its hooks - and the outcome banner waits for a click. A
+    [ShowMessage] box draws title, wrapped text and an OK hint; dismissing it
+    fires the box's callback the same way.
 
     Missing art falls back to flat colours, so a fresh checkout still runs.
     Textures resolve from [game/Assets] (override with [PQ_GAME_ASSETS]),
@@ -47,6 +48,14 @@ type state = {
           be dismissed; the map front takes it through
           [take_capture_offer] and opens the minigame (port.capture_surfaces).
           The conversation front has no capture window and leaves it. *)
+  human : Battle.player option;
+      (** The playable front's mouse-backed choices, when a host installs
+          them: a callback fight then builds with these in its rules and the
+          player plays it rather than watching the auto-AI. *)
+  run_battle : Battle.battle -> Battle.battle;
+      (** How a fight is run once opened. The default is [Battle.run], the
+          headless loop; the world map passes its battle screen's [run] so the
+          fight is played on the window rather than behind a banner. *)
 }
 
 (* Conversation images are referenced by the conversation XML as paths rooted
@@ -351,9 +360,9 @@ let player_of (ui : state) : Campaign.player = ui.player
 
 let sync_player (ui : state) (p : Campaign.player) : unit = ui.player <- p
 
-(* Dismiss the modal box: its callback applies through execute_callback -
-   body effects first, then its battle if the table has one - and any
-   conversation the body queued comes up next through [step]. *)
+(* Dismiss the modal box: its callback applies through [callback_open] - body
+   effects first, then its battle if the table has one, run through the host's
+   runner - and any conversation the body queued comes up next through [step]. *)
 let dismiss_message (ui : state) (m : Campaign.pending_message) : unit =
   ui.message <- None;
   Printf.printf "  message ok: [%s] %s\n"
@@ -363,16 +372,21 @@ let dismiss_message (ui : state) (m : Campaign.pending_message) : unit =
     Printf.printf "  firing %s on %s\n"
       m.Campaign.pmsg_callback m.Campaign.pmsg_quest;
     flush stdout;
-    (match execute_callback ~rng:Random.int ui.player m.Campaign.pmsg_quest
-             m.Campaign.pmsg_callback with
-     | Some res ->
-       ui.player <- res.cb_player;
-       (match res.cb_battle with
+    (match
+       callback_open ~rng:Random.int ?human:ui.human ui.player
+         m.Campaign.pmsg_quest m.Campaign.pmsg_callback
+     with
+     | None -> ()
+     | Some cf ->
+       ui.player <- cf.cf_player;
+       (match cf.cf_battle with
+        | None -> ()
         | Some b ->
-          ui.battle <- Some (res.cb_player, b);
-          ui.capture_offer <- res.Campaign.cb_capture_offer
-        | None -> ())
-     | None -> ())
+          let finished = ui.run_battle b in
+          let p, offer = cf.cf_settle finished in
+          ui.player <- p;
+          ui.battle <- Some (p, finished);
+          ui.capture_offer <- offer))
   end
 
 let handle_click (ui : state) (mx : int) (my : int) : unit =
@@ -401,9 +415,9 @@ let handle_click (ui : state) (mx : int) (my : int) : unit =
                 ui.conversation <- None
             end)))
 
-(* Run the current action when it is a scriptcall: the quest callback fires
-   once (body effects, then its battle if it has one), the conversation
-   moves on, and any battle outcome banner waits for a click. *)
+(* Run the current action when it is a scriptcall: the quest callback opens
+   once (body effects, then its battle if the host's runner plays it), the
+   conversation moves on, and any battle outcome banner waits for a click. *)
 let step_scriptcall (ui : state) (conv : Campaign_conversations.conversation) : unit =
   match current_action ui conv with
   | Some action when action.Campaign_conversations.type_ = "scriptcall" ->
@@ -411,24 +425,29 @@ let step_scriptcall (ui : state) (conv : Campaign_conversations.conversation) : 
     (match (action.Campaign_conversations.scriptcall_object,
             action.Campaign_conversations.scriptcall_function) with
      | Some obj, Some fn ->
-       (match execute_callback ~rng:Random.int ui.player obj fn with
-        | Some res ->
-          ui.player <- res.cb_player;
-          (match res.cb_battle with
-           | Some battle ->
-             let won = Battle.hero_won battle in
-             ui.battle <- Some (res.cb_player, battle);
-             ui.capture_offer <- res.Campaign.cb_capture_offer;
+       (match
+          callback_open ~rng:Random.int ?human:ui.human ui.player obj fn
+        with
+        | None -> ()
+        | Some cf ->
+          ui.player <- cf.cf_player;
+          (match cf.cf_battle with
+           | None -> ()
+           | Some b ->
+             let finished = ui.run_battle b in
+             let won = Battle.hero_won finished in
+             let p, offer = cf.cf_settle finished in
+             ui.player <- p;
+             ui.battle <- Some (p, finished);
+             ui.capture_offer <- offer;
              Printf.printf "  %s: %s in %d turns (life %d, +%d gold, +%d xp) [%s/%s]\n"
-               (Text_data.text battle.Battle.enemy.name)
+               (Text_data.text finished.Battle.enemy.name)
                (if won then "won" else "lost")
-               battle.Battle.turns_elapsed res.cb_player.Campaign.life
-               (if won then battle.Battle.gold else 0)
-               (if won then battle.Battle.xp else 0)
+               finished.Battle.turns_elapsed p.Campaign.life
+               (if won then finished.Battle.gold else 0)
+               (if won then finished.Battle.xp else 0)
                obj fn;
-             flush stdout
-           | None -> ())
-        | None -> ())
+             flush stdout))
      | _ -> ())
   | _ -> ()
 
@@ -469,9 +488,13 @@ let draw ?(present = true) (ui : state) : unit =
 
 (* Create the window's state: fonts are the caller's (the map already owns
    a system atlas), and the conversation art preloads once - the same cost
-   the conversation front pays. *)
+   the conversation front pays. [?human] and [?run_battle] are the playable
+   host's seam: with them a callback fight builds with the mouse-backed
+   choices in its rules and runs through the battle screen instead of the
+   headless loop. *)
 let create ~(gl : Gl.context) ~(fonts : Font.t option)
-    ~(system : Font_layout.metrics option) ~(player : Campaign.player) : state =
+    ~(system : Font_layout.metrics option) ~(player : Campaign.player)
+    ?human ?(run_battle = Battle.run) () : state =
   let images =
     List.filter_map
       (fun p -> Option.map (fun im -> (p, im)) (load_conv_image p))
@@ -484,4 +507,5 @@ let create ~(gl : Gl.context) ~(fonts : Font.t option)
       missing (List.length (conv_image_paths ())) (game_root ());
   { gl; images; fonts; system;
     conversation = None; action_index = 0; player;
-    battle = None; message = None; capture_offer = None }
+    battle = None; message = None; capture_offer = None;
+    human; run_battle }

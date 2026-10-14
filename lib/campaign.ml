@@ -1265,25 +1265,53 @@ let rules_for_battle ~(player: player) : Battle.rules =
     difficulty = !difficulty;
     hero_level = player.level }
 
-(* Run a battle between player and encounter. The hero walks in with the
+(* The same rules with a playable front's mouse-backed choices installed in
+   [Battle.rules.player]: [Some hooks] is a fight the player plays, [None] the
+   auto-AI on both sides, which is what the headless path and every test drive.
+   A separate function rather than [?human] on [rules_for_battle] because an
+   optional argument before only-labeled ones is never erased, and every
+   existing call site omits it. *)
+let playable_rules (human : Battle.player option) ~(player: player)
+    : Battle.rules =
+  match human with
+  | None -> rules_for_battle ~player
+  | Some h -> { (rules_for_battle ~player) with player = Some h }
+
+(* Open a battle between player and encounter: the hero walks in with the
    spells the player knows and the monster with its own registry roster -
    the loadout choice recorded in port.quest_battle_loop, shared with the
-   quest path below - at the difficulty the player's option asks for. *)
-let run_encounter_battle (player: player) (enc: encounter) : battle =
-  let monster = Campaign_monsters.monster_by_sprite enc.sprite in
-  let hero = player_to_combatant player in
-  let enemy = encounter_to_combatant enc player.level in
-  let battle = open_battle
-      ~rules:(rules_for_battle ~player)
-      ~hero ~enemy
-      ~hero_spells:(spells_of_ids
-        (mount_spell_ids player @ player.known_spells))
-      ~enemy_spells:(spells_of_ids monster.spells)
-      ~hero_items:(loadout_of_equipment player.equipment)
-      ~enemy_tags:(monster_type_tags monster)
-      ~companions:player.companions ()
-  in
-  Battle.run battle
+   quest path below - at the difficulty the player's option asks for.
+   Split from [run_encounter_battle] so a playable front can host the fight
+   itself: [?human] puts the mouse-backed choices in the rules, the caller
+   runs the returned un-run battle on its own screen, then settles it through
+   [process_battle_result]. [None] when the encounter's sprite names no
+   registry monster - the headless runner re-raises [Not_found], as it did
+   before the split. *)
+let encounter_battle_open ?rng ?human (player: player) (enc: encounter)
+    : battle option =
+  match
+    (try Some (Campaign_monsters.monster_by_sprite enc.sprite)
+     with Not_found -> None)
+  with
+  | None -> None
+  | Some monster ->
+    let hero = player_to_combatant player in
+    let enemy = encounter_to_combatant enc player.level in
+    Some
+      (open_battle ?rng
+         ~rules:(playable_rules human ~player)
+         ~hero ~enemy
+         ~hero_spells:(spells_of_ids
+           (mount_spell_ids player @ player.known_spells))
+         ~enemy_spells:(spells_of_ids monster.spells)
+         ~hero_items:(loadout_of_equipment player.equipment)
+         ~enemy_tags:(monster_type_tags monster)
+         ~companions:player.companions ())
+
+let run_encounter_battle ?rng ?human (player: player) (enc: encounter) : battle =
+  match encounter_battle_open ?rng ?human player enc with
+  | Some b -> Battle.run b
+  | None -> raise Not_found
 
 (* The training attempt behind [TRAINMOUNTS_DETAIL]: the mount's own kind
    at the next level, run as a normal headless fight - trained only when
@@ -1753,15 +1781,29 @@ let quest_battle_settle ?capture ?monster (player: player) (qid: string)
   in
   quest_battle_complete ?capture ?monster p qid success
 
-(* Run the quest battle for the player's current stage of [qid]: the stage
+(* What an open quest-stage fight hands a playable front: the un-run battle -
+   with the human's choices in its rules when [?human] was given - and the
+   finish that settles it. Split from [run_quest_battle] so the map can play
+   the stage's fight on the battle screen and only then settle, the way the
+   headless path does in one call. The capture offer the win makes available
+   comes back with the settled player, computed where the stage's capture flag
+   and the monster id live - the same two gates a callback's offer rides
+   (port.capture_surfaces), after the settle has recorded this defeat. *)
+type quest_fight = {
+  qf_battle : battle;  (** un-run; run it, then hand it to [qf_finish] *)
+  qf_finish : battle -> player * string option;
+      (** the settled player plus the capture offer, from the finished fight *)
+}
+
+(* Open the quest battle for the player's current stage of [qid]: the stage
    picks the action, the action's index picks the <Battle> element (monster
    roster plus the hero's spell line-up for this fight), companion
-   OnStartBattle hooks fire as they do on the road, and the outcome feeds
-   quest_battle_settle. Returns None when the quest is not active, the stage
-   has no battle of its own (conversation-driven fights are not wired to the
-   state machine - see GAPS), or the monster id is not in the registry. *)
-let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
-    : (player * battle) option =
+   OnStartBattle hooks fire as they do on the road. Returns None when the
+   quest is not active, the stage has no battle of its own (conversation-
+   driven fights are not wired to the state machine - see GAPS), or the
+   monster id is not in the registry. *)
+let quest_battle_open ?(rng = Random.int) ?human (player: player)
+    (qid: string) : quest_fight option =
   match List.assoc_opt qid player.active_quests with
   | None -> None
   | Some stage ->
@@ -1773,7 +1815,7 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
                     (cnd, vnd, ind, ncl))
             q.battle_actions with
     | None -> None
-    | Some (_, idx, _, _, _, _, _) ->
+    | Some (_, idx, capture_flag, _, _, _, _) ->
       match List.nth_opt q.battles idx with
       | None -> None
       | Some (monster_id, hero_spell_ids) ->
@@ -1783,21 +1825,38 @@ let run_quest_battle ?(rng = Random.int) (player: player) (qid: string)
         | Some monster ->
           let hero = player_to_combatant player in
           let enemy = monster_to_combatant monster player.level in
-          let battle =
-            Battle.run
-              (open_battle ~rng
-                  ~rules:(rules_for_battle ~player)
-                  ~hero_spells:(spells_of_ids
-                    (hero_spell_ids @ mount_spell_ids player
-                     @ player.known_spells))
-                 ~enemy_spells:(spells_of_ids monster.spells)
-                 ~hero_items:(loadout_of_equipment player.equipment)
-                 ~hero ~enemy
-                 ~enemy_tags:(monster_type_tags monster)
-                 ~companions:player.companions ())
+          let b =
+            open_battle ~rng
+              ~rules:(playable_rules human ~player)
+              ~hero_spells:(spells_of_ids
+                (hero_spell_ids @ mount_spell_ids player
+                 @ player.known_spells))
+              ~enemy_spells:(spells_of_ids monster.spells)
+              ~hero_items:(loadout_of_equipment player.equipment)
+              ~hero ~enemy
+              ~enemy_tags:(monster_type_tags monster)
+              ~companions:player.companions ()
           in
-          let won = Battle.hero_won battle in
-          Some (quest_battle_settle player qid won battle, battle)
+          Some
+            { qf_battle = b;
+              qf_finish =
+                (fun finished ->
+                  let won = Battle.hero_won finished in
+                  let p = quest_battle_settle player qid won finished in
+                  let offer =
+                    callback_capture_offer p ~won ~capture:capture_flag
+                      monster_id
+                  in
+                  (p, offer)) }
+
+let run_quest_battle ?(rng = Random.int) ?human (player: player) (qid: string)
+    : (player * battle) option =
+  match quest_battle_open ~rng ?human player qid with
+  | None -> None
+  | Some qf ->
+    let finished = Battle.run qf.qf_battle in
+    let p, _offer = qf.qf_finish finished in
+    Some (p, finished)
 
 (* Turn in a quest: runs OnEnd - rewards, end-of-quest node reveals, and
    CompleteQuest bookkeeping (moves it out of active_quests into
@@ -1933,17 +1992,32 @@ type callback_result = {
   cb_capture_offer : string option;
 }
 
-(* Execute a conversation/message callback by name. The extracted body
-   effects apply first (state writes, grants, nested conversations,
-   QUEST_COMPLETE) and the battle - when the callback has one - runs and
-   settles after: that is the order the Lua body runs in, so the stage
-   advance that follows reads the stage the callback left (Q3D1/CallbackConvB
-   sets 5 before its fight; Q1Q6/CallbackConvB has no state write and settles
-   from the stage as before). [None] means the pair has neither effects nor a
-   battle - an unknown name, or a body only doing bookkeeping the port skips
+(* An open callback, split from [execute_callback] so a playable front can
+   host the battle: the player with the body's effects already applied, the
+   un-run battle when the pair has one ([None] is an effects-only body), and
+   the settle that runs the finished fight the way the fused path does - the
+   stage advance reading the stage the body left, the defeat record under the
+   callback's own capture flag, and the offer after the settle has recorded
+   it. [execute_callback] is this plus [Battle.run]. *)
+type callback_fight = {
+  cf_player : player;  (** the body's effects applied, the fight not run *)
+  cf_battle : battle option;  (** the fight to play, when the pair has one *)
+  cf_settle : battle -> player * string option;
+      (** the settled player plus the capture offer, from the finished fight;
+          only meaningful when [cf_battle] is [Some] *)
+}
+
+(* Open a conversation/message callback by name. The extracted body effects
+   apply first (state writes, grants, nested conversations, QUEST_COMPLETE)
+   and the battle - when the callback has one - comes back un-run: that is
+   the order the Lua body runs in, so the stage advance that follows reads
+   the stage the callback left (Q3D1/CallbackConvB sets 5 before its fight;
+   Q1Q6/CallbackConvB has no state write and settles from the stage as
+   before). [None] means the pair has neither effects nor a battle - an
+   unknown name, or a body only doing bookkeeping the port skips
    (QUEST_UPDATE_MAP, other Lua locals). *)
-let execute_callback ?(rng = Random.int) (player: player) (qid: string)
-    (callback_name: string) : callback_result option =
+let callback_open ?(rng = Random.int) ?human (player: player) (qid: string)
+    (callback_name: string) : callback_fight option =
   let q_opt = (try Some (quest_by_id qid) with Not_found -> None) in
   let effects :
       ((string * bool) list * (string * bool * int) list *
@@ -1995,47 +2069,76 @@ let execute_callback ?(rng = Random.int) (player: player) (qid: string)
             else acc)
           p effs
     in
-    match cbrow with
-    | None -> Some { cb_player = p; cb_battle = None; cb_capture_offer = None }
-    | Some cb ->
-      match (try Some (Campaign_monsters.monster_by_id cb.cb_monster_id)
-             with Not_found -> None) with
-      | None -> Some { cb_player = p; cb_battle = None; cb_capture_offer = None }
-      | Some monster ->
-        let battles = match q_opt with Some q -> q.battles | None -> [] in
-        let hero = player_to_combatant p in
-        let enemy = monster_to_combatant monster p.level in
-        let hero_spells =
-          (match List.nth_opt battles cb.cb_battle_index with
-           | Some (_, spells) -> spells
-           | None -> []) @ mount_spell_ids p @ p.known_spells
-        in
-        let battle =
-          Battle.run
-            (open_battle ~rng
-               ~rules:(rules_for_battle ~player)
-               ~hero_spells:(spells_of_ids hero_spells)
-               ~enemy_spells:(spells_of_ids monster.spells)
-               ~hero_items:(loadout_of_equipment p.equipment)
-               ~hero ~enemy
-               ~enemy_tags:(monster_type_tags monster)
-               ~companions:p.companions ())
-        in
-        let won = Battle.hero_won battle in
-        (* The defeat record is the callback's own primitive: cb_capture says
-           whether this site captures (Q1Q6/CallbackConvB does not) and
-           cb_monster_id the monster the callback called - the stage's
-           battle_actions describe the location fights, not this one. *)
-        let p = quest_battle_settle
-            ~capture:cb.cb_capture ~monster:cb.cb_monster_id
-            p qid won battle in
-        (* The offer: a won fight the stage allows captured, both gates now
-           holding after the settle recorded this defeat. *)
-        let offer =
-          callback_capture_offer ~won ~capture:cb.cb_capture p cb.cb_monster_id
-        in
-        Some { cb_player = p; cb_battle = Some battle;
-               cb_capture_offer = offer }
+    (match cbrow with
+     | None ->
+       Some { cf_player = p; cf_battle = None;
+              cf_settle = fun _ -> (p, None) }
+     | Some cb -> (
+       match (try Some (Campaign_monsters.monster_by_id cb.cb_monster_id)
+              with Not_found -> None) with
+       | None ->
+         Some { cf_player = p; cf_battle = None;
+                cf_settle = fun _ -> (p, None) }
+       | Some monster ->
+         let battles = match q_opt with Some q -> q.battles | None -> [] in
+         let hero = player_to_combatant p in
+         let enemy = monster_to_combatant monster p.level in
+         let hero_spells =
+           (match List.nth_opt battles cb.cb_battle_index with
+            | Some (_, spells) -> spells
+            | None -> []) @ mount_spell_ids p @ p.known_spells
+         in
+         let b =
+           open_battle ~rng
+             ~rules:(playable_rules human ~player)
+             ~hero_spells:(spells_of_ids hero_spells)
+             ~enemy_spells:(spells_of_ids monster.spells)
+             ~hero_items:(loadout_of_equipment p.equipment)
+             ~hero ~enemy
+             ~enemy_tags:(monster_type_tags monster)
+             ~companions:p.companions ()
+         in
+         Some
+           { cf_player = p;
+             cf_battle = Some b;
+             cf_settle =
+               (fun finished ->
+                 let won = Battle.hero_won finished in
+                 (* The defeat record is the callback's own primitive:
+                    cb_capture says whether this site captures (Q1Q6/
+                    CallbackConvB does not) and cb_monster_id the monster the
+                    callback called - the stage's battle_actions describe the
+                    location fights, not this one. *)
+                 let p' =
+                   quest_battle_settle ~capture:cb.cb_capture
+                     ~monster:cb.cb_monster_id p qid won finished
+                 in
+                 (* The offer: a won fight the stage allows captured, both
+                    gates now holding after the settle recorded this defeat. *)
+                 let offer =
+                   callback_capture_offer ~won ~capture:cb.cb_capture p'
+                     cb.cb_monster_id
+                 in
+                 (p', offer)) }))
+
+(* Execute a conversation/message callback by name: open it, run its fight
+   when it has one through [Battle.run], settle. The headless path - a
+   playable front calls [callback_open] instead and hosts the fight itself.
+   [None] means the pair has neither effects nor a battle. *)
+let execute_callback ?(rng = Random.int) ?human (player: player) (qid: string)
+    (callback_name: string) : callback_result option =
+  match callback_open ~rng ?human player qid callback_name with
+  | None -> None
+  | Some cf -> (
+    match cf.cf_battle with
+    | None ->
+      Some { cb_player = cf.cf_player; cb_battle = None;
+             cb_capture_offer = None }
+    | Some b ->
+      let finished = Battle.run b in
+      let p, offer = cf.cf_settle finished in
+      Some { cb_player = p; cb_battle = Some finished;
+             cb_capture_offer = offer })
 
 let complete_encounter (player: player) (enc: encounter) : player =
   let battle = run_encounter_battle player enc in

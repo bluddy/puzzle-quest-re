@@ -9,7 +9,9 @@
     city panel's Actions tab lists [Campaign.query_actions] for the node and
     clicking one starts it through [execute_action]; the queued dialogue,
     messages and callback battles run in the shared [Conv_window] over the
-    map, and when that drains the driver follows with [complete_action]. This
+    map, and when that drains the driver runs the stage's fight - if the
+    stage has one, through [Campaign.quest_battle_open] and the battle
+    screen - and follows with [complete_action] under the real outcome. This
     front end draws those states and feeds them clicks; nothing about the
     recovered rules is re-implemented here.
 
@@ -18,13 +20,17 @@
     window still opens, on flat colours, which is the only state a fresh
     checkout can honestly be in.
 
-    The road fight itself runs headless through the campaign API and the
-    window reports the result on the console - hosting the battle view
-    inside the map is the coupling neither front end wants yet. A won fight
-    whose monster passes the capture gates opens the minigame instead
+    The road fight and every quest fight are played on the battle screen
+    ([Battle_screen], hosted on this window's GL context): the popup's click
+    opens the encounter through [Campaign.encounter_battle_open] with the
+    screen's mouse-backed choices in its rules, [Battle_screen.run] plays it,
+    and [Campaign.process_battle_result] settles. A won fight whose monster
+    passes the capture gates opens the minigame instead
     ([Campaign.capture_offer]): CaptureMenu.xml's grid drawn as flat gem
     colours, two clicks a swap through [Capture.play], and the console's
-    [CANCEL] button standing in for the gamepad back-out. *)
+    [CANCEL] button standing in for the gamepad back-out. Callback battles a
+    conversation triggers follow the same seam through [Conv_window], which
+    this front hands the screen's hooks and runner. *)
 open Puzzle_quest_lib
 open Pq_gfx
 module E = Tsdl.Sdl.Event
@@ -964,41 +970,55 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
   | None -> (
   match ui.popup with
   | Some enc ->
-      (* The road fight holds everything, dialogue included. *)
-      let battle = Campaign.run_encounter_battle ui.player enc in
-      let player, result = Campaign.process_battle_result ui.player enc battle in
-      ui.player <- player;
-      ui.popup <- None;
-      Printf.printf "  %s: %s in %d turns (life %d, +%d gold, +%d xp)\n"
-        enc.Campaign_encounters.description
-        (if result.Campaign.player_won then "won" else "lost")
-        battle.Battle.turns_elapsed result.Campaign.final_life
-        result.Campaign.gold_gained result.Campaign.xp_gained;
-      flush stdout;
-      (* A won fight whose monster passes the capture gates opens the
-         minigame right away (port.capture_ui). *)
-      if result.Campaign.player_won then
-        (match Campaign.capture_offer ui.player enc with
-        | Some mid ->
-            ui.capture <- Some (mid, Campaign.capture_begin mid);
-            ui.capture_sel <- None;
-            Printf.printf "  the %s can be captured - swap two gems, or Cancel\n"
-              enc.Campaign_encounters.description;
-            flush stdout
-        | None -> ());
-      (* A won keeper fight claims the rune it guards ([RUNE_HELP]). *)
-      (match ui.popup_rune with
-      | Some rid ->
-          ui.popup_rune <- None;
+      (* The road fight holds everything, dialogue included - and is played
+         on the battle screen rather than run headless: opened with the
+         screen's choices, run through it, then settled. *)
+      (match
+         Campaign.encounter_battle_open ~rng:Random.int
+           ~human:(Battle_screen.hooks ()) ui.player enc
+       with
+      | None ->
+          Printf.printf "  no registry monster behind the %s - nothing to fight\n"
+            enc.Campaign_encounters.description;
+          flush stdout;
+          ui.popup <- None
+      | Some opened ->
+          let battle = Battle_screen.run opened in
+          let player, result =
+            Campaign.process_battle_result ui.player enc battle
+          in
+          ui.player <- player;
+          ui.popup <- None;
+          Printf.printf "  %s: %s in %d turns (life %d, +%d gold, +%d xp)\n"
+            enc.Campaign_encounters.description
+            (if result.Campaign.player_won then "won" else "lost")
+            battle.Battle.turns_elapsed result.Campaign.final_life
+            result.Campaign.gold_gained result.Campaign.xp_gained;
+          flush stdout;
+          (* A won fight whose monster passes the capture gates opens the
+             minigame right away (port.capture_ui). *)
           if result.Campaign.player_won then
-            (match Campaign.claim_rune ui.player rid with
-            | Some p' ->
-                ui.player <- p';
-                Printf.printf "  %s %s\n" (Text_data.text "[RUNE_SUCCESS]")
-                  (Text_data.text (rune_display rid));
+            (match Campaign.capture_offer ui.player enc with
+            | Some mid ->
+                ui.capture <- Some (mid, Campaign.capture_begin mid);
+                ui.capture_sel <- None;
+                Printf.printf "  the %s can be captured - swap two gems, or Cancel\n"
+                  enc.Campaign_encounters.description;
                 flush stdout
-            | None -> ())
-      | None -> ())
+            | None -> ());
+          (* A won keeper fight claims the rune it guards ([RUNE_HELP]). *)
+          (match ui.popup_rune with
+          | Some rid ->
+              ui.popup_rune <- None;
+              if result.Campaign.player_won then
+                (match Campaign.claim_rune ui.player rid with
+                | Some p' ->
+                    ui.player <- p';
+                    Printf.printf "  %s %s\n" (Text_data.text "[RUNE_SUCCESS]")
+                      (Text_data.text (rune_display rid));
+                    flush stdout
+                | None -> ())
+          | None -> ()))
   | None ->
       if Conv_window.busy ui.conv then begin
         Conv_window.handle_click ui.conv mx my;
@@ -1093,7 +1113,38 @@ let step (ui : ui) (dt : float) : unit =
     (match ui.pending with
     | Some (qid, loc) ->
         ui.pending <- None;
-        ui.player <- Campaign.complete_action ~success:true ui.player qid loc;
+        (* The action's stage fight, when the stage has one: opened with the
+           screen's choices, played on the battle screen, settled - then
+           [complete_action] runs OnCompleteAction under the real outcome,
+           which is the engine's order on the return to the map. A stage with
+           no battle completes as it always did, success implied. *)
+        (match
+           Campaign.quest_battle_open ~rng:Random.int
+             ~human:(Battle_screen.hooks ()) ui.player qid
+         with
+        | None ->
+            ui.player <- Campaign.complete_action ~success:true ui.player qid loc
+        | Some qf ->
+            let battle = Battle_screen.run qf.Campaign.qf_battle in
+            let won = Battle.hero_won battle in
+            let player, offer = qf.Campaign.qf_finish battle in
+            ui.player <- player;
+            Printf.printf "  %s: %s in %d turns (life %d)\n" qid
+              (if won then "won" else "lost")
+              battle.Battle.turns_elapsed player.Campaign.life;
+            flush stdout;
+            (* The win's capture offer, computed by the settle where the
+               stage's flag and monster id live (port.capture_surfaces). *)
+            (match offer with
+            | Some mid ->
+                ui.capture <- Some (mid, Campaign.capture_begin mid);
+                ui.capture_sel <- None;
+                Printf.printf "  capture available: %s - swap two gems, or Cancel\n"
+                  (monster_name mid);
+                flush stdout
+            | None -> ());
+            ui.player <-
+              Campaign.complete_action ~success:won ui.player qid loc);
         Printf.printf "  %s: action finished at %s\n" qid loc;
         flush stdout
     | None -> ());
@@ -1140,6 +1191,12 @@ let () =
     Gl.create ~title:"Puzzle Quest - world map" ~width:window_w
       ~height:window_h
   in
+  (* The playable battle screen, hosted on this window's context: road,
+     quest-stage and callback fights all run through it, so the art loads
+     once here rather than per fight. The module holds the one screen per
+     process - [Battle_screen.hooks] and [Battle_screen.run] reach it, so
+     the handle is not threaded through the ui record. *)
+  ignore (Battle_screen.create ~gl);
   let segments = load_segments () in
   let missing =
     List.length (List.filter (fun (_, t) -> t = None) segments)
@@ -1171,7 +1228,11 @@ let () =
     { gl; segments; fonts; system;
       player = hero;
       journey = None; popup = None; popup_rune = None; city = None;
-      conv = Conv_window.create ~gl ~fonts ~system ~player:hero;
+      conv =
+        Conv_window.create ~gl ~fonts ~system ~player:hero
+          ~human:(Battle_screen.hooks ())
+          ~run_battle:Battle_screen.run
+          ();
       pending = None;
       capture = None;
       capture_sel = None }

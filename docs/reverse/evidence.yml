@@ -5603,3 +5603,38 @@ port_decisions:
       battle-time additions that do not move the construction-time ceiling.
     supersedes: null
     date: 2026-10-12
+
+  - id: port.quest_battle_fight_screen
+    decision: >
+      Quest, callback and road fights are played on a hosted battle screen
+      rather than run headless behind a banner: gfx/battle_screen.ml is
+      pq_play_gfx's whole body extracted into the library (create / hooks /
+      run over the host's GL context), the campaign's three fused runners
+      split into open + settle (quest_battle_open, callback_open,
+      encounter_battle_open) that take ?human to put the screen's
+      mouse-backed choices in the rules, the map front hosts the screen for
+      road fights and for a stage's fight after the action's dialogue drains
+      (feeding complete_action the real verdict instead of a hardcoded
+      success), and Conv_window takes the host's runner so a scriptcall
+      battle plays on the same screen.
+    rationale: >
+      The battle front rendered a real fight but the campaign's fights all
+      ran behind a Victory/Defeat banner or a console line: run_quest_battle
+      and execute_callback fused build + Battle.run + settle, and
+      run_encounter_battle did the same for the road, so there was no seam a
+      front could host a fight through. The blocking model is preserved
+      rather than reworked: Battle.run still re-enters the window through the
+      three human hooks and the three observers, so a hosted fight is one
+      blocking call inside the map's click handler - the same shape the
+      headless path already had, only now it draws and takes clicks. The
+      splits keep settle separable exactly as the existing tests drive it
+      (open hands back an un-run battle; the front runs it; the settle
+      closure applies life, spoils, stage, capture and the offer), and
+      ?human threads through playable_rules into Battle.rules.player so the
+      auto-AI headless path is untouched when it is omitted. The map's
+      pending-action step now opens the stage's fight before complete_action
+      and passes success:won (it hardcoded true before, so a lost stage fight
+      never branched), and the screen's HUD rows read the fight's own
+      hero_spells rather than the standalone front's demo list.
+    supersedes: null
+    date: 2026-10-14

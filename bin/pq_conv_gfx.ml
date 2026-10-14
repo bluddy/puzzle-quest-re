@@ -43,6 +43,7 @@ let () =
     Conv_window.create ~gl ~fonts
       ~system:(Font_layout.metrics_of_tag "font_system")
       ~player:(Campaign.create_player "TestHero" "PWAR" 0 0)
+      ()
   in
   Conv_window.open_conv ui !conv_id;
   Printf.printf "renderer: %s\n  GL: %s\n  conversation: %s\n"
