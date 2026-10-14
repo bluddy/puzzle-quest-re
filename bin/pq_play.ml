@@ -40,6 +40,7 @@ let gem_char = function
   | Board.Mana Board.Air -> 'A'
   | Board.Mana Board.Water -> 'W'
   | Board.Wildcard n -> [| '2'; '3'; '4'; '5'; '6'; '7'; '8' |].(n - 2)
+  | Board.Hammer -> 'H'
   | Board.Empty -> '.'
 
 (** Rows print top-down as 0..7, matching how the board is stored: row 0 is the

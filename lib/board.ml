@@ -16,6 +16,12 @@ type gem =
   | Gold
   | Experience
   | Wildcard of int  (** Multiplier: 2, 3, 4, 5, etc. Matches any mana element *)
+  | Hammer
+      (** The forge skill game's Hammer & Anvil gem (the [ITEMGAME] board,
+          [Rules_ItemGame.png]): an obstacle that scores a point when
+          destroyed and matches only other hammers. The battle never spawns
+          one - [refill_board] is unchanged - so every battle path meets it
+          only as a no-benefit clear. *)
 
 type position = { x : int; y : int }
 
@@ -108,6 +114,7 @@ let gems_match (g1 : gem) (g2 : gem) : bool =
   | Experience, Experience -> true
   | Wildcard _, Mana _ | Mana _, Wildcard _ -> true
   | Wildcard _, Wildcard _ -> true
+  | Hammer, Hammer -> true  (* the item game's only hammer match *)
   | _ -> false
 
 (** Check if three gems form a valid 3-match *)
@@ -125,6 +132,7 @@ let match_triple (g1 : gem) (g2 : gem) (g3 : gem) : bool =
     | Skull, RedSkull, RedSkull -> true
     | Gold, Gold, Gold -> true
     | Experience, Experience, Experience -> true
+    | Hammer, Hammer, Hammer -> true
     | _ ->
         let is_mana_or_wildcard = function
           | Mana _ | Wildcard _ -> true
@@ -315,6 +323,8 @@ let resolve_matches ?(wildcards_enabled = true) (b : board) : (board * match_res
             earth := !earth * mult;
             fire := !fire * mult;
             water := !water * mult
+        | Hammer -> ()  (* the item game's scorer counts it from the clear
+                           list; a battle that never spawns one banks nothing *)
         | Empty -> ())
       to_clear;
 
@@ -499,6 +509,7 @@ let string_of_gem = function
   | RedSkull -> " R "
   | Gold -> " G "
   | Experience -> " X "
+  | Hammer -> " H "
   | Wildcard m -> Printf.sprintf "*%d*" (min 9 m)
 
 let print_board (b : board) : unit =

@@ -1023,11 +1023,29 @@ let register_rune_item (id: string) (p: rune_item_params) : unit =
   in
   Hashtbl.replace Item_hooks.rune_start_payoffs id payoffs
 
+(* The [MAXRUNEITEM] cap: how many minted rune items the inventory holds
+   before the forge refuses ("You must sell some in the shop before creating
+   any more", [MAXRUNEITEM0/1]). The count is minted ids - "R" + the triple,
+   which no fixed item's id can collide with. The NUMBER is a port choice:
+   the exe answers no strings for the item game and its RTTI is orphaned, so
+   the threshold is unrecovered (forge.item_game_numbers); 10 is a round
+   bound well above what one quest's runes can mint. *)
+let rune_item_cap = 10
+
+let rune_item_count (p: player) : int =
+  List.length
+    (List.filter
+       (fun (i: item) -> String.length i.id > 0 && i.id.[0] = 'R')
+       p.inventory)
+
 (* Forge for keeps: the item joins the inventory (once - [RUNEDUP_TEXT]:
-   a duplicate yields no extra copy) and the session registry. *)
+   a duplicate yields no extra copy) and the session registry. The
+   [MAXRUNEITEM] cap refuses the creation outright, so a driver that only
+   reads the option still cannot blow past it. *)
 let forge_item (p: player) ~(base: string) ~(modifier: string)
     ~(power: string) : (player * item) option =
-  if
+  if rune_item_count p >= rune_item_cap then None
+  else if
     List.mem base p.runes && List.mem modifier p.runes
     && List.mem power p.runes
   then

@@ -367,6 +367,50 @@ let () =
   check_int "the ceiling is the last band" (Campaign.forge_band 600) 9;
   check_int "and clamps past it" (Campaign.forge_band 900) 9
 
+(* 7. The [MAXRUNEITEM] cap: ten minted items fill the inventory and the
+     eleventh forge is refused, wherever it comes from - the skill game's
+     win path or a direct call. *)
+
+let () =
+  let powers =
+    [ "UFIR"; "UEAR"; "UAIR"; "UWAT"; "USHE"; "UCAV"; "UGLA"; "UICE";
+      "UPLA"; "ULIF"; "UTRO" ]
+  in
+  let p =
+    { (fresh ()) with Campaign.runes = "UDAG" :: "UCRA" :: powers }
+  in
+  check_int "a fresh hero holds no rune items"
+    (Campaign.rune_item_count p) 0;
+  (* Mint distinct triples until the cap refuses: the first ten succeed. *)
+  let rec go n p =
+    if n >= List.length powers then p
+    else
+      match
+        Campaign.forge_item p ~base:"UDAG" ~modifier:"UCRA"
+          ~power:(List.nth powers n)
+      with
+      | Some (p', _) -> go (n + 1) p'
+      | None -> p
+  in
+  let p = go 0 p in
+  check_int "ten distinct triples fill the inventory to the cap"
+    (Campaign.rune_item_count p) Campaign.rune_item_cap;
+  (* A duplicate triple - which the dedup would answer [Some] to with an
+     unchanged bag - comes back [None], so it is the cap refusing. *)
+  check "the eleventh forge is refused by the cap"
+    (Campaign.forge_item p ~base:"UDAG" ~modifier:"UCRA" ~power:"UFIR"
+    = None);
+  (* The cap counts minted ids only, so a fixed item in the bag is
+     invisible to it. *)
+  let with_fixed =
+    { p with
+      Campaign.inventory =
+        (try Campaign.resolve_item "ISRI" :: p.Campaign.inventory
+         with Not_found -> p.Campaign.inventory) }
+  in
+  check_int "a fixed item does not count toward the rune cap"
+    (Campaign.rune_item_count with_fixed) Campaign.rune_item_cap
+
 let () =
   if !failures = 0 then print_endline "all rune tests passed"
   else begin

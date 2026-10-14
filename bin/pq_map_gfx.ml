@@ -28,9 +28,13 @@
     passes the capture gates opens the minigame instead
     ([Campaign.capture_offer]): CaptureMenu.xml's grid drawn as flat gem
     colours, two clicks a swap through [Capture.play], and the console's
-    [CANCEL] button standing in for the gamepad back-out. Callback battles a
-    conversation triggers follow the same seam through [Conv_window], which
-    this front hands the screen's hooks and runner. *)
+    [CANCEL] button standing in for the gamepad back-out. The city's Forge
+    tab opens the forge skill game the same way ([Item_game] over
+    ItemGameMenu.xml's grid and meter): the [MAXRUNEITEM] cap refuses a
+    full bag up front, a win mints through [Campaign.forge_item], and a loss
+    prints [FORGEITEMS_FAIL]. Callback battles a conversation triggers
+    follow the battle-screen seam through [Conv_window], which this front
+    hands the screen's hooks and runner. *)
 open Puzzle_quest_lib
 open Pq_gfx
 module E = Tsdl.Sdl.Event
@@ -106,6 +110,17 @@ type ui = {
   mutable pending : (string * string) option;  (* (qid, loc): action awaiting complete *)
   mutable capture : (string * Capture.t) option;  (* monster id + live attempt *)
   mutable capture_sel : (int * int) option;  (* first gem of a pending swap *)
+  mutable forge_game :
+      (string * string * string * Item_game.t) option;
+      (** the forge skill game over the city panel: the held triple (base,
+          modifier, power) plus the live board - the [FORGEITEMS_FAIL] game
+          [ItemGameMenu.xml] ships, won to mint through [forge_item] and
+          lost to the failure line (port.item_game_rules) *)
+  mutable forge_sel : (int * int) option;  (* first gem of a pending swap *)
+  skin : Skin.t;  (** the gems-grid sheet, for the hammer art the meter and
+                      the board's hammers draw from (img_hammanv_on/off) *)
+  rules_tex : Gl.texture option;
+      (** English/Rules_ItemGame.png, the skill game's own rules panel *)
 }
 
 let node_colour (k : Campaign.node_kind) : Layout.colour =
@@ -453,20 +468,33 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
       if cv.tab <> Forge then ()
       else (
         match (cv.forge_base, cv.forge_mod, cv.forge_pow) with
-        | Some b, Some m, Some w -> (
-            match Campaign.forge_item ui.player ~base:b ~modifier:m ~power:w with
-            | Some (player, it) ->
-                ui.player <- player;
-                cv.forge_base <- None;
-                cv.forge_mod <- None;
-                cv.forge_pow <- None;
-                Printf.printf "  %s %s\n"
-                  (Text_data.text "[FORGEITEMS_SUCCESS]")
-                  (Text_data.text it.Campaign_items.name_text);
-                flush stdout
-            | None ->
-                Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_FAIL]");
-                flush stdout)
+        | Some b, Some m, Some w ->
+            (* The skill game gates creation: [MAXRUNEITEM] refuses the
+               attempt outright, then [FORGEITEMS_FAIL] becomes the game's
+               own loss line rather than a held-rune miss. *)
+            if Campaign.rune_item_count ui.player >= Campaign.rune_item_cap
+            then begin
+              Printf.printf "  %s\n" (Text_data.text "[MAXRUNEITEM0]");
+              Printf.printf "  %s\n" (Text_data.text "[MAXRUNEITEM1]");
+              flush stdout
+            end
+            else
+              (match Campaign.forge_rune ui.player ~base:b ~modifier:m ~power:w with
+              | None ->
+                  Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_3RUNES]");
+                  flush stdout
+              | Some spec ->
+                  let target =
+                    Item_game.target_for_band
+                      (Campaign.forge_band spec.Campaign.difficulty)
+                  in
+                  ui.forge_game <-
+                    Some (b, m, w, Item_game.create ~rng:Random.int ~target ());
+                  ui.forge_sel <- None;
+                  Printf.printf "  %s - destroy hammers and anvils for %d points\n"
+                    (Text_data.text "[ITEMGAMEMENU_HEADING]")
+                    target;
+                  flush stdout)
         | _ ->
             Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_3RUNES]");
             flush stdout)
@@ -736,6 +764,205 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
       end
   | _ -> ())
 
+(* The hammer art at a chosen size: [Skin.draw] insists on the registry's own
+   destination size (64x64), but the skill game's meter icons are 40x40 in
+   44px slots and its board cells are 73, so the quad is pushed here with the
+   caller's rectangle and the registry's source pixels - the same shape the
+   battle front's effect drawer uses. *)
+let draw_skin_scaled (rs : Gl.run list ref) (skin : Skin.t) (gl : Gl.context)
+    (tag : string) ~(dst : Layout.rect) : bool =
+  match Skin_data.frame_of_tag tag with
+  | None -> false
+  | Some f -> (
+    match Skin.sheet_texture skin f.Skin_data.sheet with
+    | None -> false
+    | Some (tex, tw, th) ->
+      let uv =
+        { Layout.x = f.Skin_data.x; y = f.Skin_data.y; w = f.Skin_data.w;
+          h = f.Skin_data.h }
+      in
+      let first =
+        Gl.push_quad ~tex_size:(tw, th) gl dst (Some uv)
+          (Layout.rgb 255 255 255)
+      in
+      rs :=
+        !rs
+        @ [ { Gl.first; count = 6; tex = Some tex;
+              colour = Layout.rgb 255 255 255; clip = None; blend = None } ];
+      true)
+
+(* The skill game's rules panel, from the shipped English/Rules_ItemGame.png.
+   It lives with the other language assets rather than in the flat gfx dir,
+   so the roots the conversation art resolves against are tried first. *)
+let load_rules_texture () : Gl.texture option =
+  let roots =
+    List.filter
+      (fun d -> Sys.file_exists d && Sys.is_directory d)
+      (match Sys.getenv_opt "PQ_GAME_ASSETS" with
+      | Some p when Sys.file_exists p && Sys.is_directory p -> [ p ]
+      | _ -> [ "game/Assets"; asset_dir () ])
+  in
+  let rec try_path = function
+    | [] -> None
+    | c :: rest -> (
+        if Sys.file_exists c then
+          try
+            let px, w, h = Assets.load_image c in
+            Some (Gl.texture_of_bigarray ~w ~h px)
+          with _ -> try_path rest
+        else try_path rest)
+  in
+  try_path
+    (List.concat_map
+       (fun r -> [ Filename.concat r "English/Rules_ItemGame.png" ])
+       roots)
+
+(* The forge skill game over everything: ItemGameMenu.xml's grid (the capture
+   grid's own 584 at (217,130)), the 21-icon [ITEMGAME_TARGET] meter down the
+   right, the rules panel, the hero's name and the item being forged, and the
+   shipped title and help lines. Hammers draw as img_hammanv_on art; the other
+   gems are flat colours with their letters, the capture window's convention.
+   A terminal state changes the hint and takes one more click, which is where
+   [Campaign.forge_item] (a win) or [FORGEITEMS_FAIL] (a loss) runs. *)
+let draw_forge_game (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
+    ((base, modifier, power, game) :
+      string * string * string * Item_game.t) : unit =
+  solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+    (Layout.rgba 0 0 0 190);
+  (* The grid's ground, under the gems. *)
+  solid rs gl
+    { Layout.x = Item_game_layout.grid_x - 6; y = Item_game_layout.grid_y - 6;
+      w = Item_game_layout.grid_size + 12; h = Item_game_layout.grid_size + 12 }
+    (Layout.rgb 24 26 34);
+  let board = Item_game.(game.board) in
+  for r = 0 to 7 do
+    for c = 0 to 7 do
+      let rect = Item_game_layout.cell_rect c r in
+      let gem = Board.get_gem board { Board.x = c; y = r } in
+      if gem = Board.Hammer then begin
+        (* 64px of art centred in the 73px cell. *)
+        if
+          not
+            (draw_skin_scaled rs ui.skin gl "img_hammanv_on"
+               ~dst:
+                 { rect with
+                   Layout.x = rect.Layout.x + ((rect.Layout.w - 64) / 2);
+                   y = rect.Layout.y + ((rect.Layout.h - 64) / 2) })
+        then begin
+          solid rs gl
+            { Layout.x = rect.Layout.x + 2; y = rect.Layout.y + 2;
+              w = rect.Layout.w - 4; h = rect.Layout.h - 4 }
+            (Layout.gem_colour gem)
+        end
+      end
+      else begin
+        solid rs gl
+          { Layout.x = rect.Layout.x + 2; y = rect.Layout.y + 2;
+            w = rect.Layout.w - 4; h = rect.Layout.h - 4 }
+          (Layout.gem_colour gem);
+        let label = Layout.gem_letter gem in
+        if label <> " " then
+          match (ui.fonts, ui.system) with
+          | Some f, Some m ->
+            rs :=
+              !rs
+              @ Font.draw gl f m label
+                  ~x:
+                    (rect.Layout.x
+                    + ((rect.Layout.w - Font_layout.measure m label) / 2))
+                  ~y:(rect.Layout.y + 20)
+          | _ -> ()
+      end
+    done
+  done;
+  (* The pending swap's first gem: a gold ring, the capture window's own. *)
+  (match ui.forge_sel with
+  | Some (c, r) ->
+      let rect = Item_game_layout.cell_rect c r in
+      let x = rect.Layout.x and y = rect.Layout.y in
+      let w = rect.Layout.w and h = rect.Layout.h in
+      let gold = Layout.rgb 240 210 90 in
+      solid rs gl { Layout.x = x; y; w; h = 3 } gold;
+      solid rs gl { Layout.x = x; y = y + h - 3; w; h = 3 } gold;
+      solid rs gl { Layout.x = x; y; w = 3; h } gold;
+      solid rs gl { Layout.x = x + w - 3; y; w = 3; h } gold
+  | None -> ());
+  (* The rules panel, when the art is there. *)
+  (match ui.rules_tex with
+  | None -> ()
+  | Some tex ->
+    let d = Item_game_layout.rules_rect in
+    let first =
+      Gl.push_quad ~tex_size:(128, 512) gl d
+        (Some { Layout.x = 0; y = 0; w = 128; h = 512 })
+        (Layout.rgb 255 255 255)
+    in
+    rs :=
+      !rs
+      @ [ { Gl.first; count = 6; tex = Some tex;
+            colour = Layout.rgb 255 255 255; clip = None; blend = None } ]);
+  (* The 21-icon meter: lit icons are the points already scored. *)
+  for i = 0 to Item_game_layout.meter_count - 1 do
+    let d = Item_game_layout.meter_rect i in
+    let lit = i < Item_game.(game.score) in
+    if
+      not
+        (draw_skin_scaled rs ui.skin gl
+           (if lit then "img_hammanv_on" else "img_hammanv_off")
+           ~dst:d)
+    then
+      solid rs gl d
+        (if lit then Layout.rgb 196 160 96 else Layout.rgb 60 62 72)
+  done;
+  (match (ui.fonts, ui.system) with
+  | Some f, Some m ->
+      let text ?(colour = Layout.rgb 230 230 230) s x y =
+        rs := !rs @ Font.draw gl f m s ~x ~y ~colour
+      in
+      text (Text_data.text "[ITEMGAME]") (Item_game_layout.title_cx - (Font_layout.measure m (Text_data.text "[ITEMGAME]") / 2)) Item_game_layout.title_y
+        ~colour:(Layout.rgb 240 210 90);
+      let hint =
+        match Item_game.(game.status) with
+        | Item_game.Playing -> Text_data.text "[ITEMGAME_HELP]"
+        | Item_game.Won -> "the item is forged - click to collect it"
+        | Item_game.Lost -> Text_data.text "[FORGEITEMS_FAIL]"
+      in
+      text hint
+        (Item_game_layout.screen_w / 2 - (Font_layout.measure m hint / 2))
+        Item_game_layout.help_y;
+      text (ui.player.Campaign.name)
+        (Item_game_layout.hero_name_cx - (Font_layout.measure m ui.player.Campaign.name / 2))
+        Item_game_layout.hero_name_y;
+      (* The item being forged, from the same triple the mint will use. *)
+      (match Campaign.rune_item_of_triple ~base ~modifier ~power with
+      | None -> ()
+      | Some (it, _) ->
+        let name = Text_data.text it.Campaign_items.name_text in
+        text name
+          (Item_game_layout.item_name_rect.Layout.x
+          + ((Item_game_layout.item_name_rect.Layout.w - Font_layout.measure m name) / 2))
+          (Item_game_layout.item_name_rect.Layout.y + 4);
+        let desc = Text_data.text it.Campaign_items.power_text in
+        let words = String.split_on_char ' ' desc in
+        let rec wrap col acc = function
+          | [] -> List.rev (if col = "" then acc else col :: acc)
+          | w :: rest ->
+            let cand = if col = "" then w else col ^ " " ^ w in
+            if Font_layout.measure m cand <= Item_game_layout.item_desc_rect.Layout.w - 8
+            then wrap cand acc rest
+            else wrap w (col :: acc) rest
+        in
+        List.iteri
+          (fun i line ->
+            text line
+              (Item_game_layout.item_desc_rect.Layout.x + 4)
+              (Item_game_layout.item_desc_rect.Layout.y + 4 + (i * 16)))
+          (List.take 12 (wrap "" [] words)));
+      text (Text_data.text "[ITEMGAME_TARGET]")
+        (Item_game_layout.targets_cx - (Font_layout.measure m (Text_data.text "[ITEMGAME_TARGET]") / 2))
+        Item_game_layout.targets_y
+  | _ -> ())
+
 (* The capture minigame over everything: CaptureMenu.xml's grid as flat gem
    colours with the shipped letters, its title and help lines, the port's
    give-up button, and a gold ring on the first gem of a pending swap. A
@@ -914,6 +1141,11 @@ let draw ?(present = true) (ui : ui) : unit =
   (match ui.capture with
   | Some (_, attempt) -> draw_capture rs gl ui attempt
   | None -> ());
+  (* The forge skill game over the city panel - drawn last so it is the
+     topmost thing up, capture included. *)
+  (match ui.forge_game with
+  | Some fg -> draw_forge_game rs gl ui fg
+  | None -> ());
   Gl.submit gl !rs;
   if present then Gl.present gl
 
@@ -964,7 +1196,64 @@ let handle_capture_click (ui : ui) (mx : int) (my : int) : unit =
             | _ -> ui.capture_sel <- Some (c, r))
         | Capture_layout.Miss -> ()))
 
+(* The forge skill game holds every click while it is up, capture included -
+   the two cannot be open at once, but the priority keeps the draw and the
+   click in the same order. A terminal state takes one more click, which is
+   where the mint ([Campaign.forge_item], a win) or [FORGEITEMS_FAIL] (a
+   loss) runs and the runes stay held either way. *)
+let handle_forge_game_click (ui : ui) (mx : int) (my : int) : unit =
+  match ui.forge_game with
+  | None -> ()
+  | Some (base, modifier, power, game) -> (
+    match Item_game.(game.status) with
+    | Item_game.Won | Item_game.Lost ->
+        let won = Item_game.(game.status) = Item_game.Won in
+        ui.forge_game <- None;
+        ui.forge_sel <- None;
+        if won then
+          match
+            Campaign.forge_item ui.player ~base ~modifier ~power
+          with
+          | Some (player, it) ->
+              ui.player <- player;
+              Printf.printf "  %s %s\n"
+                (Text_data.text "[FORGEITEMS_SUCCESS]")
+                (Text_data.text it.Campaign_items.name_text);
+              flush stdout
+          | None ->
+              (* The cap cannot race - it is checked before the game opens
+                 and forge_item re-checks it - so this is the held-rune gate
+                 failing under a triple the panel offered. *)
+              Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_FAIL]");
+              flush stdout
+        else begin
+          Printf.printf "  %s\n" (Text_data.text "[FORGEITEMS_FAIL]");
+          flush stdout
+        end
+    | Item_game.Playing -> (
+        match Item_game_layout.hit mx my with
+        | `Miss -> ()
+        | `Cell (c, r) -> (
+            match ui.forge_sel with
+            | Some (c0, r0) when c0 = c && r0 = r -> ui.forge_sel <- None
+            | Some (c0, r0) when abs (c0 - c) + abs (r0 - r) = 1 -> (
+                match
+                  Item_game.play game
+                    { Board.from_pos = { Board.x = c0; Board.y = r0 };
+                      Board.to_pos = { Board.x = c; Board.y = r } }
+                with
+                | Some next ->
+                    ui.forge_game <- Some (base, modifier, power, next);
+                    ui.forge_sel <- None
+                | None ->
+                    (* an illegal swap reselects on the clicked gem *)
+                    ui.forge_sel <- Some (c, r))
+            | _ -> ui.forge_sel <- Some (c, r))))
+
 let handle_click (ui : ui) (mx : int) (my : int) : unit =
+  match ui.forge_game with
+  | Some _ -> handle_forge_game_click ui mx my
+  | None -> (
   match ui.capture with
   | Some _ -> handle_capture_click ui mx my
   | None -> (
@@ -1094,7 +1383,7 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
                         Printf.printf "  %s stops you on the road!\n"
                           enc.Campaign_encounters.description;
                         flush stdout
-                    | None -> ())))))
+                    | None -> ()))))))
 
 (** One frame: the hosted dialogue first - it holds walking while a box, a
     tree or a banner is up, and when it drains the pending action completes
@@ -1102,13 +1391,14 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
     which through [advance_travel_with_events] fires the arrival moment. *)
 let step (ui : ui) (dt : float) : unit =
   Conv_window.sync_player ui.conv ui.player;
-  (* The minigame holds the hosted dialogue where it is too: no scriptcall
-     fires a battle behind the grid. *)
-  if ui.capture = None then begin
+  (* The minigames hold the hosted dialogue where it is too: no scriptcall
+     fires a battle behind the grids. *)
+  if ui.capture = None && ui.forge_game = None then begin
     Conv_window.step ui.conv dt;
     ui.player <- Conv_window.player_of ui.conv
   end;
-  if Conv_window.busy ui.conv || ui.capture <> None then ()
+  if Conv_window.busy ui.conv || ui.capture <> None || ui.forge_game <> None
+  then ()
   else begin
     (match ui.pending with
     | Some (qid, loc) ->
@@ -1150,8 +1440,8 @@ let step (ui : ui) (dt : float) : unit =
     | None -> ());
     match (ui.journey, ui.popup) with
     | Some _, Some _ -> ()
-    (* the minigame holds the journey where it is, like the popup does *)
-    | _, _ when ui.capture <> None -> ()
+    (* the minigames hold the journey where it is, like the popup does *)
+    | _, _ when ui.capture <> None || ui.forge_game <> None -> ()
     | Some j, None -> (
         let p', ts' =
           Campaign.advance_travel_with_events ui.player j (walk_speed *. dt)
@@ -1177,16 +1467,20 @@ let step (ui : ui) (dt : float) : unit =
 
 let () =
   Random.self_init ();
-  let shot = ref "" and open_city_flag = ref false in
+  let shot = ref "" and open_city_flag = ref false
+  and itemgame_flag = ref false in
   Arg.parse
     [ ( "--shot",
         Arg.Set_string shot,
         "draw one frame, write it as a P6 ppm, and exit" );
       ( "--city",
         Arg.Set open_city_flag,
-        "open the start city's panel on startup (for --shot)" ) ]
+        "open the start city's panel on startup (for --shot)" );
+      ( "--itemgame",
+        Arg.Set itemgame_flag,
+        "open the forge skill game over the gifted triple (for --shot)" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE] [--city]";
+    "pq_map_gfx [--shot FILE] [--city] [--itemgame]";
   let gl =
     Gl.create ~title:"Puzzle Quest - world map" ~width:window_w
       ~height:window_h
@@ -1235,9 +1529,41 @@ let () =
           ();
       pending = None;
       capture = None;
-      capture_sel = None }
+      capture_sel = None;
+      forge_game = None;
+      forge_sel = None;
+      (* The gems-grid sheet carries the hammer art the skill game's meter
+         and board draw from; a checkout without it falls back to flat
+         squares, the same contract every other sheet here keeps. *)
+      skin = Skin.create ~gl ~sheets:[ "bmp_skin_gemsgrid" ];
+      rules_tex = load_rules_texture () }
   in
   if !open_city_flag then open_city ui start_city;
+  (* --itemgame prefills the gifted triple the Forge tab would hold and
+     opens the skill game, so --shot can photograph it without a click
+     sequence - the same discipline the battle front's --demo/--shot uses. *)
+  if !itemgame_flag then begin
+    open_city ui start_city;
+    match ui.city with
+    | None -> ()
+    | Some cv ->
+        cv.tab <- Forge;
+        cv.forge_base <- Some "UDAG";
+        cv.forge_mod <- Some "UCRA";
+        cv.forge_pow <- Some "UFIR";
+        let target =
+          match
+            Campaign.forge_rune ui.player ~base:"UDAG" ~modifier:"UCRA"
+              ~power:"UFIR"
+          with
+          | Some spec ->
+              Item_game.target_for_band
+                (Campaign.forge_band spec.Campaign.difficulty)
+          | None -> 5
+        in
+        ui.forge_game <-
+          Some ("UDAG", "UCRA", "UFIR", Item_game.create ~rng:Random.int ~target ())
+  end;
   Printf.printf
     "renderer: %s\n  GL: %s\n  map: %d world px at 3/8 scale, origin (%d, %d)\n"
     (Gl.renderer_name ()) (Gl.gl_version ()) Map_view.world Map_view.origin_x

@@ -2,15 +2,17 @@
 
 **Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree (the quest-battle fight-screen round - option 1 retired; on top of the committed difficulty-spoils round `13fbe1f`). Option 1 asked for the campaign's fights to be *played* rather than bannered. The seam: `bin/pq_play_gfx.ml`'s whole body moved into `gfx/battle_screen.ml` as a library module (`create ~gl` loads the art over the host's context once, `hooks ()` returns the mouse-backed `Battle.player`, `run b` attaches the three observers and plays the fight - the same blocking model, the hooks pump SDL internally), with `bin/pq_play_gfx.ml` down to a `Battle_screen.standalone ()` driver. The campaign's three fused runners split into open + settle so a front can host the fight: `quest_battle_open ?rng ?human player qid : quest_fight option` (`qf_battle` un-run, `qf_finish battle = settled player * capture offer`), `callback_open` (`cf_player` post-effects, `cf_battle` option, `cf_settle`), and `encounter_battle_open` (the build half of `run_encounter_battle`); each takes `?human`, threaded through the new `playable_rules` into `Battle.rules.player` (a separate function rather than `?human` on `rules_for_battle`, because an optional before only-labeled args is never erased and every existing call site omits it). `run_quest_battle`/`execute_callback`/`run_encounter_battle` are now thin wrappers (open |> `Battle.run` |> settle), so every headless test drives the same path. `Conv_window.create` gained `?human` and `?run_battle` (default `Battle.run`): `step_scriptcall` and `dismiss_message` open the callback through `callback_open` and run it through the host's runner, so the map installs `Battle_screen.hooks ()`/`Battle_screen.run` and a scriptcall fight plays on the map window instead of behind the banner (`pq_conv_gfx` passes neither and stays headless). The map front hosts the screen: the road popup opens `encounter_battle_open ~human` then `Battle_screen.run` then `process_battle_result` (still settling the capture offer and the runekeeper win as before); the pending-action step opens `quest_battle_open ~human` *before* `complete_action`, plays it, settles through `qf_finish` (life, spoils, stage, plus the capture offer the win raises), opens the minigame when the offer holds, and calls `complete_action ~success:won` - replacing the hardcoded `~success:true`, so a lost stage fight now branches OnCompleteAction correctly. The battle screen's HUD reads the fight's own `hero_spells` for the row grounds and labels (it used to hardcode `demo_spells` in three places - fine for the standalone whose roster *is* the demo list, wrong for a campaign fight), and `on_battle_event`'s spell-sound lookup reads `b.hero_spells` too. `port.quest_battle_fight_screen` records the round; 35 suites, 2733->2746 checks, all green.
+**Sync:** working tree (the forge skill-game round; on top of the committed fight-screen round `b3246a0`). GAPS.md's forge-minigame bullet retired: the game [FORGEITEMS_FAIL] implies is now playable end to end. `lib/item_game.ml` ports the shipped rule set from English/Rules_ItemGame.png - a Hammer & Anvil gem (new [Board.Hammer], the battle never spawns one) that matches only hammers and scores a point when destroyed; a run of 4 destroys its own row or column, a run of 5 also destroys every gem of its type, a cascade of 5 deep (the recovered [HEROICEFFORT_TEXT] threshold) spawns a random hammer, any destruction resets the board ([ITEMGAMEMENU_TEXT]: "Each time one or more of them are destroyed"), and a board with no legal move is defeat (the line trails off with "&" in the clipped 128x512 art, and the menu carries timer="on", so the second condition is almost certainly a clock the port does not model). The numbers that are not on any asset are port choices, recorded in `forge.item_game_numbers` (open): `target_for_band` asks 3+2xband points so Godlike fills the 21-icon meter exactly and the gifted triple a forgiving 5, a board carries four hammers, and the [MAXRUNEITEM] cap is 10 - the exe answers no item-game strings, its RTTI chain is orphaned, and no Lua touches forging. `gfx/item_game_layout.ml` transcribes ItemGameMenu.xml (pad_grid identical to CaptureMenu's, the 21-icon [ITEMGAME_TARGET] meter stepping 44 from (851,359), the rules panel at (50,324) 128x395) and `test_gfx_item_game.ml` pins each number. The city Forge tab opens the game instead of minting instantly: [MAXRUNEITEM0/1] refuses a full bag up front, a win mints through `Campaign.forge_item`, a loss prints [FORGEITEMS_FAIL], and `--itemgame --shot` photographs it (the rules panel and the img_hammanv hammer art load from the shipped assets). `Campaign.forge_item` enforces the cap engine-side through the new `rune_item_count`/`rune_item_cap`, so a headless caller cannot blow past it. `port.item_game_rules` records the round; 35 suites, 2746->2803 checks, all green.
 
 ---
 
 ## Next Round Options (surveyed 2026-10-12; six rounds landed that day, four follow-ons on 2026-10-13)
 
-The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. What is left is a few sharpening threads. Ranked by leverage:
+The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. The two big UI rounds from this list - the quest-battle fight screens and the forge skill game - are both closed; what remains is a few sharpening threads (the settings surface for Difficulty/Time Limit, mount training/avoidance, languages, enemy variety), tracked in the milestones below.
 
 ### Closed rounds from this list
+
+- ~~Forge minigame~~ (landed 2026-10-14): GAPS.md's forge bullet retired - the skill game `[FORGEITEMS_FAIL]` implies is playable. `lib/item_game.ml` ports the shipped rules (English/Rules_ItemGame.png): a new `Board.Hammer` gem matching only hammers and scoring a point when destroyed, a 4-run destroying its row or column, a 5-run also destroying every gem of its type, a 5-deep cascade spawning a random hammer (`[HEROICEFFORT_TEXT]`), any destruction resetting the board, and no-legal-move defeat. `gfx/item_game_layout.ml` transcribes ItemGameMenu.xml and pins the 21-icon meter; the Forge tab opens the game, `[MAXRUNEITEM0/1]` refuses a full bag (cap 10, engine-enforced in `forge_item`), a win mints, a loss prints `[FORGEITEMS_FAIL]`. The numbers are port choices with `forge.item_game_numbers` open (the exe answers no item-game strings, RTTI orphaned); `port.item_game_rules` records it; 2803 checks green.
 
 - ~~Campaign → battle: fight screens for quest battles~~ (landed 2026-10-14): option 1 retired - the campaign's fights are played, not bannered. `bin/pq_play_gfx.ml`'s whole body moved into `gfx/battle_screen.ml` (`create ~gl` / `hooks ()` / `run b` over the host's context; `bin/pq_play_gfx.ml` is now a `standalone ()` driver), and the campaign's three fused runners split into open + settle (`quest_battle_open`, `callback_open`, `encounter_battle_open`), each taking `?human` through `playable_rules` into `Battle.rules.player`. The map front hosts the screen for road fights and for a stage's fight after the action's dialogue drains (feeding `complete_action` the real verdict instead of a hardcoded `success`), and `Conv_window` takes the host's runner so a scriptcall battle plays on the same window. The blocking model is preserved: `Battle.run` still re-enters through the three hooks and three observers, so a hosted fight is one blocking call in the click handler, as the headless path always was. `port.quest_battle_fight_screen` records it; 2746 checks green.
 
@@ -193,8 +195,26 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
   steps - the exe's thresholds are not recovered), and clicking the rune
   node you stand on opens the keeper popup - the guard monster under
   [RUNEKEEPER] - whose win claims the rune through `claim_rune`. The
-  skill game `[FORGEITEMS_FAIL]` expects and the [FORGEITEMS_HELP0]
-  building gate stay open.
+  [FORGEITEMS_HELP0] building gate stays open (it rides the citadel-building
+  system the port has not modelled).
+- **Forge skill game (NEW):** the game `[FORGEITEMS_FAIL]` implies is now
+  playable, so the Forge button no longer mints instantly. `lib/item_game.ml`
+  ports the shipped rules off English/Rules_ItemGame.png: a new `Board.Hammer`
+  (the Hammer & Anvil, drawn from `img_hammanv_on`) matches only hammers and
+  scores a point when destroyed, a run of 4 destroys its own row or column, a
+  run of 5 also destroys every gem of its type, a cascade of 5 deep (the
+  recovered `[HEROICEFFORT_TEXT]` threshold) spawns a random hammer, any
+  destruction resets the board (`[ITEMGAMEMENU_TEXT]`), and a board with no
+  legal move is defeat. `gfx/item_game_layout.ml` transcribes
+  `ItemGameMenu.xml` - the capture grid's own 584 at (217,130), the 21-icon
+  `[ITEMGAME_TARGET]` meter stepping 44 from (851,359), the rules panel at
+  (50,324) 128x395 - and `test_gfx_item_game.ml` pins each number. The
+  Forge tab opens the game over the city panel: `[MAXRUNEITEM0/1]` refuses a
+  full bag up front, a win mints through `forge_item`, a loss prints
+  `[FORGEITEMS_FAIL]`, and `--itemgame --shot` photographs it. The three
+  numbers no asset carries (the 3+2xband target, four hammers a board, the
+  cap of 10) are port choices with `forge.item_game_numbers` open; the
+  mechanics are all recovered (`port.item_game_rules`).
 - **Companions (NEW):** `lib/campaign_companion_hooks.ml` ports the ten
   `OnStartBattle` bodies from `Assets/Companions/*.lua` into one rule table -
   CHECK_TYPE guards over the monster's type tags, NPAT's percentile roll plus
@@ -335,7 +355,7 @@ graphics) - 601
   message queue and the OnEnd box), and companion equip (roster vs party,
   the four refusals, the home gate, the hook following the party, the save
    keeping the roster separate). (These seven are a subset of the 35 suites'
-   ~2746 checks - the whole campaign-side surface, not the full run.)
+   ~2803 checks - the whole campaign-side surface, not the full run.)
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → a real quest battle through `run_quest_battle`
   (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
@@ -347,7 +367,7 @@ graphics) - 601
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 12 (0 open) | 52 |
+| `docs/reverse/evidence.yml` | 103 | 13 (1 open) | 53 |
 
 There are no open questions: the last one, `xp.difficulty_scaling`, was retired
 this round (see the Closed bullet). Questions carry `related`,
@@ -428,8 +448,8 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 35 suites pass (exit 0, ~2746 checks, 2026-10-14). The check count is
-~2746 and moves by one between runs when a suite prints a variable count, so
+All 35 suites pass (exit 0, ~2803 checks, 2026-10-14). The check count is
+~2803 and moves by one between runs when a suite prints a variable count, so
 read `dune runtest`'s exit code (0 = green), not the number. Extractor
 `--check` modes validate against source assets.
 
@@ -445,7 +465,7 @@ read `dune runtest`'s exit code (0 = green), not the number. Extractor
 | **High** | **Campaign → Battle Integration** | **Landed:** `execute_callback` runs every scriptcall — extracted body effects first (state, grants, nested conversations, `QUEST_COMPLETE`), then the 33-row `callback_battles` table's fight; quest state queues the intro/arrival/nested conversations (`pending_conversations`). Landed further: the location-action flow (query/execute/complete/enter groups with live-state folds), the message popup (queue + conv-gfx modal), the map window's Actions tab, travel arrivals through `advance_travel_with_events`, the shared `Conv_window` that opens queued trees over the map, the two callback-site `QUEST_REMOVE_COMPANION` removals (Q3Q5/QU02, fired inside `execute_callback`), and the **fight screens** (2026-10-14, `port.quest_battle_fight_screen`): road, quest-stage and callback fights all play on the hosted `Battle_screen`, with the runners split into open + settle (`?human`) and the map feeding `complete_action` the real verdict |
 | **Medium** | **World Map Rendering** | SDL2 map view: nodes, roads, hero marker, fog-of-war (visibility flags, with the rule now closed - there is no radius reveal, `campaign.fog_of_war`) |
 | **Medium** | **Grid Spell Targeting** | Landed: hover lights the shape the spell reads (column/row/cell via `Layout.aim_cells`), the HUD prompt says aim, click-to-aim was already wired; `fx.ml`'s `play_for_fx` still skips `target = Grid` calls - their cells arrive through `on_grid_fx`, by design (`port.grid_effects_are_an_observer_not_an_event`) |
-| **Medium** | **City UI** | Shop buy/sell, spell learning, tavern rumors, and the Companions tab (leave/pick up); a dedicated hero screen and captive teaching remain open |
+| **Medium** | **City UI** | Shop buy/sell, spell learning, tavern rumors, the Companions tab (leave/pick up), and the Forge tab's **skill game** (2026-10-14, `port.item_game_rules`: `[MAXRUNEITEM]` cap, hammer-and-anvil board, win=mint/lose=`[FORGEITEMS_FAIL]`); a dedicated hero screen and captive teaching remain open |
 | **Medium** | **Companions / Mounts** | Companion equip landed (roster/party + the ten hooks as the passives), mount speed landed (the chosen captive divides the road, tiers 1.5/2.0/2.5) and mount combat bonuses landed (skill bonus on the combatant, the mount spell in all three battle paths); mount training/encounter avoidance and banner effects remain open |
 | **Low** | **Enemy Variety** | Distinct monster spell rosters, resistances, multi-phase bosses |
 | **Low** | **Hotseat MP** | Two players, shared screen, same battle engine |

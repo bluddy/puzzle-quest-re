@@ -115,7 +115,7 @@
 | Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` fills the roster and the party, ninth refused from the party only); `RemoveCompanion` drops by id from the party and keeps the roster, the arrival rules run through `Campaign.enter_location` (travel arrival calls it via `advance_travel_with_events`), and the map Companions tab swaps and removes |
 | Mount | Landed: `player.mount` (a chosen captive, registry `mount = 1`) divides `travel_time` by its tier - 1.5 / 2.0 / 2.5 (`port.mount_travel_speed`) - and rides into every battle: the skill bonus (`addstat + ((level - 1) / addlevel) * addperlevel`, `mount_stat` via `skill_of_index`) on the combatant plus the mount spell prepended to the hero list (`port.mount_skill_formula`); `equipment.mount` stays an item slot. Training/fly (encounter avoidance) remain open |
 | Capture flow | Landed on every surface: road wins open the minigame (`port.capture_ui`); callback wins (the quest fights play has) park `cb_capture_offer` behind the banner and the map opens it on dismiss; the city's Pets tab lists the gated candidates (`port.capture_surfaces`). Win reads go through `Battle.hero_won` - `sweep_deaths` clears `is_dead` every pass |
-| Rune forge | Landed end to end: registries + 150-name table (`campaign.rune_forge`), collection, claim gates, forge spec (`port.rune_forge_formula`), mint (`port.rune_item_mint`), the city Forge tab and the runekeeper popup (`port.forge_ui`); the skill game `[FORGEITEMS_FAIL]` expects, the [MAXRUNEITEM] cap and JXXX's unhookable bodies remain open |
+| Rune forge | Landed end to end: registries + 150-name table (`campaign.rune_forge`), collection, claim gates, forge spec (`port.rune_forge_formula`), mint (`port.rune_item_mint`), the city Forge tab and the runekeeper popup (`port.forge_ui`), the **forge skill game** (2026-10-14, `port.item_game_rules` - the `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png, `[MAXRUNEITEM]` cap of 10, win=mint / lose=the failure line); JXXX's unhookable bodies and the clipped DEFEAT clock (`forge.item_game_numbers`) remain open |
 
 ### 11. Character Creation
 | Gap | Details |
@@ -164,6 +164,7 @@
 | **7 ✅** | City UI (shop, spells, tavern) | The panel buys, tabs and reads rumors on ShopMenu's own geometry |
 | **8 ✅** | Conversation UI + portraits | Narrative delivery — `pq_conv_gfx`: action walk, portraits/backdrop, callback battles (choice nodes do not exist in the data) |
 | **8 ✅** | Campaign fight screens | Road, quest-stage and callback fights play on the hosted `Battle_screen` instead of running headless (`port.quest_battle_fight_screen`): the runners split into open + settle with `?human`, the map hosts the screen and feeds `complete_action` the real verdict |
+| **8 ✅** | Forge skill game | The `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png: hammer-and-anvil gems, the 4/5-of-a-kind line clears, the heroic spawn, the board reset, the `[MAXRUNEITEM]` cap; the three numbers no asset carries are port choices with `forge.item_game_numbers` open (`port.item_game_rules`) |
 | **8** | Equipment/item effects + mount | Stat progression depth |
 | **9** | Character creation + main menu | Polish for "game" feel |
 | **10** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
@@ -247,11 +248,13 @@ hooks, item event hooks, companion removal, cell selection, AI aiming,
 monster rosters, conversation triggers + per-callback effects, companion
 equip, grid-spell aim hover, mount speed, mount combat bonuses, capture UI,
 capture surfaces, banner slot, runes, rune items, forge UI, mount training,
-campaign fight screens), and the conversation UI now walks actions, renders
-portraits/backdrops, fires battle callbacks and applies each scriptcall's
-extracted body effects - with road, quest-stage and callback fights played
-on the hosted `Battle_screen` rather than bannered
-(`port.quest_battle_fight_screen`). Pick one:
+campaign fight screens, the forge skill game), and the conversation UI now
+walks actions, renders portraits/backdrops, fires battle callbacks and
+applies each scriptcall's extracted body effects - with road, quest-stage
+and callback fights played on the hosted `Battle_screen` rather than
+bannered (`port.quest_battle_fight_screen`), and the Forge button opening
+the hammer-and-anvil skill game instead of minting instantly
+(`port.item_game_rules`). Pick one:
 
-- **Forge minigame** - the skill game [FORGEITEMS_FAIL] expects (the ten Easy..Godlike bands become targets) and the [MAXRUNEITEM] cap
 - **Settings surface** - a screen to change Difficulty (and the Time Limit dropdown beside it), which is what the unported Time Limit bonus waits on (Known Gap 11)
+- **Forge numbers** - recover the skill game's target-points formula, its [MAXRUNEITEM] count and the clipped DEFEAT clock from the exe's `cItemGameMenu` (the RTTI chain is orphaned and it answers no strings, so this needs a deeper class-methods pass than the string-xref rounds); until then `forge.item_game_numbers`' three port choices stand

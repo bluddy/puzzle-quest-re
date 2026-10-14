@@ -2,7 +2,8 @@
  (names test_board test_ai test_score test_combat test_spell test_spell_hooks
           test_spell_effects test_status_effects test_battle test_battle_player test_item test_rng
            test_font_data test_skin_data test_text_data test_campaign test_capture
-           test_companion test_quest_battle test_callback_effects test_location_actions test_runes)
+           test_companion test_quest_battle test_callback_effects test_location_actions test_runes
+           test_item_game)
  (libraries puzzle_quest_lib))
 
 ; The pure part of the graphics front: no context, no display. It lives in its
@@ -10,7 +11,7 @@
 ; not have to link.
 (tests
  (names test_gfx_layout test_gfx_input test_gfx_assets test_gfx_font_layout test_gfx_float_text test_gfx_sound_map test_gfx_anim test_gfx_fx
-         test_spell_fx test_gfx_map test_gfx_conv test_gfx_capture test_gfx_battle_layout)
+         test_spell_fx test_gfx_map test_gfx_conv test_gfx_capture test_gfx_battle_layout test_gfx_item_game)
   (libraries puzzle_quest_lib pq_gfx))
 
 (env

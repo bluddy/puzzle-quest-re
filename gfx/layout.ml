@@ -121,6 +121,9 @@ let gem_colour : Board.gem -> colour = function
   | Board.RedSkull -> rgb 232 64 64
   | Board.Gold -> rgb 214 173 60
   | Board.Experience -> rgb 176 122 214
+  (* The item game's Hammer & Anvil: warm metal, matching img_hammanv_on's
+     art so a flat fallback still reads as the same gem. *)
+  | Board.Hammer -> rgb 196 160 96
   | Board.Wildcard n ->
       (* A wildcard stands in for every element, so it is tinted across the
          element range by its multiplier: a 2x is mostly earth, an 8x mostly air.
@@ -140,5 +143,6 @@ let gem_letter : Board.gem -> string = function
   | Board.RedSkull -> "R"
   | Board.Gold -> "G"
   | Board.Experience -> "X"
+  | Board.Hammer -> "H"
   | Board.Wildcard _ -> "*"
   | Board.Empty -> " "

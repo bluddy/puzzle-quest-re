@@ -778,7 +778,7 @@ let effect_shgo fx =
   | Board.Experience -> add_xp fx amt
   | Board.Skull -> inflict_damage fx amt
   | Board.RedSkull -> inflict_damage fx (amt * 5)
-  | Board.Wildcard _ | Board.Empty -> ());
+  | Board.Wildcard _ | Board.Empty | Board.Hammer -> ());
   set_multiplier_effects fx true
 
 (** The mana and skill group.

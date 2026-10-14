@@ -4290,6 +4290,42 @@ open_questions:
       carries the 0-based pool index, so three of four elements played the
       wrong sound or none. board.gem_ids carries the corrected table.
 
+  - id: forge.item_game_numbers
+    question: What are the forge skill game's target-points formula, its [MAXRUNEITEM] count, and the clipped half of its DEFEAT rule?
+    why_it_matters: >
+      The skill game's whole rule set is on the shipped Rules_ItemGame.png and
+      the screen geometry is in ItemGameMenu.xml, so the mechanics are
+      recovered and the port implements them (port.item_game_rules). But three
+      numbers the game cannot run without are not on any asset: how many points
+      a band asks (the ten [FORGEITEMS_TARGET*] Easy..Godlike labels are the
+      targets, but the points behind each), how many rune items the
+      [MAXRUNEITEM] cap allows, and the second half of "You lose if there are
+      no moves left & ..." which the 128x512 art clips. The menu carries
+      timer="on" and the img_timer_0..5 hourglass is registered but undrawn, so
+      the clipped defeat is almost certainly a clock - meaning the game may
+      also need a time limit the port does not model. Getting these wrong makes
+      the hardest forges trivially easy or impossibly hard, and leaves the
+      [AILEVEL]-style difficulty ladder on the item side unfaithful.
+    would_be_settled_by:
+      - >
+        The exe's target computation: the cItemGameMenu class (RTTI name at
+        VA 0x57A634) reads the forge difficulty and produces the point goal
+        the 21 icon_point cells light toward. The image's type descriptors
+        live in .data with a shared type_info vftable (0x55E404) and their
+        COL/CHD/BCD chain in .rdata is orphaned - no vtable references any
+        COL - and the item-game logic answers no identifying strings (no
+        "Hammer", "Anvil", "ITEMGAME" or ".xml" anywhere), so the path in is
+        the class's methods rather than a string xref.
+      - >
+        The [MAXRUNEITEM] count, wherever the inventory-size test lives - the
+        message pair [MAXRUNEITEM0]/[MAXRUNEITEM1] is the surface, the number
+        feeding it is the answer.
+      - >
+        The uncut Rules_ItemGame text or the DEFEAT branch in the code, which
+        would confirm the timer reading and give the time limit.
+    related: [campaign.rune_forge]
+    status: open
+
 # --------------------------------------------------------- port decisions ----
 
 # Choices we made, not facts about the game. Kept apart so that changing our
@@ -5636,5 +5672,46 @@ port_decisions:
       and passes success:won (it hardcoded true before, so a lost stage fight
       never branched), and the screen's HUD rows read the fight's own
       hero_spells rather than the standalone front's demo list.
+    supersedes: null
+    date: 2026-10-14
+
+  - id: port.item_game_rules
+    decision: >
+      The forge skill game is the shipped rules image made playable: hammers
+      match only hammers and score a point when destroyed, a run of 4 destroys
+      its own row or column, a run of 5 also destroys every gem of its type, a
+      cascade of 5+ (the recovered heroic threshold) spawns a random hammer,
+      any destruction resets the board, and a board with no legal move is
+      defeat. The ten [FORGEITEMS_TARGET*] bands become point targets via
+      target_for_band (3+2xband, so Godlike fills the 21-icon meter exactly),
+      a board carries four hammers, the [MAXRUNEITEM] cap is 10 minted items,
+      and forging is refused outright at the cap. Board.gem gains a Hammer
+      variant the battle never spawns.
+    rationale: >
+      English/Rules_ItemGame.png states the whole mechanic set - "4-OF-A-KIND:
+      Destroys a row or column", "5-OF-A-KIND: Destroys all gems of matching
+      type and a row or column", "HEROIC EFFORT: Creates a random Hammer &
+      Anvil on the board", "SPECIAL: After Hammers & Anvils are destroyed, the
+      board resets", "DEFEAT: You lose if there are no moves left & ..." - and
+      ItemGameMenu.xml pins the screen (pad_grid identical to CaptureMenu's,
+      a 21-icon [ITEMGAME_TARGET] meter stepping 44 from (851,359), the rules
+      panel at (50,324) 128x395). [ITEMGAME_HELP] gives the goal and
+      [ITEMGAMEMENU_TEXT] the reset cadence, [HEROICEFFORT_TEXT] the 5-series
+      cascade. The Hammer is a distinct Board.gem so the shared match engine
+      carries it; it matches only hammers (the one hammer rule), harvests
+      nothing in a battle, and the AI's id table maps it to 16 past the
+      wildcard band. The mechanics are recovered; the NUMBERS are choices,
+      recorded in forge.item_game_numbers because the exe answers no item-game
+      strings, its RTTI chain is orphaned, and no Lua touches forging: the
+      3+2xband target fills the meter's 21 icons at Godlike and gives the
+      gifted triple a forgiving 5, four hammers a board is enough to threaten
+      without crowding the 4/5 extras, and 10 is a round rune-item cap well
+      above what one quest's runes can mint. The reset-after-any-destruction
+      reading follows [ITEMGAMEMENU_TEXT]'s literal "Each time one or more of
+      them are destroyed" rather than the looser "all of them" gloss, and the
+      clipped DEFEAT line is implemented as no-moves only - the trailing "&"
+      and the menu's timer="on" suggest a clock the port does not model.
+      [MAXRUNEITEM0/1] now have a gate behind them; the forge button opens the
+      game, a win mints through forge_item, a loss prints [FORGEITEMS_FAIL].
     supersedes: null
     date: 2026-10-14

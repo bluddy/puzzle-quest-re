@@ -121,6 +121,9 @@ let frame_rect : Board.gem -> (Layout.rect * provenance) option = function
      experience by [Spell.GStar], positioned by eye. *)
   | Board.Experience -> Some ({ Layout.x = 360; y = 0; w = cell; h = cell }, Inferred)
   | Board.Gold -> Some ({ Layout.x = 432; y = 0; w = cell; h = cell }, Inferred)
+  (* The item game's Hammer & Anvil is a registry frame, on this same sheet:
+     `img_hammanv_on` at (175,389) 64x64, recovered by the skin extractor. *)
+  | Board.Hammer -> Some (named "img_hammanv_on" 64 64)
   (* Row 1 holds seven multiplier badges, x2 through x8, which is exactly the
      range [Board.Wildcard] carries. *)
   | Board.Wildcard n when n >= 2 && n <= 8 ->

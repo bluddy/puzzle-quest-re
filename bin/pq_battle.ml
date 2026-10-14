@@ -30,6 +30,7 @@ let gem_char = function
   | Mana Air -> 'A'
   | Mana Water -> 'W'
   | Wildcard _ -> '*'
+  | Hammer -> 'H'
   | Empty -> '.'
 
 let show_board (b : board) =

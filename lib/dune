@@ -4,9 +4,10 @@
  (modules
   board
   capture
-  item
-  item_data
-  item_hooks
+   item
+   item_data
+   item_hooks
+   item_game
   spell_data
   spell_ai
    spell_ai_manual

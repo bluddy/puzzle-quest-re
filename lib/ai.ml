@@ -70,6 +70,10 @@ let gem_id = function
   | Gold -> 7
   | RedSkull -> 0xf
   | Wildcard m -> 6 + m
+  (* 16 is past the wildcard band (8..14) and the engine's own ids, and the
+     AI never sees a hammer: the battle board never spawns one. The id exists
+     so the mapping stays total. *)
+  | Hammer -> 16
 
 (** Inverse of {!gem_id}, for the ids the board engine can produce. *)
 let gem_of_id = function
@@ -81,6 +85,7 @@ let gem_of_id = function
   | 6 -> Experience
   | 7 -> Gold
   | 0xf -> RedSkull
+  | 16 -> Hammer
   | m when m >= 8 && m <= 14 -> Wildcard (m - 6)
   | _ -> Empty
 
