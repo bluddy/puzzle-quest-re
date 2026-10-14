@@ -6,50 +6,57 @@
     The glyph {e rectangles} come from [Font_data]; this module decides what to do
     with them.
 
-    ## The advance is an inference, and it is the weakest thing here
+    ## The glyph fields and the pen rule are recovered
 
-    A glyph table gives each character a rectangle and two more numbers,
-    [leading] and [trailing]. The obvious reading is that a character occupies
-    [leading + width + trailing] pixels. **That is wrong**, and it is worth
-    recording why, because it is the reading the attribute names invite:
-
-    - **[leading] + [trailing] equals [width]**, for essentially every glyph in
-      every face. Across the ten faces, [width - leading - trailing] is 0 or 1 for
-      90-99% of glyphs and never exceeds 3. They are two halves of the ink box, not
-      bearings that add to it, so summing them double-counts the glyph and gives
-      roughly twice the tracking the original has.
-    - **The atlas packs each glyph's ink edge to edge.** Measured off
-      [Assets/Fonts/System.png], cells sit one pixel apart and a glyph's ink fills
-      its cell completely - there is no left bearing baked into the sheet to be
-      compensated for. So [leading] is not an ink offset either: the ink of code
-      33 starts one pixel into a cell whose [leading] is 2.
-
-    What is left is that **[width] is the advance and the ink is drawn at the
-    pen**, which is what this module does. It renders at the spacing the original
-    does, which is the test that settled it.
-
-    What the engine does is in [FUN_004c7650], and it is still not fully known:
+    The engine reads each face's XML at runtime: [FUN_004c8700] composes the
+    [".xml"] and [".png"] paths of a face name and calls [FUN_004c7f80], which
+    walks the [FontData] and [Glyph] elements and writes the 32-byte glyph
+    records - the raw XML attributes, with no arithmetic on them:
 
     ```
-      first character :  glyph+0x1c + glyph+0x18
-      middle characters:         glyph+0x18
-      last character  :  glyph+0x14 - glyph+0x1c
+      +0x00 float  x / texture width   +0x10 word  x
+      +0x04 float  y / texture height  +0x12 word  y
+      +0x08 float  w / texture width   +0x14 word  width
+      +0x0c float  h / texture height  +0x16 word  height
+                                       +0x18 dword trailing
+                                       +0x1c dword leading
     ```
 
-    [FUN_004c9030] settles one field: a string's height is read straight out of the
-    font record rather than computed, and it is the same number as
-    [FontData/@height]. The glyph rectangle is [x, y, w] at +0x10, +0x12, +0x14 -
-    [FUN_004c75e0] treats all three being zero as the "no such glyph" sentinel.
-    So +0x18 is the advance. What +0x1c is, is not settled: for a single 'A' in
-    [Small] the first-character and last-character branches disagree, 25 against
-    10, and only one of them can be right. It is not the XML's [leading] or
-    [trailing] either, since those two already account for the whole ink box.
+    Both consumers then walk the string with the same three-branch rule -
+    [FUN_004c7650] to measure, [FUN_004c7720] to draw:
 
-    Note that the engine does not read these XML files at runtime, so this cannot
-    be settled by finding the parser. The strings "leading", "trailing" and
-    "FontData" are in the binary as UTF-16 at 0x0012bc60 with no reference to them
-    from anywhere - they are an asset-build tool's vocabulary, compiled in and
-    unused. The runtime glyph records are pre-baked.
+    ```
+      first character :  pen += leading + trailing,  ink at pen
+      middle characters:  pen += trailing,            ink at pen - leading
+      last character  :  pen += width - leading,     ink at pen - leading
+    ```
+
+    So [measure] is the pen after the last character, which is the right ink
+    edge of the last glyph for a multi-character string; a single character
+    takes the first branch and measures [leading + trailing], which need not
+    equal its ink width ('A' in [Small] is 11 against 12). An earlier round
+    read +0x18 as a full advance and got a "25 against 10" disagreement out of
+    it; with the parser in view the values are 11 and 10, the single-character
+    case unambiguously takes the first branch, and there is no disagreement.
+
+    Two consequences the previous model did not have: consecutive glyphs
+    overlap by their [leading] (one or two pixels in the HUD faces), and a
+    trailing space contributes [width - leading] - which is negative, since a
+    space's box is a 1px placeholder.
+
+    The substitution chain is recovered too: U+00A0 becomes a plain space
+    first, then a code the face cannot draw - out of range, or the
+    all-zero-rectangle sentinel [FUN_004c75e0] tests - becomes the face's
+    fallback character, kept at +0x44 on the font record. [FUN_004c7510]
+    writes that field as 0x2a, which is ['*'].
+
+    An earlier round concluded from a string scan that the engine does not
+    read these XML files at all. It does: the scan looked for the RVA
+    0x12bc60's bytes where the VA 0x52bc60's bytes were, and the parser's
+    pushes of the latter are dense in [FUN_004c7f80].
+
+    [FUN_004c9030] reads a string's height straight off the font record rather
+    than measuring it, and it is the same number as [FontData/@height].
 
     ## Everything else here is ported
 
@@ -85,38 +92,46 @@ let line_height (m : metrics) = Font_data.line_height m.style
     one. *)
 let baseline (m : metrics) = m.style.Font_data.baseline
 
-(** How far the pen moves after drawing [code], in pixels.
+(** U+00A0 becomes a plain space, read out of [FUN_004c7650]. *)
+let substitute_nbsp code = if code = 0xa0 then 0x20 else code
 
-    Normally the glyph's ink width, because [leading] and [trailing] together
-    already measure it (see the note at the top). The exception is a cell with no
-    ink, and the space is the one in every face: its rectangle is 1px wide because
-    there is nothing to draw, so its width says nothing, while its two bearings
-    still add up to a real space - 7px in [System], 5 in [Small].
+(** The fallback character the engine substitutes for a code a face cannot
+    draw, recovered: [FUN_004c7510] writes 0x2a - ['*'] - into +0x44 on the
+    font record, and both [FUN_004c7650] and [FUN_004c7720] read it back for
+    any code out of the face's range or carrying the all-zero sentinel. All
+    ten faces ship a glyph for it. *)
+let fallback_code = 0x2a
 
-    So the advance is the larger of the two. For an inked glyph that is the ink
-    width; for a blank one it is the cell the table says it has. Without the
-    second case, [measure "you 60"] comes out as "you60" - which is exactly what
-    the first render of the HUD did.
+(** The code a character is actually drawn and measured as.
 
-    The rule's cost, stated rather than hidden: 127 of the 1,948 glyphs have
-    bearings exceeding their ink by more than 3px, and all but one are in the
-    heading and script faces - WC_Heading, WC_Quest, WC_Button and the three script
-    fonts - where the metrics genuinely differ. The three faces the battle screen
-    draws, System, Small and WC_Message, have one offender between them. Those 127
-    get an advance larger than their ink, which for a few of the Greek slots in
-    WC_Heading means four times it; if a script or heading face is ever used for
-    real text, those are the first advances to revisit. *)
-let advance (m : metrics) (code : int) : int =
-  match Font_data.glyph_of_code m.face code with
-  | None -> 0
-  | Some g -> max g.Font_data.w (g.Font_data.leading + g.Font_data.trailing)
+    The engine's chain, in order: U+00A0 becomes a plain space; a space is
+    taken as itself without a presence test; anything else the face cannot
+    draw - out of [mincode]/[maxcode], or the all-zero-rectangle sentinel -
+    becomes [fallback_code]. *)
+let resolve_code (m : metrics) (code : int) : int =
+  let code = substitute_nbsp code in
+  if code = 0x20 then code
+  else
+    match Font_data.glyph_of_code m.face code with
+    | Some g when not (g.Font_data.w = 0 && g.Font_data.x = 0 && g.Font_data.y = 0) -> code
+    | _ -> fallback_code
+
+(** How far the pen moves after drawing a glyph, from its position in the
+    string - the rule is position-dependent, so there is no single per-code
+    advance to expose. Recovered from [FUN_004c7650] and [FUN_004c7720],
+    which run the same three branches. *)
+let step_at (g : Font_data.glyph) ~(first : bool) ~(last : bool) : int =
+  if first then g.Font_data.leading + g.Font_data.trailing
+  else if last then g.Font_data.w - g.Font_data.leading
+  else g.Font_data.trailing
 
 (** Where a glyph's ink starts, relative to the pen.
 
-    Zero, and deliberately so: the atlas packs each glyph's cell edge to edge with
-    one pixel between cells, so there is no baked-in offset to undo. A face that
-    did carry one would set this from its [leading] and nothing else would change. *)
-let bearing (_m : metrics) (_code : int) : int = 0
+    Zero for the string's first character; [leading] subtracted for every
+    later one - [FUN_004c7720] subtracts the word at +0x1c before drawing,
+    which the parser shows is the XML's [leading]. So consecutive glyphs
+    overlap by that much, which is one or two pixels in the HUD faces. *)
+let bearing (g : Font_data.glyph) ~(first : bool) : int = if first then 0 else g.Font_data.leading
 
 (** One character placed: where its ink goes, and where the pen goes next. *)
 type placed = {
@@ -127,18 +142,11 @@ type placed = {
   pen : int;  (** pen position after this character *)
 }
 
-(** The codes of [s], with two substitutions the engine makes on the way in.
+(** The codes of [s], decoded rather than walked as bytes: a glyph table is
+    indexed by Unicode code point, so a multi-byte UTF-8 sequence is one code.
 
-    Both are read out of [FUN_004c7650] rather than invented:
-
-    - **0xa0 becomes 0x20.** A non-breaking space is drawn as a plain space.
-    - **A code the face does not have becomes the face's own fallback**, which
-      the engine keeps at +0x44 on the font record. We do not know its value, so
-      [substitute_missing] leaves the code alone and the caller draws nothing for
-      it; see [missing_is_blank].
-
-    The string is UTF-8, but a glyph table is indexed by Unicode code point, so
-    it is decoded here rather than treated as bytes. *)
+    The engine's substitutions (U+00A0, the fallback character) are applied
+    per code by [resolve_code], not here. *)
 let codes (s : string) : int list =
   let out = ref [] in
   let n = String.length s in
@@ -160,22 +168,27 @@ let codes (s : string) : int list =
   done;
   List.rev !out
 
-let substitute_nbsp code = if code = 0xa0 then 0x20 else code
-
 (** Lay out one line. [y] is the top of the line; glyphs keep whatever vertical
-    position the atlas gives them. *)
+    position the atlas gives them.
+
+    A transcription of [FUN_004c7720]'s loop: codes go through [resolve_code],
+    the first glyph's ink sits at the pen and every later one [leading] pixels
+    left of it, and the pen advances by [step_at]. The placed [code] is the
+    resolved one, because that is whose rectangle is being placed. *)
 let place_line (m : metrics) (s : string) (y : int) : placed list =
-  let rec go pen acc = function
+  let chars = List.map (resolve_code m) (codes s) in
+  let n = List.length chars in
+  let rec go i pen acc = function
     | [] -> List.rev acc
     | code :: rest -> (
         match Font_data.glyph_of_code m.face code with
-        | None -> go pen acc rest
+        | None -> go (i + 1) pen acc rest
         | Some g ->
-            let x = pen + bearing m code in
-            let pen' = pen + advance m code in
-            go pen' ({ code; glyph = g; x; y; pen = pen' } :: acc) rest)
+            let x = pen - bearing g ~first:(i = 0) in
+            let pen' = pen + step_at g ~first:(i = 0) ~last:(i = n - 1) in
+            go (i + 1) pen' ({ code; glyph = g; x; y; pen = pen' } :: acc) rest)
   in
-  go 0 [] (List.map substitute_nbsp (codes s))
+  go 0 0 [] chars
 
 (** Lay out several lines, stacked by the style's line height. *)
 let place (m : metrics) (lines : string list) : placed list =
@@ -187,13 +200,24 @@ let place (m : metrics) (lines : string list) : placed list =
     lines;
   !out
 
-(** The ink width of one line: the sum of its characters' advances.
+(** The width of one line: the pen position after its last character, which is
+    [FUN_004c7650]'s return value.
 
-    With [advance] being the ink width there is no trailing to trim, so this is a
-    plain sum. See the note at the top for why it does not claim to be
-    [FUN_004c7650]. *)
+    For a multi-character string that is the right ink edge of the last glyph,
+    since each later glyph's ink starts [leading] short of the pen; for a
+    single character it is [leading + trailing], the first branch, which is
+    what the engine measures. An empty string is zero. *)
 let measure (m : metrics) (s : string) : int =
-  List.fold_left (fun acc c -> acc + advance m c) 0 (List.map substitute_nbsp (codes s))
+  let chars = List.map (resolve_code m) (codes s) in
+  let n = List.length chars in
+  let rec go i pen = function
+    | [] -> pen
+    | code :: rest -> (
+        match Font_data.glyph_of_code m.face code with
+        | None -> go (i + 1) pen rest
+        | Some g -> go (i + 1) (pen + step_at g ~first:(i = 0) ~last:(i = n - 1)) rest)
+  in
+  go 0 0 chars
 
 (** The height of one line of text.
 

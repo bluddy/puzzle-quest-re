@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** clean tree (the gem-id round, the third of this date's). `board.gem_id_air_water_order` asked for a second source for which of ids 3 and 4 is Air; the second source was one function downstream of the first: the harvest at `0x47D091` consumes the exact buckets `CBoard_AccumulateGem` writes (the 0x1C-stride counter array anchored at `+0x14`) and, for the four mana rows, credits a pool index beside a pushed sound - pool 0 with `snd_earth`, 1 with `snd_fire`, 2 with `snd_air` (0x523510), 3 with `snd_water` (0x5234FC). Case 3 writes `+0x4C` = row 2 and case 4 `+0x68` = row 3, so **3 is Air and 4 is Water**: `StandardConstants.lua` was right and `docs/BATTLE_AI.md` §5 (plus `lib/ai.ml`) were wrong. The row alignment is pinned by rows the question never looked at - gem 5 (skull) writes `+0x84` = row 4 and row 4 pushes `snd_damage`; gem 6 writes `+0xBC` = row 6 → `snd_xp`; gem 7 writes `+0xA0` = row 5 → `snd_gold` - which means **6 is the star and 7 the coin**, two more transpositions than suspected, and `GEM_STAR=6`/`GEM_GOLD=7` in the constants file agree. So the ids are the character order with no transposition at all (`ai.anchor_term_is_the_row`'s sibling myth, `board.gem_ids` rewritten). The corrections landed in `lib/ai.ml` (gem_id, gem_of_id, the bucket fold, the weight and bucket labels), `docs/BATTLE_AI.md` §4/§5, `combat.ml`/`spell_effects.ml` comments that asserted the old swap - and one **live** bug the audit flushed out: `Sound_map.element_sound` was keyed on the board's 1-based gem ids while `ManaGained` carries the 0-based pool index `Battle.element_index` produces, so an Earth gain was silent, Fire played earth and Air played fire; it now maps 0→earth, 1→fire, 2→air, 3→water with a pipeline test through `element_index`. (The AI itself scored identically either way - the affected weights are equal - which is why the question could sit open.) `mana.pool_and_ceiling_offsets`' parenthetical, which had the same wrong order, is corrected too. Evidence 103 claims, 12 questions (3 open), 48 decisions; 35 suites, 2690→2699 checks.
+**Sync:** clean tree (the font-pen-rule round of the open-question audit). `font.advance_field_mapping` asked what the glyph field at +0x1c is and how it relates to leading/trailing, with the old notes reading +0x18 as a full advance and getting a "25 against 10" disagreement out of a single Small 'A'. The settle was finding the parser the old evidence claimed could not exist: the `FontData`/`Glyph`/`leading`/`trailing` strings sit at VA **0x52bc60** and the previous scan had searched for the RVA's bytes (0x12bc60) - so `FUN_004c7f80`, reached from the face loader `FUN_004c8700` (which composes "<face>.xml"/".png"), parses each face's XML at runtime and writes the raw attributes into the 32-byte records: **+0x18 is trailing, +0x1c is leading**, +0x14/+0x16 width/height. Both consumers (`FUN_004c7650` measure, `FUN_004c7720` draw) then run the same three branches - first char `leading+trailing` with ink at the pen, middle `trailing` with ink `leading` pixels left of it, last `width-leading` - so the "25 against 10" dissolves (the real numbers are 11 and 10, and a single-character string takes the first branch unambiguously); measure is the last ink edge for multi-char strings, glyphs overlap by their leading, and a trailing space goes negative. The fallback character is recovered too: `FUN_004c7510` writes 0x2a - '*' - at +0x44, so missing codes draw '*' rather than nothing. The port was re-ported (`Font_layout.step_at`/`bearing`/`resolve_code`, `measure`/`place_line` on the engine's rule, `font.ml` drops its nothing-to-draw filter); `font.glyph_advance_is_stored` rewritten as recovered, `font.glyph_tables_not_parsed_at_runtime` refuted (RVA/VA confusion), `port.advance_is_ink_width` superseded by `port.pen_rule_is_recovered`, `tools/graphics_plan.md`'s stale section replaced, and `test_gfx_font_layout` rewritten against real System/Small numbers (the per-code "advance" API is gone - the rule is position-dependent). Evidence 103 claims, 12 questions (2 open), 49 decisions; 35 suites, 2699->2715 checks.
 
 ---
 
@@ -12,13 +12,15 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
 
 ### 1. Finish the open-question audit's leftovers - cheap RE round
 
-Three of the four questions the audit started with are still open, and it opened a fourth: `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling), `font.advance_field_mapping` (+0x1c's other consumers), and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the ∓25 %, i.e. what `turn_manager+0x30` means).
+Two of the four questions the audit started with are still open, and it opened a fourth: `spell.match_resolution_after_a_spell` (read the engine's post-CastSpell board handling) and the new `xp.difficulty_scaling` (which branch of the results screen at 0x43e5f0 pays the -/+25 %, i.e. what `turn_manager+0x30` means). The third, `font.advance_field_mapping`, was retired on 2026-10-14 - see Closed.
 
 ### 2. Campaign → battle: fight screens for quest battles
 
 The battle front now renders a real fight, but the campaign's quest and callback battles still run headless behind a banner in `conv_window`. Lifting `pq_play_gfx`'s screen onto `Campaign.run_quest_battle`'s result - the stage, the spoils and the capture offer around a played fight - is the seam the map window has been building toward, and everything it needs (the panels, the rows, the log) is now in place.
 
 ### Closed rounds from this list
+
+- ~~Font pen rule~~ (landed 2026-10-14): `font.advance_field_mapping` retired by finding the face-XML parser the old evidence said could not exist - the attribute-name strings live at VA 0x52bc60, and the scan that "proved" they were unreferenced had searched for the RVA 0x12bc60's bytes. `FUN_004c7f80` (called by the loader `FUN_004c8700`, which composes "<face>.xml"/".png") writes the raw attributes: trailing dword +0x18, leading +0x1c, width/height words +0x14/+0x16. Both consumers run the same three-branch rule (first `leading+trailing`, middle `trailing`, last `width-leading`; later glyphs' ink `leading` left of the pen), so the "25 against 10" was arithmetic on a misread field (11 vs 10 in truth) and a single-char string takes the first branch. Fallback recovered as '*' (0x2a at +0x44, `FUN_004c7510`). Port re-ported; `font.glyph_tables_not_parsed_at_runtime` refuted; `port.advance_is_ink_width` superseded by `port.pen_rule_is_recovered`; `graphics_plan.md` section replaced; `test_gfx_font_layout` rewritten (2715 checks green).
 
 - ~~Gem-id order~~ (landed 2026-10-13): `board.gem_id_air_water_order` retired with three sources agreeing against the port - the harvest at `0x47D091` consumes the very buckets `CBoard_AccumulateGem` writes and pushes `snd_air` with pool 2 for the `+0x4C` row and `snd_water` with pool 3 for `+0x68`, gem 5 lands in `snd_damage`'s row and gem 7 in `snd_gold`'s (which pins the row order independently), and `StandardConstants.lua` says `GEM_AIR=3, GEM_WATER=4, GEM_STAR=6, GEM_GOLD=7`. So the ids are the character order with **no** transposition (3 air, 4 water, 6 star, 7 coin) - two more swaps than the question suspected. `lib/ai.ml` (gem_id, gem_of_id, the bucket fold, the weight labels) and `docs/BATTLE_AI.md` §4/§5 are corrected, and the audit caught a live bug on the way: `Sound_map.element_sound` was keyed on the board's 1-based ids while `ManaGained` carries the 0-based pool index, so Earth was silent and Fire played earth's sound - fixed with a pipeline test. `board.gem_ids` and `mana.pool_and_ceiling_offsets` rewritten; `combat.ml`/`spell_effects.ml` comments that asserted the old transposition corrected.
 
@@ -331,18 +333,10 @@ graphics) - 601
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 12 (3 open) | 48 |
+| `docs/reverse/evidence.yml` | 103 | 12 (2 open) | 49 |
 
-The three open questions and what each is waiting on:
+The two open questions and what each is waiting on:
 
-- `font.advance_field_mapping` — the glyph field at +0x1c, and how it relates to
-  the table's leading/trailing. `FUN_004c7650` sums +0x18 per character but adds
-  +0x1c for the first and subtracts it for the last, and for a single 'A' those
-  two branches disagree (25 vs 10); one must be wrong. Waited on by every
-  measured string, so anything that has to line up with the original's screen is
-  affected. Settled by the asset-build tool (not in this repo) or by measuring a
-  known string in the original. Related: `font.glyph_advance_is_stored`,
-  `font.glyph_tables_not_parsed_at_runtime`.
 - `spell.match_resolution_after_a_spell` — does the engine resolve matches a
   spell's own board edits create (SBAC drops a red skull, SWTD rewrites a kind)?
   The port applies gravity and a refill after a cast but does not resolve, so a

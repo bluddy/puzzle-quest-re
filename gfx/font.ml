@@ -122,23 +122,22 @@ let draw_into (win : Gl.context) (t : t) (m : Font_layout.metrics) ?colour (s : 
       List.iter
         (fun (p : Font_layout.placed) ->
           let g = p.Font_layout.glyph in
-          (* A code the face has no rectangle for cannot be sampled. The original
-             substitutes the face's fallback character; we do not know its value,
-             so nothing is drawn rather than something wrong. *)
-          if Font_layout.has_glyph m p.Font_layout.code then begin
-            let dst =
-              { Layout.x = x + p.Font_layout.x; y = p.Font_layout.y;
-                w = g.Font_data.w; h = g.Font_data.h }
-            in
-            let uv =
-              Some
-                { Layout.x = g.Font_data.x; y = g.Font_data.y; w = g.Font_data.w;
-                  h = g.Font_data.h }
-            in
-            let q = Gl.push_quad ~tex_size:(f.tex_w, f.tex_h) win dst uv col in
-            (match !first with None -> first := Some q | Some _ -> ());
-            incr count
-          end)
+          (* Every placed glyph is drawable: Font_layout substitutes the face's
+             fallback - '*', recovered at +0x44 on the font record - for any code
+             the face cannot draw, so the original's nothing-to-sample case has
+             already been resolved away. *)
+          let dst =
+            { Layout.x = x + p.Font_layout.x; y = p.Font_layout.y;
+              w = g.Font_data.w; h = g.Font_data.h }
+          in
+          let uv =
+            Some
+              { Layout.x = g.Font_data.x; y = g.Font_data.y; w = g.Font_data.w;
+                h = g.Font_data.h }
+          in
+          let q = Gl.push_quad ~tex_size:(f.tex_w, f.tex_h) win dst uv col in
+          (match !first with None -> first := Some q | Some _ -> ());
+          incr count)
         placed;
       (match !first with
       | None -> []

@@ -11,7 +11,7 @@
    Nothing here computes an advance. The three numbers a glyph table gives
    per character are its rectangle and its leading and trailing bearings;
    how the engine turns those into a pen movement is in gfx/font_layout.ml,
-   which is where the open question about it lives. *)
+   where the recovered rule lives. *)
 
 type glyph = {
   code : int;

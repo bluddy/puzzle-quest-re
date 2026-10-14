@@ -163,29 +163,27 @@ the game ships, at its own size. Nothing on the battle screen needs otherwise.
 `English/Font.xml`. The atlases are pulled by `tools/extract_gfx_assets.py` into
 `assets/gfx/Fonts/`.
 
-### The advance is inferred, and that is the one soft spot
+### The pen rule is recovered (this section was an inference, now superseded)
 
-`FUN_004c7650` accumulates a string's width from a stored per-glyph advance at
-`+0x18`, but adds `+0x1c` for the first character and subtracts it for the last -
-and for a single `'A'` in `Small` those branches disagree, 25 against 10. **What
-`+0x1c` is, is not recovered**, and it cannot be: the `FontData` attribute names
-*are* in the binary, as UTF-16 at `0x0012BC60`, but nothing references them, so the
-engine does not parse these files at all and there is no parser to read. The
-runtime glyph records are pre-baked by a tool outside this repository.
+*Superseded 2026-10-14.* What follows used to say the advance was an
+inference resting on the ink-box measurement, and that the engine does not
+parse these XML files at all. It does: `FUN_004c8700` composes
+`"<face>.xml"`/`".png"` and calls `FUN_004c7f80`, which writes the raw
+attributes into the 32-byte glyph records - trailing at `+0x18`, leading at
+`+0x1c`. The old scan had looked for the RVA `0x12bc60`'s bytes where the VA
+`0x52bc60`'s were. The old "25 against 10" disagreement was arithmetic on
+that misread field; the real values for a single Small `'A'` are 11 and 10,
+and the first branch is taken unambiguously.
 
-What the port does instead, and why:
-
-* **`leading + trailing` already equals the ink width** (94% of glyphs), rather than
-  adding to it. Summing all three - the reading the attribute names invite - doubles
-  the tracking, which is exactly what the first render of the HUD did.
-* **The atlas packs cells edge to edge**, one pixel between, so the ink carries no
-  baked-in offset to undo.
-* The exception is a glyph with no ink: the space, whose 1px rectangle is a
-  placeholder while its bearings still add up to a real space. Hence
-  `max width (leading + trailing)` - without which "you 60" renders as "you60".
-
-This is recorded as an inference, in `port.advance_is_ink_width` and the open
-question `font.advance_field_mapping`, rather than as a recovery.
+The rule both `FUN_004c7650` (measure) and `FUN_004c7720` (draw) run:
+first character `pen += leading + trailing` with the ink at the pen, middle
+characters `pen += trailing` with the ink `leading` pixels left of it, last
+character `pen += width - leading`. Consecutive glyphs overlap by their
+leading; a trailing space goes negative. Codes a face cannot draw become the
+fallback `'*'` (`0x2a` at `+0x44`, written by `FUN_004c7510`), and U+00A0
+becomes a space. The port implements exactly this - `Font_layout.step_at`,
+`bearing`, `resolve_code` - recorded as `port.pen_rule_is_recovered` and
+`font.glyph_advance_is_stored` in `docs/reverse/evidence.yml`.
 
 ### Float messages
 

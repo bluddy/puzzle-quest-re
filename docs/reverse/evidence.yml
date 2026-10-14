@@ -1022,41 +1022,48 @@ claims:
       default face", which the port has no equivalent of.
 
   - id: font.glyph_advance_is_stored
-    title: The glyph advance is a stored field, and its relation to leading/trailing is not recovered
+    title: The glyph fields are the raw XML attributes, and the pen rule is recovered
     area: render
     verdict: presentation
-    status: inferred
-    confidence: medium
+    status: recovered
+    confidence: high
     audited: true
     source_pass: font_pass
     summary: >
-      A string's width is accumulated by `FUN_004c7650`, which sums one field per
-      character - `+0x18` - for the middle characters, and treats the first and
-      last differently:
+      The engine parses each face's XML at runtime. `FUN_004c8700` composes the
+      face name with ".xml" and ".png" and calls `FUN_004c7f80`, which walks
+      the FontData and Glyph elements and writes the 32-byte glyph records -
+      the raw attributes, with no arithmetic on them: x, y, width and height
+      as words at +0x10..+0x16, **trailing as a dword at +0x18** and
+      **leading as a dword at +0x1c**. The floats at +0x00..+0x0c are the same
+      four numbers normalised by the texture dimensions.
+
+      Both consumers then walk the string with the same three-branch rule -
+      `FUN_004c7650` to measure, `FUN_004c7720` to draw:
 
       ```
-        first character :  glyph+0x1c + glyph+0x18
-        middle characters:         glyph+0x18
-        last character  :  glyph+0x14 - glyph+0x1c
+        first character :  pen += leading + trailing,  ink at pen
+        middle characters:  pen += trailing,            ink at pen - leading
+        last character  :  pen += width - leading,     ink at pen - leading
       ```
 
-      `+0x14` is the glyph rectangle's width: `FUN_004c75e0` uses width, x and y
-      all being zero as the "no such glyph" sentinel, which fixes those three
-      fields. So `+0x18` is the advance. **What `+0x1c` holds is not recovered**,
-      because for a single 'A' in Small the first-character and last-character
-      branches disagree - 25 against 10 - and only one of them can be right.
+      So a measure is the pen after the last character: the right ink edge of
+      the last glyph for a multi-character string, and `leading + trailing`
+      for a single one - which the `i == 0` test gives unambiguously, since
+      it runs before the last-character test. The earlier reading of this
+      claim computed "25 against 10" for a single Small 'A' by assuming
+      +0x18 held leading+width+trailing; the parser shows it holds trailing,
+      so the real numbers are 11 and 10 and there is no disagreement.
 
-      The port advances by the glyph's ink width. Two measurements support it:
+      Two consequences worth stating: consecutive glyphs overlap by their
+      `leading` (one or two pixels in the HUD faces), and a trailing space
+      contributes `width - leading`, which is negative in every face because
+      a space's box is a 1px placeholder.
 
-      - **`leading + trailing` already equals the ink width**, for 94% of glyphs,
-        rather than adding to it. Summing all three would double the tracking.
-      - **The atlas packs each cell edge to edge** with one pixel between, so the
-        ink has no baked-in offset to compensate for. Measured off System.png: the
-        ink of code 33 starts one pixel into a cell whose `leading` is 2.
-
-      The one case where ink width is wrong is a glyph with no ink - the space in
-      every face, whose rectangle is a 1px placeholder while its bearings still
-      add up to a real space. So the port takes the larger of the two.
+      The fallback character, read at +0x44, is written by the font
+      constructor `FUN_004c7510` as 0x2a - ['*'] - and both consumers
+      substitute it for a code out of the face's range or carrying the
+      all-zero-rectangle sentinel.
     evidence:
       - kind: decompiled
         ref: docs/decompiled/font/Font_measure_advance_FUN_004c7650.c
@@ -1066,53 +1073,77 @@ claims:
           }
           else { ... iVar3 = (int)*(short *)(iVar3 + 0x14 + iVar1) - *(int *)(iVar3 + iVar1 + 0x1c); }
       - kind: decompiled
-        ref: docs/decompiled/font/Font_glyph_present_FUN_004c75e0.c
-        note: the all-zero-rectangle sentinel, which fixes +0x10/+0x12/+0x14 as x, y and width
+        ref: docs/decompiled/font/Sub_4c7720.c
+        note: the draw loop's same three branches, and the leading subtracted from the pen for every glyph after the first
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          the face-XML parser at 0x4c7f80: "trailing" (0x52bc70) fetched and
+          stored dword at +0x18, "leading" (0x52bc60) at +0x1c, "width"
+          (0x521a64) word at +0x14, "height" (0x521a54) at +0x16; reached from
+          the face loader 0x4c8700, which composes "<face>.xml" and "<face>.png"
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: FUN_004c7510 writes word 0x2a at +0x44 - the fallback character, '*'
       - kind: xml
         ref: game/Assets.zip!Assets/Fonts/Small.xml
-        note: "'A' is width 12, leading 2, trailing 9 - bearings that sum to the ink, not to 23"
-    affects: [gfx/font_layout.ml]
+        note: "'A' is width 12, leading 2, trailing 9 - the first branch gives 11, the last 10"
+    affects: [gfx/font_layout.ml, gfx/font.ml]
     notes: >
-      The 127 glyphs whose bearings exceed their ink by more than 3px are all in the
-      heading and script faces; System, Small and WC_Message - the three the battle
-      screen draws - have one between them. test_font_data pins that split, so an
-      offender appearing in a HUD face fails the build.
+      The port re-ported to this rule in the same round the parser was found:
+      `Font_layout.step_at`/`bearing` reproduce the branches, `resolve_code`
+      the substitution chain, and `measure`/`place_line` the two loops. The
+      127 glyphs whose bearings exceed their ink by more than 3px are all in
+      the heading and script faces; System, Small and WC_Message - the three
+      the battle screen draws - have one between them. test_font_data pins
+      that split as a property of the data.
 
-      Also recovered in the same function, and relied on: U+00A0 is substituted for
-      a plain space before measuring, and a code outside the face's range or with no
-      glyph becomes the face's fallback character, kept at +0x44 on the font record.
-      The fallback's value is unknown, so the port draws nothing rather than a guess.
+      Also recovered in the same functions, and relied on: U+00A0 is
+      substituted for a plain space before any presence test, and a space is
+      taken as itself without one.
 
   - id: font.glyph_tables_not_parsed_at_runtime
     title: The engine does not read the font XML at runtime, so the advance cannot be recovered by finding the parser
     area: render
     verdict: presentation
-    status: recovered
+    status: refuted
     confidence: high
     audited: true
     source_pass: font_pass
     summary: >
-      The strings `leading`, `trailing`, `numchars`, `mincode`, `Glyph` and
-      `FontData` are all present in the binary as UTF-16 at 0x0012bc60 and
-      immediately after it - and **nothing references them**. No code pushes those
-      addresses and no data holds a pointer to them, in the whole file.
-
-      So they are an asset-build tool's vocabulary, compiled in and unused, and the
-      runtime glyph records are pre-baked by a pipeline whose source is not in this
-      repository. That closes off the obvious way to settle
-      `font.glyph_advance_is_stored`: there is no parser to read.
+      Was: the strings `leading`, `trailing`, `numchars`, `mincode`, `Glyph`
+      and `FontData` are present as UTF-16 but nothing references them, so the
+      runtime glyph records are pre-baked and there is no parser to read.
+      **Refuted**: the engine parses the face XML at runtime, and the scan that
+      said otherwise looked at the wrong address.
     evidence:
       - kind: binary
         ref: game/Puzzle Quest.unpacked.exe
-        note: UTF-16 hits for all six strings at 0x0012bc60-0x0012bcb0, zero code references and zero data pointers to any of them
+        note: the six strings sit at VA 0x52bc60-0x52bcb0, not at "0x0012bc60"
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: >
+          FUN_004c7f80 pushes each of them: FontData at 0x4c7fd8, mincode
+          0x4c7ff2, maxcode 0x4c8001, Glyph 0x4c808c, trailing 0x4c811e,
+          leading 0x4c8135 - a per-face parser that writes the glyph records
+      - kind: binary
+        ref: game/Puzzle Quest.unpacked.exe
+        note: FUN_004c8700 is the loader that calls it, composing "<face>.xml" (0x52bcd0) and "<face>.png" (0x52bcc4)
     affects: [gfx/font_layout.ml, docs/reverse/evidence.yml]
+    resolution: >
+      The scan searched for the bytes of the RVA 0x12bc60 where the VA
+      0x52bc60's bytes were - a leading-digit truncation of the address, so of
+      course `.text` held no such constant and no data held a pointer to it.
+      Searching the correct VA finds the parser immediately: `FUN_004c7f80`
+      pushes all six names, and `FUN_004c8700` - which composes the ".xml" and
+      ".png" paths of a face name and loads the texture first - calls it on
+      success. The strings are the runtime's vocabulary, not an unused build
+      tool's, and font.glyph_advance_is_stored records what the parser writes.
     notes: >
-      Worth recording as a negative because it was assumed twice. An earlier note in
-      this project stated the strings appear nowhere in the binary; they appear as
-      UTF-16, and an ASCII search misses them in a Unicode build. The second
-      assumption - that a reference would exist - is what the scan actually refuted.
-      DecompileXrefs on 0x0012bc60 returns 0 functions, and a direct scan of .text
-      for the address bytes finds nothing.
+      Worth keeping as a refuted claim because the negative was asserted twice
+      and rested on an address that was never checked against the image base.
+      The correct lesson is not "references are hard to find" but "the VA is
+      ImageBase + RVA, and a scan for the wrong one is a scan for nothing".
 
   - id: pres.text_queue_is_utf16_bgra
     title: Text is queued as UTF-16, coloured B,G,R,A, with an optional per-character colour
@@ -4055,7 +4086,34 @@ open_questions:
         Failing differently: measuring a known string in the original and comparing
         it against FUN_004c7650's prediction, which would say which branch is live.
     related: [font.glyph_advance_is_stored, font.glyph_tables_not_parsed_at_runtime]
-    status: open
+    notes: >
+      Settled 2026-10-14 by finding the parser the would-be-settled-by list
+      said could not exist - see the resolution.
+    status: recovered
+    resolution: >
+      +0x1c is the XML's **leading** and +0x18 is its **trailing**, both stored
+      raw as dwords. The parser is FUN_004c7f80, reached from the face loader
+      FUN_004c8700 (which composes "<face>.xml"/".png"), and it writes the
+      Glyph elements' attributes straight into the 32-byte records: width,
+      height, trailing, leading at +0x14, +0x16, +0x18, +0x1c. The old
+      "not parsed at runtime" scan had searched for the RVA's bytes rather than
+      the VA's (font.glyph_tables_not_parsed_at_runtime is refuted on this).
+
+      With the fields known the "25 against 10" dissolves: it assumed +0x18
+      held leading+width+trailing, which for Small 'A' would be 23; it holds
+      trailing, so the first branch is 2+9 = 11 and the last is 12-2 = 10.
+      There is no disagreement to resolve - a single-character string takes
+      the first branch in both FUN_004c7650 and FUN_004c7720, because the
+      i==0 test runs before the last-character test.
+
+      The port was re-ported to the recovered rule: pen += leading+trailing
+      for the first character, trailing for the middle ones, width-leading for
+      the last, with every glyph after the first drawn leading pixels left of
+      the pen. Consecutive glyphs therefore overlap by their leading, and a
+      trailing space measures negative - both as the engine does it. The
+      fallback character is also recovered ('*', 0x2a, written at +0x44 by
+      FUN_004c7510) and substituted for codes a face cannot draw.
+
 
   - id: render.cascade_snapshots
     question: What is the cheapest honest way to animate a cascade - instrument Board, or replay the log?
@@ -4285,7 +4343,31 @@ port_decisions:
       "inferred from the assets and confirmed by how the result looks", not
       "recovered".
     supersedes: null
+    superseded_by: port.pen_rule_is_recovered
     date: 2026-10-05
+
+  - id: port.pen_rule_is_recovered
+    decision: >
+      Text is laid out with the engine's own three-branch pen rule, recovered
+      from the face-XML parser and its two consumers: first character
+      leading+trailing with the ink at the pen, middle characters trailing
+      with the ink leading pixels left of the pen, last character
+      width-leading; codes a face cannot draw become '*', and U+00A0 becomes
+      a space.
+    rationale: >
+      Superseding port.advance_is_ink_width, which was an inference and is
+      now known to be wrong in detail. FUN_004c7f80 parses each face's XML at
+      runtime and stores the raw attributes - trailing at +0x18, leading at
+      +0x1c - and FUN_004c7650/FUN_004c7720 consume them with the same three
+      branches (font.glyph_advance_is_stored, font.advance_field_mapping).
+      The old model advanced by max(width, leading+trailing) with the ink at
+      the pen, which is looser than the engine by about one leading per glyph
+      and misses both the single-character first branch and the negative
+      trailing-space step. The fallback '*', 0x2a at +0x44 on the font record
+      (FUN_004c7510), is substituted rather than skipped, because the original
+      draws it.
+    supersedes: port.advance_is_ink_width
+    date: 2026-10-14
 
   - id: port.spell_sound_is_guessed
     decision: A cast plays a spell sound chosen by whether it costs mana

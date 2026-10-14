@@ -6,10 +6,11 @@
    style names a face that exists, and the codes a style's face claims to cover are
    the codes it actually has.
 
-   The advance itself is *not* asserted to any particular formula, because it is an
-   inference - see the note at the top of [gfx/font_layout.ml]. What is asserted
-   here is the property the inference rests on: that a glyph's two bearings account
-   for its ink box rather than adding to it. *)
+   The pen rule itself is recovered rather than inferred - see the note at the top
+   of [gfx/font_layout.ml] and test_gfx_font_layout - so what is asserted here is
+   a property of the data rather than of any layout: that a glyph's two bearings
+   account for its ink box rather than adding to it, and which faces carry the
+   exceptions. *)
 
 open Puzzle_quest_lib
 
@@ -125,20 +126,21 @@ let test_lookup () =
   | _ -> check "System and Small are present" false
 
 let test_bearings_account_for_the_ink () =
-  (* The finding the advance inference rests on. If the bearings *added* to the ink
-     width, summing all three would be the advance; they do not - they sum to it,
-     to within a pixel or two of rounding, on 94% of glyphs.
+  (* A property of the extracted data, worth pinning for its own sake now that
+     the pen rule is recovered: the two bearings sum to the ink width, to within
+     a pixel or two of rounding, on 94% of glyphs. The engine uses them raw -
+     trailing is the middle-character step and leading the draw-side inset - so
+     where they diverge from the ink the text visibly tightens or loosens.
 
-     What matters is not that percentage but *which faces* carry the exceptions,
-     because the inference only has to be right for the faces actually drawn. The
+     Which faces carry the exceptions matters more than the percentage. The
      three the battle screen uses are essentially clean - System, Small and
-     WC_Message between them have one glyph between them whose bearings exceed its
-     ink by more than 3px. The 127 offenders are all in the heading and script
-     faces, where the metrics are visibly different: 49 in WC_Heading, 20 in each
-     of WC_Quest and the three script faces, 16 in WC_Button.
+     WC_Message between them have one glyph between them whose bearings exceed
+     its ink by more than 3px. The 127 offenders are all in the heading and
+     script faces, where the metrics are visibly different: 49 in WC_Heading,
+     20 in each of WC_Quest and the three script faces, 16 in WC_Button.
 
-     If an offender ever appears in System, the advance inference is wrong in a way
-     that would show up on screen, and this is the test that notices. *)
+     If an offender ever appears in System, the layout shifts in a way that
+     would show up on screen, and this is the test that notices. *)
   let offenders = Hashtbl.create 10 in
   Array.iter
     (fun (f : Font_data.face) ->

@@ -100,7 +100,7 @@ def render(faces, styles) -> str:
     w("   Nothing here computes an advance. The three numbers a glyph table gives")
     w("   per character are its rectangle and its leading and trailing bearings;")
     w("   how the engine turns those into a pen movement is in gfx/font_layout.ml,")
-    w("   which is where the open question about it lives. *)\n")
+    w("   where the recovered rule lives. *)\n")
     w("type glyph = {")
     w("  code : int;")
     w("  x : int;")

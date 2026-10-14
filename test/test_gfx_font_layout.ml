@@ -1,10 +1,18 @@
-(* Text layout: advances, line placement, and the ported float-message positioning.
+(* Text layout: the pen rule, line placement, and the ported float-message positioning.
 
    [Pq_gfx.Font_layout] holds no SDL and no OpenGL, so all of this is arithmetic
    and all of it is testable without a window - which matters more here than
-   anywhere else in the graphics front, because the advance is an *inference* and
-   the only way to keep an inference honest is to pin down every property it does
-   and does not have to satisfy.
+   anywhere else in the graphics front, because the pen rule is the one number
+   every glyph position in the project depends on.
+
+   The rule is recovered rather than inferred: [FUN_004c7f80] parses each face's
+   XML at runtime into the glyph records (trailing at +0x18, leading at +0x1c,
+   both raw attributes), and [FUN_004c7650] and [FUN_004c7720] consume them with
+   the same three branches - first character [leading + trailing], middle
+   [trailing], last [width - leading], with later glyphs' ink [leading] pixels
+   left of the pen. These tests pin the rule against real [System] and [Small]
+   numbers, including the places it is not the ink width: a single 'A' in
+   [Small] measures 11 with an ink box of 12, and a trailing space is negative.
 
    [place_message] is a transcription rather than a guess, so its tests are the
    real specification of what the original does: centre on the box, then clamp to
@@ -36,30 +44,44 @@ let message = Option.get (Font_layout.metrics_of_tag "font_msg_white")
 
 let box x0 y0 x1 y1 = { Font_layout.x0; y0; x1; y1 }
 
-(* ---------------------------------------------------------------- advance -- *)
+(* ------------------------------------------------------------- pen rule -- *)
 
-let test_advance () =
-  (* An inked glyph advances by its ink width, because its two bearings sum to
-     that width rather than adding to it. *)
-  let n = Option.get (Font_data.glyph_of_code system.Font_layout.face 110) in
-  check_int "'n' advances by its ink width" (Font_layout.advance system 110)
-    n.Font_data.w;
-  (* And a blank glyph advances by its cell, because its 1px box is a placeholder
-     and the bearings are the only statement of how wide a space is. This is the
-     case that makes "you 60" not come out as "you60". *)
-  let space = Option.get (Font_data.glyph_of_code system.Font_layout.face 32) in
-  check_int "a space advances by its bearings, not its 1px box"
-    (Font_layout.advance system 32) (space.Font_data.leading + space.Font_data.trailing);
-  check "which is wider than its box"
-    ((space.Font_data.leading + space.Font_data.trailing) > space.Font_data.w);
-  (* A glyph outside the face's range has no advance at all. *)
-  check_int "an absent glyph has no advance" (Font_layout.advance system 31) 0
+let test_pen_rule () =
+  (* The three branches, on real System numbers: 'n' is width 11, leading 2,
+     trailing 9; 'a' is 10/2/8; 'b' is 11/2/9. *)
+  let placed = Font_layout.place_line system "nab" 0 in
+  check_int "three glyphs are placed" (List.length placed) 3;
+  let n = List.nth placed 0 and a = List.nth placed 1 and b = List.nth placed 2 in
+  check_int "the first glyph is at the origin" n.Font_layout.x 0;
+  check_int "and advances by leading + trailing" n.Font_layout.pen 11;
+  check_int "the middle glyph's ink is leading left of the pen" a.Font_layout.x 9;
+  check_int "and advances by trailing alone" a.Font_layout.pen 19;
+  check_int "the last glyph's ink is also leading left of the pen" b.Font_layout.x 17;
+  check_int "and advances by width - leading" b.Font_layout.pen 28;
+  (* The overlap the bearing produces: consecutive glyphs share their leading. *)
+  check "glyphs overlap by the leading" (n.Font_layout.pen - a.Font_layout.x = 2);
+  (* A single character takes the first branch even though it is also the last:
+     in Small, 'A' is width 12, leading 2, trailing 9, so the branches would
+     give 11 and 10 - and the engine's i==0 test runs first. This is the
+     disagreement the old notes read as 25 against 10 on a misread field. *)
+  check_int "a single Small 'A' measures its bearings" (Font_layout.measure small "A") 11;
+  check "which is not its ink width"
+    ((Option.get (Font_data.glyph_of_code small.Font_layout.face 65)).Font_data.w = 12)
 
-let test_bearing_is_zero () =
-  (* The atlas packs cells edge to edge, so there is no baked-in ink offset to
-     undo. Asserted because it is the other half of the advance inference: if a
-     future face does carry one, this is the test that should fail. *)
-  check_int "ink is drawn at the pen" (Font_layout.bearing system 65) 0
+let test_resolve () =
+  (* The engine's substitution chain: U+00A0 becomes a space, and a code the
+     face cannot draw becomes the fallback - '*', 0x2a, at +0x44 on the font
+     record. *)
+  check_int "U+00A0 resolves to a plain space" (Font_layout.resolve_code system 0xa0) 32;
+  check_int "a code below the range becomes the fallback"
+    (Font_layout.resolve_code system 31) Font_layout.fallback_code;
+  check_int "the fallback is '*'" Font_layout.fallback_code 42;
+  check_int "and it measures as itself" (Font_layout.measure system "\x1f")
+    (Font_layout.measure system "*");
+  (* A code the face has is left alone, sentinel test notwithstanding. *)
+  check_int "a real code is unchanged" (Font_layout.resolve_code system 65) 65;
+  check_int "the space is taken without a presence test"
+    (Font_layout.resolve_code system 32) 32
 
 let test_codes () =
   check "ASCII decodes to one code per byte" (Font_layout.codes "AB" = [ 65; 66 ]);
@@ -79,14 +101,16 @@ let test_codes () =
 
 let test_measure () =
   check_int "an empty string is zero wide" (Font_layout.measure system "") 0;
-  check_int "one character is one advance" (Font_layout.measure system "n")
-    (Font_layout.advance system 110);
-  check_int "three characters are three advances"
-    (Font_layout.measure system "nab")
-    (Font_layout.advance system 110 + Font_layout.advance system 97
-    + Font_layout.advance system 98);
+  check_int "one character is the first branch" (Font_layout.measure system "n") 11;
+  check_int "three characters are the three branches"
+    (Font_layout.measure system "nab") 28;
+  (* A trailing space takes the last branch, whose width - leading is negative
+     for every face: the box is a 1px placeholder. The engine does it anyway. *)
+  check_int "a trailing space goes negative" (Font_layout.measure system "n ") 10;
   (* Measure must agree with the rightmost edge of what place_line produces, or
-     centring would be off by however much the two disagree. *)
+     centring would be off by however much the two disagree. The first branch's
+     leading + trailing is what breaks the equality for a single character, so
+     this is a multi-character string - where measure is the last ink edge. *)
   let placed = Font_layout.place_line system "nab" 0 in
   let right =
     List.fold_left (fun acc (p : Font_layout.placed) -> max acc (p.Font_layout.x + p.Font_layout.glyph.Font_data.w)) 0 placed
@@ -122,11 +146,13 @@ let test_place_line () =
   check_int "two glyphs are placed" (List.length placed) 2;
   let first = List.nth placed 0 and second = List.nth placed 1 in
   check_int "the first glyph is at the origin" first.Font_layout.x 0;
-  (* Contiguous: the second starts exactly where the first one's advance ended.
-     Overlapping is as wrong as a gap, and this is the property that catches
-     both. *)
-  check_int "the second abuts the first"
-    second.Font_layout.x first.Font_layout.pen;
+  (* Overlapping, not abutting: the second's ink starts [leading] pixels left of
+     the pen the first left behind, which is the draw-side bearing. A gap or a
+     flush abutment would both fail this. *)
+  check_int "the second overlaps the first by its leading"
+    second.Font_layout.x (first.Font_layout.pen - second.Font_layout.glyph.Font_data.leading);
+  check_int "and the pair measures as the pen says" (Font_layout.measure system "nn")
+    second.Font_layout.pen;
   (* The y passed in is the top of the line, and the atlas' own vertical placement
      is kept rather than recomputed from a baseline. *)
   let moved = Font_layout.place_line system "n" 40 in
@@ -134,7 +160,15 @@ let test_place_line () =
     (List.hd moved).Font_layout.y 40;
   check_int "and the glyph rect is carried through"
     (List.hd moved).Font_layout.glyph.Font_data.y
-    (Option.get (Font_data.glyph_of_code system.Font_layout.face 110)).Font_data.y
+    (Option.get (Font_data.glyph_of_code system.Font_layout.face 110)).Font_data.y;
+  (* A missing code is placed as the fallback, not skipped: the original draws
+     '*' where the face has nothing, so the port places '*'s rectangle. *)
+  let fb = Font_layout.place_line system "\x1f" 0 in
+  check_int "a missing code still places one glyph" (List.length fb) 1;
+  check_int "as the fallback's code" (List.hd fb).Font_layout.code 42;
+  check_int "with the fallback's rectangle"
+    (List.hd fb).Font_layout.glyph.Font_data.x
+    (Option.get (Font_data.glyph_of_code system.Font_layout.face 42)).Font_data.x
 
 let test_multi_line () =
   let lh = Font_layout.line_height system in
@@ -255,8 +289,8 @@ let test_message_vertical_asymmetry () =
     (very_low.Font_layout.y0 < 700)
 
 let () =
-  test_advance ();
-  test_bearing_is_zero ();
+  test_pen_rule ();
+  test_resolve ();
   test_codes ();
   test_measure ();
   test_height ();
