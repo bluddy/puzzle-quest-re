@@ -4359,7 +4359,30 @@ open_questions:
         remaining = deadline - now) pointed at the item game's board, which
         would confirm a clock exists whether or not the text says so.
     related: [campaign.rune_forge]
-    status: open
+    status: recovered
+    resolution: >
+      DEFEAT is no-moves only, and the "no moves -> lose" rule belongs to the
+      non-battle modes. Three things settle it. First, ALL FOUR complete
+      translations render the DEFEAT line whole with no second clause -
+      French "s'il n'y a plus de déplacement possible", German "wenn kein
+      Zug mehr möglich ist", Italian "quando non ti restano più mosse",
+      Spanish "si no quedan movimientos" - so the English art's clipped "&"
+      has no corroborating continuation, and four independent renderings
+      agreeing is stronger than one fragment. Second, ItemGameMenu.xml
+      carries NO timer widget - no str_ltime, no icon_ltimebg, nothing to
+      draw a countdown on (GameMenu has both) - so timer="on" is a
+      Menu-level attribute with no visible clock behind it, which is not how
+      a rule the player must respect would be presented. Third, and the
+      structural point: "no moves -> lose" is a MINIGAME rule, not a battle
+      one - the port already distinguishes the two, because a battle with no
+      legal move is a MANA BURN (Board.is_mana_burn -> Board.reshuffle, the
+      board regenerates and play continues, not a loss), while the capture
+      and skill minigames have no refill and so lose on no-moves
+      (Capture.status_of; Item_game's status_of). The DEFEAT rule on
+      Rules_ItemGame.png is stating that minigame distinction, and the port's
+      Item_game/Capture no-moves defeat is already the faithful reading. The
+      clipped "&" and the menu's timer="on" keep no clock evidenced, so none
+      is modelled.
 
 
   - id: score.time_limit_term
@@ -5793,8 +5816,8 @@ port_decisions:
       while [hammers_per_board] (four) and the reset-after-any-destruction
       reading - [ITEMGAMEMENU_TEXT]'s literal "Each time one or more of them
       are destroyed" rather than the looser "all of them" gloss - remain port
-      choices, and the clipped DEFEAT line is implemented as no-moves only
-      (forge.item_game_defeat_clock keeps the trailing "&" open).
+      choices. The DEFEAT line is settled as no-moves only (the minigame
+      rule, against battle's mana burn): see forge.item_game_defeat_clock.
       [MAXRUNEITEM0/1] now have a gate behind them; the forge button opens the
       game, a win mints through forge_item, a loss prints [FORGEITEMS_FAIL].
     supersedes: null

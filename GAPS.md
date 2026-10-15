@@ -115,7 +115,7 @@
 | Party slots | `companions: string list` with the recovered 8-slot cap (`RewardCompanion` fills the roster and the party, ninth refused from the party only); `RemoveCompanion` drops by id from the party and keeps the roster, the arrival rules run through `Campaign.enter_location` (travel arrival calls it via `advance_travel_with_events`), and the map Companions tab swaps and removes |
 | Mount | Landed: `player.mount` (a chosen captive, registry `mount = 1`) divides `travel_time` by its tier - 1.5 / 2.0 / 2.5 (`port.mount_travel_speed`) - and rides into every battle: the skill bonus (`addstat + ((level - 1) / addlevel) * addperlevel`, `mount_stat` via `skill_of_index`) on the combatant plus the mount spell prepended to the hero list (`port.mount_skill_formula`); `equipment.mount` stays an item slot. Training/fly (encounter avoidance) remain open |
 | Capture flow | Landed on every surface: road wins open the minigame (`port.capture_ui`); callback wins (the quest fights play has) park `cb_capture_offer` behind the banner and the map opens it on dismiss; the city's Pets tab lists the gated candidates (`port.capture_surfaces`). Win reads go through `Battle.hero_won` - `sweep_deaths` clears `is_dead` every pass |
-| Rune forge | Landed end to end: registries + 150-name table (`campaign.rune_forge`), collection, claim gates, forge spec (`port.rune_forge_formula`), mint (`port.rune_item_mint`), the city Forge tab and the runekeeper popup (`port.forge_ui`), the **forge skill game** (2026-10-14, `port.item_game_rules` - the `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png, the recovered target formula and `[MAXRUNEITEM]` cap of 250, win=mint / lose=the failure line); JXXX's unhookable bodies and the clipped DEFEAT clock (`forge.item_game_defeat_clock`) remain open |
+| Rune forge | Landed end to end: registries + 150-name table (`campaign.rune_forge`), collection, claim gates, forge spec (`port.rune_forge_formula`), mint (`port.rune_item_mint`), the city Forge tab and the runekeeper popup (`port.forge_ui`), the **forge skill game** (2026-10-14, `port.item_game_rules` - the `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png, the recovered target formula and `[MAXRUNEITEM]` cap of 250, win=mint / lose=the failure line); the DEFEAT rule settled as minigame-no-moves (`forge.item_game_defeat_clock`); JXXX's unhookable bodies remain open |
 
 ### 11. Character Creation
 | Gap | Details |
@@ -164,7 +164,7 @@
 | **7 ✅** | City UI (shop, spells, tavern) | The panel buys, tabs and reads rumors on ShopMenu's own geometry |
 | **8 ✅** | Conversation UI + portraits | Narrative delivery — `pq_conv_gfx`: action walk, portraits/backdrop, callback battles (choice nodes do not exist in the data) |
 | **8 ✅** | Campaign fight screens | Road, quest-stage and callback fights play on the hosted `Battle_screen` instead of running headless (`port.quest_battle_fight_screen`): the runners split into open + settle with `?human`, the map hosts the screen and feeds `complete_action` the real verdict |
-| **8 ✅** | Forge skill game | The `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png: hammer-and-anvil gems, the 4/5-of-a-kind line clears, the heroic spawn, the board reset, the `[MAXRUNEITEM]` cap of 250 and the recovered target formula `clamp((difficulty-100)/55,1,21)` (`port.item_game_rules`, `forge.item_game_numbers` recovered); the clipped DEFEAT clock is the one open piece (`forge.item_game_defeat_clock`) |
+| **8 ✅** | Forge skill game | The `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png: hammer-and-anvil gems, the 4/5-of-a-kind line clears, the heroic spawn, the board reset, the `[MAXRUNEITEM]` cap of 250 and the recovered target formula `clamp((difficulty-100)/55,1,21)` (`port.item_game_rules`, `forge.item_game_numbers` and `forge.item_game_defeat_clock` all recovered - the DEFEAT rule is minigame-no-moves against battle's mana burn) |
 | **8** | Equipment/item effects + mount | Stat progression depth |
 | **9** | Character creation + main menu | Polish for "game" feel |
 | **10** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
@@ -258,8 +258,11 @@ the hammer-and-anvil skill game instead of minting instantly
 (`port.item_game_rules`), the city Settings tab changing Difficulty and
 Turn Time Limit with the Time Limit spoils bonus paying
 (`port.settings_surface`), and a tight Time Limit actually timing you out
-(`port.turn_clock`), and the skill game's target formula and cap recovered off
-UTF-16 xrefs (`forge.item_game_numbers`). Pick one:
+(`port.turn_clock`), the skill game's target formula and cap recovered off
+UTF-16 xrefs (`forge.item_game_numbers`), and the DEFEAT rule settled as
+minigame-no-moves against battle's mana burn (`forge.item_game_defeat_clock`).
+Evidence is back to zero open questions. Pick one:
 
-- **Forge DEFEAT clock** - settle `forge.item_game_defeat_clock`: the English rules art clips the DEFEAT line at "&" (and the menu carries `timer="on"`), but all four complete translations read it as "no possible moves" only - so either confirm the no-moves-only rule the port already implements, or find the item game's own deadline the way the turn clock was found
 - **Timeout penalty** - pin the `[-%d]` life cost the original floats on a timeout (the unpinned vtbl query behind `FUN_00415800`, gated by `SET_ILLEGAL_MOVE_DAMAGE_ENABLED`), which would make the clock cost life as well as the turn (`port.turn_clock` claims no damage until then)
+- **Languages** - `text_data.ml` ships English only while French/German/Italian/Spanish carry the same 2,638 entries and the extractor already takes `--language`; wire a language switch and the other four tables (Known Gap 8)
+- **Save/load wiring** - the engine round-trips through `campaign_save` but nothing in the map front calls it (only the console demo does), and the original has no manual save button either - so the open question is whether it auto-saves and where, which would need a small RE pass before a UI decision
