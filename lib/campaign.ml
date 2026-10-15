@@ -154,17 +154,30 @@ let () =
     Hashtbl.add road_table (r.end_, r.start) { start = r.end_; end_ = r.start; visible = r.visible }
   ) roads
 
+(* The hero's dirty flag - the original's byte at hero+0xbc. State-changing
+   events set it (the dirty writes in the original sit in the hero setters
+   themselves, the FUN_00468xxx family), and the autosave pump drains it:
+   Campaign_autosave.pump, called every frame by the map front, writes the
+   save file whenever this is set and a successful write clears it. The flag
+   lives here beside the mutators because Campaign cannot depend on
+   Campaign_save (which depends on Campaign); the pump lives below both. *)
+let dirty : bool ref = ref false
+
+let mark_dirty () : unit = dirty := true
+
 (* Modify map node visibility *)
 let set_node_visible (id: string) (vis: bool) : unit =
-  try
+  (try
     let node = Hashtbl.find map_nodes id in
     Hashtbl.replace map_nodes id { node with visible = vis }
-  with Not_found -> ()
+  with Not_found -> ());
+  mark_dirty ()
 
 let set_road_visible (start: string) (end_: string) (vis: bool) : unit =
   (try (Hashtbl.find road_table (start, end_)).visible <- vis with Not_found -> ());
   if start <> end_ then
-    (try (Hashtbl.find road_table (end_, start)).visible <- vis with Not_found -> ())
+    (try (Hashtbl.find road_table (end_, start)).visible <- vis with Not_found -> ());
+  mark_dirty ()
 
 let get_road_visible (start: string) (end_: string) : bool =
   try
@@ -261,12 +274,19 @@ let mounted_speed (player: player) : float =
    and the choice is free: mounts differ only in what they grant. *)
 let set_mount (player: player) (mid: string option) : player =
   match mid with
-  | None -> { player with mount = None }
+  | None ->
+    if player.mount = None then player
+    else begin
+      mark_dirty ();
+      { player with mount = None }
+    end
   | Some id ->
     (try
        let m = Campaign_monsters.monster_by_id id in
-       if List.mem id player.captives && m.mount = 1 then
+       if List.mem id player.captives && m.mount = 1 then begin
+         mark_dirty ();
          { player with mount = Some id }
+       end
        else player
      with Not_found -> player)
 
@@ -439,15 +459,19 @@ let register_ruin (id: string) : unit =
   set_location_visible id true;
   Hashtbl.replace ruin_counts id (ruin_count id + 1);
   (* ADD_RUIN purges the id's pending done notification on every register *)
-  ruin_done_ids := List.filter (fun r -> r <> id) !ruin_done_ids
+  ruin_done_ids := List.filter (fun r -> r <> id) !ruin_done_ids;
+  mark_dirty ()
 
 let set_ruin_done (id: string) : unit =
   match ruin_count id with
   | 0 -> ()  (* no entry: the engine's find fails and nothing happens *)
   | 1 ->
     Hashtbl.remove ruin_counts id;
-    if not (List.mem id !ruin_done_ids) then ruin_done_ids := id :: !ruin_done_ids
-  | n -> Hashtbl.replace ruin_counts id (n - 1)
+    if not (List.mem id !ruin_done_ids) then ruin_done_ids := id :: !ruin_done_ids;
+    mark_dirty ()
+  | n ->
+    Hashtbl.replace ruin_counts id (n - 1);
+    mark_dirty ()
 
 (* save/load: snapshot the live registry, like the visibility tables *)
 let ruin_counts_snapshot () =
@@ -605,6 +629,7 @@ let collect_income (player: player) : player =
   match player.current_city with
   | Some city_id ->
     let city = city_by_id city_id in
+    mark_dirty ();
     { player with gold = player.gold + city.income }
   | None -> player
 
@@ -620,11 +645,13 @@ let collect_income (player: player) : player =
    its own flow. *)
 let buy_item (player: player) (i: item) : player option =
   if player.gold < i.cost then None
-  else
+  else begin
+    mark_dirty ();
     Some
       { player with
         gold = player.gold - i.cost;
         inventory = i :: player.inventory }
+  end
 
 (* The tavern's rumors, resolved: every [RUMOR_*_NAME] in the TextLibrary
    paired with its [RUMOR_*_DESC], in table order. Which tavern tells which
@@ -667,7 +694,8 @@ let xp_for_level (prof: profession) (level: int) : int =
 
 let check_level_up (player: player) : player =
   let needed = xp_for_level player.profession (player.level + 1) in
-  if player.xp >= needed then
+  if player.xp >= needed then begin
+    mark_dirty ();
     let new_level = player.level + 1 in
     let life_gain = player.profession.life_per_level in
     let new_player = { player with
@@ -681,6 +709,7 @@ let check_level_up (player: player) : player =
       ) player.profession.spells_by_level
     in
     { new_player with known_spells = new_spells @ new_player.known_spells }
+  end
   else player
 
 (* ------------------------------------------------------------------ *)
@@ -700,6 +729,7 @@ let monster_defeats (p: player) (monster_id: string) : int =
 
 let record_defeat (p: player) (monster_id: string) : player =
   let n = monster_defeats p monster_id + 1 in
+  mark_dirty ();
   { p with monster_defeats =
       (monster_id, n) :: List.filter (fun (id, _) -> id <> monster_id) p.monster_defeats }
 
@@ -718,7 +748,10 @@ let capture_finish (p: player) (monster_id: string) (attempt: Capture.t) : playe
   match attempt.status with
   | Capture.Won ->
     if List.mem monster_id p.captives then p
-    else { p with captives = monster_id :: p.captives }
+    else begin
+      mark_dirty ();
+      { p with captives = monster_id :: p.captives }
+    end
   | Capture.Playing | Capture.Lost -> p
 
 (* The capture a won fight raises, if any: the encounter's monster when both
@@ -784,8 +817,10 @@ let rune_claimable (p: player) (rune_id: string) : bool =
     && not (List.mem rune_id p.runes)
 
 let claim_rune (p: player) (rune_id: string) : player option =
-  if rune_claimable p rune_id then
+  if rune_claimable p rune_id then begin
+    mark_dirty ();
     Some { p with runes = rune_id :: p.runes }
+  end
   else None
 
 (* Every rune the hero holds, registry order - bases, then modifiers,
@@ -1056,6 +1091,7 @@ let forge_item (p: player) ~(base: string) ~(modifier: string)
     | None -> None
     | Some (it, params) ->
       register_rune_item it.id params;
+      mark_dirty ();
       let p =
         if List.exists (fun (i: item) -> i.id = it.id) p.inventory then p
         else { p with inventory = it :: p.inventory }
@@ -1387,10 +1423,12 @@ let train_mount ?(rng = Random.int) (player: player) (mid: string)
         Battle.hero_won b && b.Battle.turns_elapsed <= ch.turn_limit
       in
       let player =
-        if trained then
+        if trained then begin
+          mark_dirty ();
           { player with mount_levels =
               (mid, ch.creature_level)
               :: List.filter (fun (id, _) -> id <> mid) player.mount_levels }
+        end
         else player
       in
       Some (player, b, trained))
@@ -1447,12 +1485,15 @@ let process_battle_result (player: player) (enc: encounter) (battle: battle) : p
   in
   let gold_gained = battle.gold + fst spoils in
   let xp_gained = battle.xp + snd spoils in
+  (* every fought battle is a save trigger - the original's battle-record
+     site ([BATTLES_VICTORIES]) marks the hero dirty whatever the spoils *)
+  mark_dirty ();
   let new_player = {
     player with
-      gold = player.gold + gold_gained;
-      xp = player.xp + xp_gained;
-      life = hero.life;
-    } in
+    gold = player.gold + gold_gained;
+    xp = player.xp + xp_gained;
+    life = hero.life;
+  } in
   (* a road win counts toward capture eligibility *)
   let new_player =
     if player_won then
@@ -1534,11 +1575,17 @@ let companion_slot (p: player) (cid: string) : companion_slot =
    [companion_slot] cannot double-apply. *)
 let add_companion (p: player) (cid: string) : player =
   match companion_slot p cid with
-  | At_home -> { p with companions = cid :: p.companions }
+  | At_home ->
+    mark_dirty ();
+    { p with companions = cid :: p.companions }
   | _ -> p
 
 let remove_companion (p: player) (cid: string) : player =
-  { p with companions = List.filter (fun c -> c <> cid) p.companions }
+  if List.mem cid p.companions then begin
+    mark_dirty ();
+    { p with companions = List.filter (fun c -> c <> cid) p.companions }
+  end
+  else p
 
 (* ------------------------------------------------------------------ *)
 (* Pending conversations                                                 *)
@@ -1692,6 +1739,7 @@ let quest_accept (player: player) (qid: string) : player =
     let p = List.fold_left apply_quest_effect player effects in
     if List.exists (fun (id, _) -> id = qid) p.active_quests then p
     else begin
+      mark_dirty ();
       (match List.find_opt
                (fun (_, gate) -> companion_ok p gate)
                q.conversations_begin with
@@ -1731,6 +1779,7 @@ let quest_battle_complete ?capture ?monster (player: player) (qid: string)
   match List.assoc_opt qid player.active_quests with
   | None -> player
   | Some stage ->
+    mark_dirty ();
     let q = quest_by_id qid in
     if success then begin
       let next = match List.assoc_opt stage q.battle_stage_advances with
@@ -1806,6 +1855,7 @@ let quest_battle_monster (player: player) (qid: string) : string option =
    and the win bookkeeping has to be testable regardless. *)
 let quest_battle_settle ?capture ?monster (player: player) (qid: string)
     (success: bool) (b: battle) : player =
+  mark_dirty ();
   let p = { player with life = b.hero.life } in
   let p =
     if success then
@@ -1919,7 +1969,8 @@ let run_quest_battle ?(rng = Random.int) ?human (player: player) (qid: string)
    ShowMessage occur in end_effects (tools/extract_quests.py --check). *)
 let quest_turn_in (player: player) (qid: string) : player =
   if not (List.exists (fun (id, _) -> id = qid) player.active_quests) then player
-  else
+  else begin
+    mark_dirty ();
     let q = quest_by_id qid in
     let qi = { quest = q; state = Active 2; vars = quest_var_set [] "questState" "2" } in
     (* end_effects first: their guards test the stage the fold STARTED at
@@ -1960,6 +2011,7 @@ let quest_turn_in (player: player) (qid: string) : player =
     in
     let _qi, effects = run_quest_on_end qi in
     List.fold_left apply_quest_effect p effects
+  end
 
 (* Abandon a quest: runs OnAbandon (ruin releases, state back to 0) and drops it
    from active_quests, which makes it available again. No-op if it is not active
@@ -1970,7 +2022,8 @@ let quest_abandon (player: player) (qid: string) : player =
   else
     let q = quest_by_id qid in
     if not q.abandonable then player
-    else
+    else begin
+      mark_dirty ();
       let qi = { quest = q; state = Active 1; vars = quest_var_set [] "questState" "1" } in
       let _qi, effects = run_quest_on_abandon qi in
       let p = List.fold_left apply_quest_effect player effects in
@@ -1979,6 +2032,7 @@ let quest_abandon (player: player) (qid: string) : player =
        | conv :: _ -> queue_conversation conv
        | [] -> ());
       p
+    end
 
 (* Complete a road encounter: run the battle and apply loot. Road encounters
    are random travel fights; quest progress is driven by quest_battle_complete
@@ -2178,6 +2232,7 @@ let execute_callback ?(rng = Random.int) ?human (player: player) (qid: string)
   match callback_open ~rng ?human player qid callback_name with
   | None -> None
   | Some cf -> (
+    mark_dirty ();
     match cf.cf_battle with
     | None ->
       Some { cb_player = cf.cf_player; cb_battle = None;
@@ -2310,6 +2365,7 @@ let apply_complete_groups (player : player) (qid : string)
    with. The removes themselves matched stage+location at build time, so
    the reorder cannot change which of them fire. *)
 let enter_location (player: player) (location: string) : player =
+  mark_dirty ();
   List.fold_left
     (fun p (qid, st) ->
       let q = quest_by_id qid in
@@ -2364,6 +2420,7 @@ let execute_action (player : player) (qid : string) (location : string) :
   match List.assoc_opt qid player.active_quests with
   | None -> player
   | Some st0 ->
+    mark_dirty ();
     let q = quest_by_id qid in
     apply_loc_groups player qid q.execute_effects ~location
       (fun st loc p ->
@@ -2385,6 +2442,7 @@ let complete_action ?(success = true) (player : player) (qid : string)
   match List.assoc_opt qid player.active_quests with
   | None -> player
   | Some st0 ->
+    mark_dirty ();
     let q = quest_by_id qid in
     apply_complete_groups player qid q.complete_effects
       ~location ~success

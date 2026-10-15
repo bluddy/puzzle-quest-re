@@ -45,4 +45,5 @@
    campaign_companion_hooks
    conversation
    campaign
-   campaign_save))
+   campaign_save
+   campaign_autosave))

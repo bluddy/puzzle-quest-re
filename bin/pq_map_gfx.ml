@@ -1458,6 +1458,11 @@ let handle_click (ui : ui) (mx : int) (my : int) : unit =
     - then the road popup holds the journey where it is, then walking,
     which through [advance_travel_with_events] fires the arrival moment. *)
 let step (ui : ui) (dt : float) : unit =
+  (* The autosave pump - the original's per-frame drain of the dirty flag
+     (FUN_0044d53c, the [MSG_AUTOSAVE] queue). Events between frames
+     coalesce into one write; the frame the flag rises is the frame after
+     the change, which is also when the player sees it. *)
+  ignore (Campaign_autosave.pump ui.player);
   Conv_window.sync_player ui.conv ui.player;
   (* The minigames hold the hosted dialogue where it is too: no scriptcall
      fires a battle behind the grids. *)
@@ -1537,7 +1542,7 @@ let () =
   Random.self_init ();
   let shot = ref "" and open_city_flag = ref false
   and itemgame_flag = ref false and settings_flag = ref false
-  and lang = ref (-1) in
+  and lang = ref (-1) and fresh_flag = ref false in
   Arg.parse
     [ ( "--shot",
         Arg.Set_string shot,
@@ -1553,9 +1558,12 @@ let () =
         "open the city panel's Settings tab on startup (for --shot)" );
       ( "--lang",
         Arg.Set_int lang,
-        "boot in language 0..4 (English..Italian), for --shot" ) ]
+        "boot in language 0..4 (English..Italian), for --shot" );
+      ( "--fresh",
+        Arg.Set fresh_flag,
+        "start a new hero even when pq_save.json exists (the Continue boot loads it by default)" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N]";
+    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N] [--fresh]";
   (* The language sets before anything draws or any module-level table is
      read through Text_data - the whole switch is live, but a shot wants the
      boot language to be the one it photographs. Unshipped ids fall back to
@@ -1592,11 +1600,38 @@ let () =
       Printf.printf "  no font atlases in %s - run tools/extract_gfx_assets.py (no labels)\n"
         (Font.face_dir ())
   | Some _ -> ());
-  let start = Campaign.create_player "Hero" "PWAR" 0 1 in
-  let start_city =
-    start.Campaign.profession.Campaign_professions.start_city
+  (* Continue boots from the auto-save when one is there - the original's
+     load flow behind the main menu's hero select ([MSG_LOAD]); the port has
+     no menu, so the file's presence IS the Continue, and --fresh is the
+     New Quest. A loaded hero stands at their last city; a node id that is
+     not a city falls back to the profession's start (the front only opens
+     city panels by id). A fresh hero marks dirty immediately, so the very
+     first frame writes the file Continue needs. *)
+  let hero, start_city =
+    match (if !fresh_flag then None else Campaign_autosave.load ()) with
+    | Some (p, _quests, _completed, _awards, _loc, _travel) ->
+        let sc =
+          match p.Campaign.current_city with
+          | Some cid ->
+              (try
+                 ignore (Campaign_map.city_by_id cid);
+                 cid
+               with Not_found ->
+                 p.Campaign.profession.Campaign_professions.start_city)
+          | None -> p.Campaign.profession.Campaign_professions.start_city
+        in
+        Printf.printf "  continued from %s: %s (level %d, %d gold)\n"
+          Campaign_autosave.filename p.Campaign.name p.Campaign.level
+          p.Campaign.gold;
+        flush stdout;
+        (p, sc)
+    | None ->
+        let start = Campaign.create_player "Hero" "PWAR" 0 1 in
+        let sc = start.Campaign.profession.Campaign_professions.start_city in
+        let p = { start with Campaign.current_city = Some sc } in
+        Campaign.mark_dirty ();
+        (p, sc)
   in
-  let hero = { start with Campaign.current_city = Some start_city } in
   let system = Font_layout.metrics_of_tag "font_system" in
   let ui =
     { gl; segments; fonts; system;

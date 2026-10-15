@@ -82,6 +82,8 @@ Because x86 is little-endian, the first character `'j'` is encoded as `0x6A, 0x0
 The null byte terminates the C-string immediately at length 1.
 Therefore, **the effective encryption key for all Puzzle Quest PC saves is the single byte `b"j"` (`0x6A`)**.
 
+(Location note from the auto-save round: the wide literal sits at RVA `0x52246c`, pushed by both the save wrapper (`0x4676d0`, which also sets the hero's dirty byte `+0xd4`-adjacent state and joins `Saves` + `<name>.pqhero`) and the load wrapper (`0x46cdc0`) - the two functions the dirty-flag pump at `0x44d53c` drains through. See `port.autosave` in `evidence.yml`.)
+
 ### Cipher Algorithms
 1. **Transposition (`_EncryptTranspositionBlock`)**:
    - `sum_key = sum(key_bytes) = 0x6A = 106`

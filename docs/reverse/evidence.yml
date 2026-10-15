@@ -5977,3 +5977,63 @@ port_decisions:
       pays for it, dune caches it after.
     supersedes: null
     date: 2026-10-14
+
+  - id: port.autosave
+    decision: >
+      The port auto-saves with the original''s architecture: a dirty flag on
+      the campaign (Campaign.dirty, the hero+0xbc analogue) that Campaign''s
+      own mutators raise - purchases, income, battles, level-ups, defeats,
+      captures, runes, mounts, companions, quest accept/turn-in/abandon,
+      callbacks, location entry, the map reveals - and a per-frame pump
+      (Campaign_autosave.pump, called at the top of the map front''s step)
+      that drains it by writing Campaign_save''s JSON to pq_save.json in the
+      working directory and clearing the flag. Continue is the file''s
+      presence: a boot with pq_save.json loads it (the player, an active
+      quest''s stage, the location, and through apply_save the live map
+      visibility and ruin registry) and a --fresh flag starts a new hero the
+      way the original''s New Quest does. What is not modelled: a mid-journey
+      resume - the hero lands at their last city and the travel_state slot
+      the format carries is written 0, because the original field''s travel
+      encoding is unpinned and the front rebuilds a standing hero.
+    rationale: >
+      The recovery is the dirty-flag pipeline end to end. The pump is the
+      method at 0x44d53c: it asks a pending count (0x44d210), shows the
+      [MSG_AUTOSAVE] box ("Please Wait... Your hero is being autosaved",
+      through the ShortMessageMenu wrapper 0x436730), and drains a hero
+      list. Each drain calls 0x46fad0, which runs the save (0x46edd0 ->
+      0x4676d0, the path joiner under "Saves" with the extension "pqhero",
+      through the writer 0x4d7cd0) and on success CLEARS hero+0xbc - so
+      +0xbc is the dirty byte, and the save call sites ARE the trigger
+      points. The writes of +0xbc sit in the hero-setter module, one per
+      state-changing event, and the classified ones name their event: the
+      calendar advance (0x4672c0, [WEEKDAY_%02d]/[DAY_%02d]/[MONTH_%02d]),
+      the battle record (0x4690c5, [BATTLES_VICTORIES]), quest completion
+      (0x46e149, snd_voice_questcomplete), city rebellion (0x468926,
+      [REBELLIONINCITY]/snd_rebellion) and the hero load itself (0x46e70c,
+      [MSG_LOAD]) - which is the "saves regularly" a player sees: any
+      progress marks the hero and the next frame writes it. The file side:
+      the path builder at 0x44cb90 joins Shell32''s My Documents folder
+      (the "C:\My Documents\" string near the StartupAssets paths) with
+      "Saves" and <hero>.pqhero, and the string beside the save/load
+      wrappers is the payload key ''jhgsd&*(d9shgsf098aLKJ'' at 0x52246c -
+      now an xref corroboration of what docs/SAVE_FILE_FORMAT.md already
+      recovered from real files. The port keeps the pipeline and swaps the
+      medium: its round-trip is the campaign_save JSON (the .pqhero binary
+      with that key is Save_file''s separate, already-shipped surface), the
+      working directory stands in for My Documents (the Shell32 folder call
+      is not ported and the port is not Windows-bound), and the blocking
+      [MSG_AUTOSAVE] box has no front to host it - the pump just writes.
+      Continue needs no main menu: the original''s MainMenu.xml has no
+      hero-load button either ([CONTINUE] is the VictoryMenu''s button;
+      loading is the SinglePlayer flow behind [MSG_LOAD]), so the file''s
+      presence at boot is the honest Continue for a front that boots
+      straight into the map. Marking lives in Campaign rather than the
+      front because that is where the original''s writes sat (the hero
+      setters, not the screen loop) and because it is testable: the new
+      test_campaign_autosave pins the flag, the pump, and the load
+      restoring player, quest stage, location, visibility and the ruin
+      registry - twenty-one checks, plus a live two-launch smoke test
+      (fresh boot writes the file, a Continue boot leaves it untouched,
+      --fresh overwrites).
+    supersedes: null
+    date: 2026-10-14

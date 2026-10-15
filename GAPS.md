@@ -30,7 +30,7 @@
 | Map visibility (quest reveals, road rule, save/restore) | ✅ |
 | Global text (2,630 tags — names render, not `[TAG]`) | ✅ |
 | City shops, spells, income | ✅ |
-| Save/Load (JSON round-trip, live map state + awards) | ✅ |
+| Save/Load (auto-save pump + Continue boot, JSON round-trip, live map state + awards) | ✅ |
 | Ruin registry (refcounts, hook-bucketed releases, save) | ✅ |
 | Capture (grid, settle, gates, captives, save + map UI) | ✅ |
 | Companion hooks (ten `OnStartBattle` bodies, party dispatch, 8-slot cap) | ✅ |
@@ -127,10 +127,10 @@
 ### 12. Game Flow / Menus
 | Gap | Details |
 |-----|---------|
-| Main menu | New Game / Load Game / Options / Credits |
-| Pause menu | Resume / Save / Load / Options / Quit |
-| Options | Volume, key remap, color-blind, UI scale — the OptionsMenu (OptionsMenu.xml) is still open; the Difficulty / Turn Time Limit settings that lived on the hero view landed instead as the city Settings tab (`port.settings_surface`) |
-| Save slots | Multiple save files, metadata preview |
+| Main menu | New Game / Load Game / Options / Credits - and a finding from the auto-save round: the original's MainMenu.xml has NO hero-load button ([CONTINUE] is the VictoryMenu's; loading is the SinglePlayer flow behind [MSG_LOAD]), so the port's Continue is the save file's presence at boot, with --fresh as New Quest (`port.autosave`) |
+| Pause menu | Resume / Save / Load / Options / Quit - saving is automatic (the per-frame pump), so a manual Save row would be new behaviour, not a port |
+| Options | Volume, key remap, color-blind, UI scale — the OptionsMenu (OptionsMenu.xml) is still open; the Difficulty / Turn Time Limit settings that lived on the hero view landed instead as the city Settings tab (`port.settings_surface`), language as its third row (`port.languages`) |
+| Save slots | Multiple save files, metadata preview - the port writes one pq_save.json; the original holds one .pqhero per hero name under Saves\, enumerated by the SinglePlayer flow |
 
 ### 13. Graphics Battle (SDL2/OpenGL)
 | Gap | Details |
@@ -261,9 +261,15 @@ Turn Time Limit with the Time Limit spoils bonus paying
 (`port.turn_clock`), the skill game's target formula and cap recovered off
 UTF-16 xrefs (`forge.item_game_numbers`), the DEFEAT rule settled as
 minigame-no-moves against battle's mana burn (`forge.item_game_defeat_clock`),
-a timeout costing 5 life as well as the turn (`port.turn_clock`), and the
+a timeout costing 5 life as well as the turn (`port.turn_clock`), the
 five-language switch wired live - five resident tables, a Settings-tab row,
-quest steps and conversations included (`port.languages`).
-Evidence is back to zero open questions. Pick one:
-
-- **Save/load wiring** - the engine round-trips through `campaign_save` but nothing in the map front calls it (only the console demo does). Confirmed for the original: it auto-saves regularly and loads from the main menu's Continue - so the port needs the auto-save trigger points (a `Hero_SaveToFile` xref) and a main-menu/Continue entry, which makes this the bigger structural round
+quest steps and conversations included (`port.languages`) - and the port
+auto-saving and continuing on the original's dirty-flag + pump
+architecture (`port.autosave`).
+Evidence is back to zero open questions, and **no pick-one options remain
+on this list**. What is left lives in status.md's milestone table (mount
+training/encounter avoidance, banner effects, enemy variety) and in the
+numbered sections below - section 12's manual save UI among them, plus
+the sharpening threads each round's evidence keeps suggesting (a
+mid-journey save resume: `port.autosave` records why the hero lands at
+their last city instead).
