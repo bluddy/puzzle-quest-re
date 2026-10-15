@@ -250,13 +250,18 @@ let service_clock () =
       end
     end
 
-(** The turn ran out: snd_forceendturn, a red float at the offender, and the
-    latch that makes every remaining question of this turn decline at once -
-    the original's [FUN_00415800], minus the [-%d] life penalty (the vtable
-    query behind it is not pinned, so no damage is claimed here). *)
+(** The turn ran out: snd_damage and snd_forceendturn, [Battle.timeout_penalty]
+    (5) life off the hero, a red "Time expired!" float, and the latch that
+    makes every remaining question of this turn decline at once - the whole of
+    the original's [FUN_00415800]. Only the hero is ever timed (the arming
+    gate), so the offender is always the hero. *)
 let fire_timeout () =
   timed_out := true;
+  ignore (Audio.play (ui ()).audio "snd_damage");
   ignore (Audio.play (ui ()).audio "snd_forceendturn");
+  (match (ui ()).b with
+  | Some b -> Battle.apply_timeout_penalty b
+  | None -> ());
   Float_text.say (ui ()).float_text ~font:"font_msg_red"
     ~subject:Float_text.Hero
     ~anchor:(message_anchor Float_text.Hero)

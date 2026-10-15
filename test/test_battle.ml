@@ -1355,6 +1355,17 @@ let () =
   take_turn b;  (* the foe's turn *)
   check "the AI's turn disarms the clock" (not (clock_armed b));
   check "and can never expire" (not (clock_expired b));
+  (* The timeout's life penalty: the same 5 the [ILLEGALMOVE] handler deals
+     (GAME_KNOWLEDGE_BASE), the [-%d] FUN_00415800 presents - applied to the
+     timed hero and floored at zero. *)
+  check_eq "the timeout penalty is the documented 5" timeout_penalty 5;
+  let victim = make ~time_limit:4 ~player:(Some pass_human) in
+  victim.hero.Combat.life <- 7;
+  apply_timeout_penalty victim;
+  check_eq "a timeout costs the hero 5 life" victim.hero.Combat.life 2;
+  victim.hero.Combat.life <- 3;
+  apply_timeout_penalty victim;
+  check_eq "and can never take it below zero" victim.hero.Combat.life 0;
   let untimed = make ~time_limit:0 ~player:(Some pass_human) in
   take_turn untimed;
   check "an untimed turn arms nothing" (untimed.clock_deadline_ms = None);

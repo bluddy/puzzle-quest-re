@@ -1168,6 +1168,19 @@ let clock_expired (b : battle) : bool =
   | Some d -> b.clock_now_ms >= d
   | None -> false
 
+(** The life a timeout costs the timed side: the same 5 the [ILLEGALMOVE]
+    penalty deals ([GAME_KNOWLEDGE_BASE]: "deals 5 points of damage to the
+    moving combatant and forfeits the turn"). [FUN_00415800] presents the
+    penalty identically - snd_damage, the character's vtable kind-5 n in a
+    "%d" float, the forfeited turn - and runs that presentation
+    unconditionally, while the illegal-move gates its own behind
+    SET_ILLEGAL_MOVE_DAMAGE_ENABLED (+0x397). Only the hero is ever timed
+    (the arming gate in [take_turn]), so the offender is always the hero. *)
+let timeout_penalty = 5
+
+let apply_timeout_penalty (b : battle) : unit =
+  b.hero.Combat.life <- max 0 (b.hero.Combat.life - timeout_penalty)
+
 (** The outcome as the rest of the game asks for it: did the hero win?
     Reading [is_dead] after [run] cannot answer - [sweep_deaths] clears the
     flag on every pass (faithful to FUN_00464870, pinned by test_combat), so

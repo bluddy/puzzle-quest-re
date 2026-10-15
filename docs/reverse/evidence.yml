@@ -5890,14 +5890,20 @@ port_decisions:
       state (the +0x38/+0x3c pair) and it makes the arming, the remaining and
       the expiry testable; the front feeds clock_now_ms off its one float
       accumulator, the DAT_0057f484 analogue, because a headless battle has no
-      clock to read. What is NOT modelled: the [-%d] life penalty the original
-      floats at the offender rides an unpinned vtbl query (the same one the
-      [ILLEGALMOVE] popup uses, gated by SET_ILLEGAL_MOVE_DAMAGE_ENABLED), so
-      the port floats a plain "Time expired!" and claims no damage - a timeout
-      costs the turn, not life, until that query is pinned. The pause/resume
-      machinery (+0x41 freeze through menus and the mana-drain flourish) is
-      likewise unported: the port's battle is modal already. This retires the
-      last half of port.settings_surface's open note, so a tight Time Limit is
-      a tradeoff rather than a free spoils bonus.
+      clock to read. The timeout's life penalty is modelled too: FUN_00415800
+      plays snd_damage, floats "-%d n" off the character's vtable kind-5 call
+      and force-ends the turn - the SAME penalty presentation the [ILLEGALMOVE]
+      handler uses (FUN_0047dc30), which GAME_KNOWLEDGE_BASE pins as "5 points
+      of damage ... and forfeits the turn". The timeout runs that presentation
+      unconditionally (the illegal-move gates it behind +0x397,
+      SET_ILLEGAL_MOVE_DAMAGE_ENABLED; the timeout has no such gate), so a
+      timeout costs the same 5 life and hands the turn over - the port's
+      fire_timeout plays both sounds and runs Battle.apply_timeout_penalty
+      (5 off the hero, floor 0, next to the clock in battle.ml and pinned by
+      three test_battle assertions) and floats "Time expired!". The
+      pause/resume machinery (+0x41 freeze through menus and the mana-drain
+      flourish) is unported: the port's battle is modal already.
+      This retires the last half of port.settings_surface's open note, so a
+      tight Time Limit is a tradeoff rather than a free spoils bonus.
     supersedes: null
     date: 2026-10-14
