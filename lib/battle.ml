@@ -124,6 +124,31 @@ let default_rules =
     player = None;
   }
 
+(** The turn clock's delay table, from [FUN_00464d70] - the recovered millisecond
+    budget a Time Limit setting buys for one turn.
+
+    The engine indexes it with turn_manager+0x34 (the Time Limit setting, the same
+    field the spoils read): `{0, 16000, 12000, 8000, 4000}` ms for
+    [TIMELIMIT0..4] (None/16/12/8/4 sec), and a negative value means custom
+    seconds (`n * -1000`), which is how a Lua-set limit rides the same field. The
+    port's setting is clamped to 0..4, so the negative arm is what the original
+    can express but a port driver will not produce - kept because the table is
+    the recovery, not the port's clamp. *)
+let time_limit_delay_ms (time_limit : int) : int =
+  if time_limit < 0 then time_limit * -1000
+  else
+    match time_limit with
+    | 1 -> 16000
+    | 2 -> 12000
+    | 3 -> 8000
+    | 4 -> 4000
+    | _ -> 0  (* 0 (None) and anything past the fifth row *)
+
+(** The countdown as the plates show it: `"%02d"` of the remaining seconds,
+    computed the way [FUN_0040F7D0] does - `(ms + 900) / 1000`, so a full 16 s
+    reads 16 and it drops to 0 only in the last 100 ms. *)
+let clock_secs_of_ms (ms : int) : int = (ms + 900) / 1000
+
 (** One visible step of a turn, with the board states needed to animate it.
 
     Separate from [event] on purpose. An event says *what happened*; a step says
@@ -179,6 +204,18 @@ type battle = {
   tm : turn_manager;
   mutable turns_elapsed : int;
   mutable mana_burns : int;
+  (* The turn clock: the Time Limit setting copied into the rules at battle start
+     (the turn_manager's +0x34 analogue) buys a per-turn budget through
+     [time_limit_delay_ms], and each turn arms a deadline from it - the
+     +0x38/+0x3c pair. [clock_now_ms] is the wall millisecond tick the engine
+     read from DAT_0057f484, which the battle cannot read itself (it has no
+     clock) so the front end feeds it; [clock_deadline_ms] is [Some] while a
+     human's own decision is being timed and [None] while the AI acts - the
+     original gates the countdown on the acting character being a player, and
+     the AI's instant turns disarm it. Expiry is the front's to notice: see
+     [clock_expired]. *)
+  mutable clock_now_ms : int;
+  mutable clock_deadline_ms : int option;
   mutable gold : int;  (** won across the battle, as [Engine_ADD_GOLD] would *)
   mutable xp : int;
   mutable winner : outcome option;
@@ -1061,6 +1098,14 @@ let take_turn (b : battle) : unit =
     let is_hero = actor.id = b.hero.id in
     let defender = if is_hero then b.enemy else b.hero in
     let spells = if is_hero then b.hero_spells else b.enemy_spells in
+    (* Arm this turn's clock before the event so the observer and the plate see
+       the fresh deadline: the human's turn gets a deadline from the Time Limit
+       delay table, every other turn disarms - the AI waits for nothing, which is
+       the original's +0x10/+0x11 gate over the countdown. *)
+    b.clock_deadline_ms <-
+      (if is_hero && b.rules.player <> None && b.rules.time_limit > 0 then
+         Some (b.clock_now_ms + time_limit_delay_ms b.rules.time_limit)
+       else None);
     emit b (TurnStart (b.tm.current_slot, (if is_hero then Hero else Enemy), actor.name));
     (* The worn items' OnStartTurn run before the status effects' own start
        hooks, for the reason the damage chain gives: items first. ISDO tops up
@@ -1094,6 +1139,34 @@ let take_turn (b : battle) : unit =
       ignore (advance_turn b.tm)
     end
   end
+
+(** Whether the turn clock is currently running - i.e. this is a human's turn
+    under a Time Limit. The AI's turns and the untimed setting both leave the
+    deadline [None]. *)
+let clock_armed (b : battle) : bool = b.clock_deadline_ms <> None
+
+(** The milliseconds left on the current turn's clock.
+
+    While armed it counts down from the delay table against the wall tick the
+    front end feeds; while disarmed (the AI's turn) it holds the full delay,
+    frozen - which is what the original's disabled countdown reads, since
+    [FUN_00464c30] returns the cached delay once the refresh flag clears. At
+    Time Limit 0 the delay is 0 and the plates are hidden anyway. *)
+let clock_remaining_ms (b : battle) : int =
+  match b.clock_deadline_ms with
+  | Some d -> max 0 (d - b.clock_now_ms)
+  | None -> time_limit_delay_ms b.rules.time_limit
+
+(** The human has outstayed the Time Limit: the deadline passed on a turn that
+    was being timed. The front end notices this each frame while a question is
+    open and force-ends the turn - the original's [FUN_00415800], which plays
+    snd_forceendturn and hands play to the opponent with no swap and no spell.
+    It cannot fire during the AI's turns: they never arm a deadline, and the
+    human's own hooks are the only place the front checks. *)
+let clock_expired (b : battle) : bool =
+  match b.clock_deadline_ms with
+  | Some d -> b.clock_now_ms >= d
+  | None -> false
 
 (** The outcome as the rest of the game asks for it: did the hero win?
     Reading [is_dead] after [run] cannot answer - [sweep_deaths] clears the
@@ -1143,6 +1216,8 @@ let create ?(rules = default_rules) ?(rng = Random.int) ?(hero_spells = [])
       tm = initialise [ hero; enemy ];
       turns_elapsed = 0;
       mana_burns = 0;
+      clock_now_ms = 0;
+      clock_deadline_ms = None;
       gold = 0;
       xp = 0;
       winner = None;

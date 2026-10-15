@@ -54,6 +54,16 @@ let () =
     (Battle_layout.timer_plate Battle_layout.Hero) (135, 16, 90, 90);
   check_rect "icon_rtimebg sits at (784,16)"
     (Battle_layout.timer_plate Battle_layout.Foe) (784, 16, 90, 90);
+  check_rect "str_ltime is 90x30 at (132,38)"
+    (Battle_layout.timer_text Battle_layout.Hero) (132, 38, 90, 30);
+  check_rect "str_rtime is 90x30 at (781,38)"
+    (Battle_layout.timer_text Battle_layout.Foe) (781, 38, 90, 30);
+  check "the countdown band sits over its plate"
+    ((Battle_layout.timer_text Battle_layout.Hero).Layout.y
+    >= (Battle_layout.timer_plate Battle_layout.Hero).Layout.y
+    && (Battle_layout.timer_text Battle_layout.Hero).Layout.y
+       < (Battle_layout.timer_plate Battle_layout.Hero).Layout.y
+          + (Battle_layout.timer_plate Battle_layout.Hero).Layout.h);
   check_rect "icon_missturn0 sits at (53,100)"
     (Battle_layout.missed_badge Battle_layout.Hero) (53, 100, 90, 24);
   check_rect "icon_missturn1 sits at (876,100)"

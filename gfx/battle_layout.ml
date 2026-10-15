@@ -73,6 +73,13 @@ let timer_plate : side -> Layout.rect = function
   | Hero -> { x = 135; y = 16; w = 90; h = 90 }
   | Foe -> { x = 784; y = 16; w = 90; h = 90 }
 
+(** `str_ltime` / `str_rtime`: the 90x30 countdown band centred over each
+    plate at (132,38) and (781,38), font_button - where the original puts the
+    two-digit seconds the Time Limit buys. *)
+let timer_text : side -> Layout.rect = function
+  | Hero -> { x = 132; y = 38; w = 90; h = 30 }
+  | Foe -> { x = 781; y = 38; w = 90; h = 30 }
+
 (** `icon_missturn0` / `icon_missturn1`: 90x24 at (53,100) and (876,100) - the
     badge that says a character is sitting this turn out. The art for it is in
     the battle sheet as `img_missturn_1..5`. *)

@@ -5784,3 +5784,44 @@ port_decisions:
       pure upside; that is the clock's gap, not the bonus's.
     supersedes: null
     date: 2026-10-14
+
+  - id: port.turn_clock
+    decision: >
+      The Time Limit now times you out: each human turn arms a deadline from
+      the recovered delay table ({0,16000,12000,8000,4000} ms for
+      [TIMELIMIT0..4]), the battle screen feeds the wall tick, notices the
+      expiry while a question is open and force-ends the turn (snd_forceendturn,
+      a red "Time expired!" float, both open questions of that turn declining
+      at once), and the active side's plate shows the "%02d" countdown -
+      hidden entirely at Time Limit 0. The clock lives on the battle
+      (clock_now_ms / clock_deadline_ms, the turn_manager's +0x38/+0x3c pair);
+      only a human hero arms it, so the AI's instant turns are never timed.
+    rationale: >
+      The recovery is FUN_00464d70 (the delay table indexed by turn_manager+0x34,
+      negative meaning custom seconds), FUN_00464c30 (remaining = deadline - now,
+      clamped, refreshed only while armed and unpaused), and FUN_0040F7D0, the
+      battle screen's per-frame function: it reads the remaining, plays snd_tick
+      on each whole-second rollover, formats "(ms + 900)/1000" as "%02d" into
+      str_ltime/str_rtime on the ACTIVE side, and on expiry disarms the clock
+      and posts the force-end-turn - FUN_00415800, which plays snd_forceendturn
+      and hands play to the opponent with no swap and no spell. The arming gate
+      is the original's own: only a player-controlled character runs the
+      countdown (+0x10/+0x11), which is why the AI never expires - the port
+      mirrors it as "is_hero && rules.player <> Some", so an AI hero (the demo,
+      the headless runners) arms nothing and its plate holds the frozen full
+      delay exactly as the disabled original does. The turn clock is modelled
+      on the battle rather than the front because the deadline is turn-manager
+      state (the +0x38/+0x3c pair) and it makes the arming, the remaining and
+      the expiry testable; the front feeds clock_now_ms off its one float
+      accumulator, the DAT_0057f484 analogue, because a headless battle has no
+      clock to read. What is NOT modelled: the [-%d] life penalty the original
+      floats at the offender rides an unpinned vtbl query (the same one the
+      [ILLEGALMOVE] popup uses, gated by SET_ILLEGAL_MOVE_DAMAGE_ENABLED), so
+      the port floats a plain "Time expired!" and claims no damage - a timeout
+      costs the turn, not life, until that query is pinned. The pause/resume
+      machinery (+0x41 freeze through menus and the mana-drain flourish) is
+      likewise unported: the port's battle is modal already. This retires the
+      last half of port.settings_surface's open note, so a tight Time Limit is
+      a tradeoff rather than a free spoils bonus.
+    supersedes: null
+    date: 2026-10-14

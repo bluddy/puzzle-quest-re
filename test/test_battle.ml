@@ -1297,6 +1297,73 @@ let () =
   check "so the foe's life dropped from the cast's own cascade"
     (b.enemy.Combat.life < 40)
 
+(* ------------------------------------------------------------------ *)
+(* The turn clock: the Time Limit delay table and the arming gate       *)
+(* ------------------------------------------------------------------ *)
+
+let () =
+  (* The delay table, from FUN_00464d70: {0,16000,12000,8000,4000} ms for
+     [TIMELIMIT0..4], a negative setting meaning custom seconds. *)
+  check_eq "clock: None buys no time" (time_limit_delay_ms 0) 0;
+  check_eq "clock: 16 sec" (time_limit_delay_ms 1) 16000;
+  check_eq "clock: 12 sec" (time_limit_delay_ms 2) 12000;
+  check_eq "clock: 8 sec" (time_limit_delay_ms 3) 8000;
+  check_eq "clock: 4 sec" (time_limit_delay_ms 4) 4000;
+  check_eq "clock: a negative setting is custom seconds"
+    (time_limit_delay_ms (-5)) 5000;
+  (* The plate's two-digit format, (ms + 900)/1000 as FUN_0040F7D0 formats
+     str_ltime: the full budget reads its own number, and it only reaches 0 in
+     the last 100 ms. *)
+  check_eq "a full 16 s reads 16" (clock_secs_of_ms 16000) 16;
+  check_eq "15 s reads 15" (clock_secs_of_ms 15000) 15;
+  check_eq "a full 4 s reads 4" (clock_secs_of_ms 4000) 4;
+  check_eq "100 ms left still reads 1" (clock_secs_of_ms 100) 1;
+  check_eq "99 ms left reads 0" (clock_secs_of_ms 99) 0;
+  check_eq "and no time reads 0" (clock_secs_of_ms 0) 0;
+  ()
+
+let () =
+  let pass_human =
+    {
+      choose_spell = (fun _ -> None);
+      choose_aim = (fun _ -> None);
+      choose_swap = (fun _ -> None);
+    }
+  in
+  (* A human turn under a Time Limit arms a deadline from the table; the AI's
+     turns and the untimed setting never do - the original gates the countdown
+     on the acting character being a player, which is why the AI's instant
+     turns cannot expire. *)
+  let make ~time_limit ~player =
+    create ~rules:{ default_rules with time_limit; player }
+      (playable_board ()) (fighter 0 "hero") (fighter 1 "foe")
+  in
+  let b = make ~time_limit:4 ~player:(Some pass_human) in
+  b.clock_now_ms <- 1000;
+  check "no clock before the first turn" (not (clock_armed b));
+  take_turn b;  (* the hero's turn *)
+  check "a human turn under a Time Limit arms the clock" (clock_armed b);
+  check "the deadline is the table's 4000 ms beyond the tick"
+    (b.clock_deadline_ms = Some 5000);
+  check "and it is not expired while the tick stands still"
+    (not (clock_expired b));
+  b.clock_now_ms <- 4999;
+  check "one ms short it still runs" (not (clock_expired b));
+  b.clock_now_ms <- 5000;
+  check "it expires the moment the tick reaches the deadline"
+    (clock_expired b);
+  take_turn b;  (* the foe's turn *)
+  check "the AI's turn disarms the clock" (not (clock_armed b));
+  check "and can never expire" (not (clock_expired b));
+  let untimed = make ~time_limit:0 ~player:(Some pass_human) in
+  take_turn untimed;
+  check "an untimed turn arms nothing" (untimed.clock_deadline_ms = None);
+  let ai = make ~time_limit:4 ~player:None in
+  take_turn ai;
+  check "an AI hero's turn arms nothing whatever the setting"
+    (ai.clock_deadline_ms = None);
+  ()
+
 let () =
   if !failures = 0 then print_endline "\nAll battle tests passed."
   else begin

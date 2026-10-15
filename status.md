@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree (the settings-surface round; on top of the committed forge round `2ff6803`). Known Gap 11 - "there is no screen to change Difficulty and no Time Limit dropdown beside it" - retired: both settings are now changeable in-game from a Settings tab in the city panel, and the Time Limit pays its spoils bonus. The model: `Campaign.timelimit` (0..4, default 0 = the settings object's own [+0x70] default, beside Difficulty's [+0x74]=1) mirrors `Campaign.difficulty`, and `rules_for_battle` copies BOTH into `Battle.rules` (a new `time_limit` field) - the same battle-start copy the engine does at Sub_44a780.c:651, which writes the Time Limit into turn_manager+0x34 in the very function that copies Difficulty (DAT_00582454) into CBattleManager+0x48. The Time Limit bonus is wired: `Score.time_limit_scale` ((setting x 5)% - 0/5/10/15/20% for None/16/12/8/4 sec) slots into `spoils_of_victory` between the anti-farm gap and the Difficulty scale, the engine's own order, retiring the documented "no Time Limit model" term that was stuck at 0 (port.victory_spoils_pay_the_difficulty_scale's note). The spoils call sites now read BOTH settings off the battle's rules (the +0x48 / +0x34 analogue) rather than the live refs. The surface: a `Settings` city tab whose two rows cycle on click - SinglePlayerMenu.xml's drop_difficulty/drop_timelimit as click-to-cycle rows, using the recovered [AILEVEL0..2] / [TIMELIMIT0..4] strings (a droplist widget is a port choice; the settings are machine-wide in the original, so they live in the Campaign refs, not the city). `port.settings_surface` records it. The same round settled what turn_manager+0x34 IS: the delay table indexes it into exactly the five [TIMELIMIT0..4] presets ({0,16000,12000,8000,4000} ms, negative = custom seconds), the spoils multiply it by 5 for a percentage, and battle start writes the setting there - so it is the Time Limit setting, NOT a turn counter (nothing increments it). That refutes the score's `turns` reading of the same field, recorded as the open question score.time_limit_term (the turn CLOCK - countdown + timeout - remains the unported half that would make a tight limit a tradeoff rather than a free bonus). 35 suites, 2803->2824 checks, all green.
+**Sync:** working tree (the turn-clock round; on top of the committed settings round `2ad2ca9`). The Time Limit is now a real tradeoff rather than a free spoils bonus: each human turn arms a deadline from the recovered delay table and the human who outstays it loses the turn. The recovery is the turn clock read end to end - FUN_00464d70 indexes turn_manager+0x34 into {0,16000,12000,8000,4000} ms (the [TIMELIMIT0..4] presets, negative = custom seconds), FUN_00464c30 computes remaining = deadline - now (clamped, refreshed only while armed), and FUN_0040F7D0 - the battle screen's per-frame function - plays snd_tick on each whole-second rollover, formats "(ms + 900)/1000" as "%02d" into str_ltime/str_rtime on the ACTIVE side, and on expiry posts FUN_00415800: snd_forceendturn, a float at the offender, and the turn handed to the opponent with no swap and no spell. The port models the clock on the battle (`clock_now_ms` / `clock_deadline_ms`, the +0x38/+0x3c pair) because that is where the deadline lives and it makes the arming testable: `time_limit_delay_ms` (the table), `clock_secs_of_ms` (the format), `clock_remaining_ms`, `clock_expired`, armed in take_turn only when `is_hero && rules.player <> Some && time_limit > 0` - the original's player gate (+0x10/+0x11), so an AI hero never runs the countdown and its plate holds the frozen full delay exactly as the disabled original does. The front feeds clock_now_ms off its one float accumulator (the DAT_0057f484 analogue), checks the expiry in wait_click while a question is open, latches `timed_out` so the turn's remaining questions decline at once, plays snd_forceendturn and floats "Time expired!" - the original's [-%d] life penalty rides an unpinned vtbl query, so no damage is claimed (recorded in port.turn_clock). draw_timer now shows the countdown: active side only (the last TurnStart, mapped Enemy/Foe), the str_ltime/str_rtime band (new `Battle_layout.timer_text`, (132,38)/(781,38)), and both plates hidden at Time Limit 0 as FUN_0040FCB0 does. `port.turn_clock` records the round, retiring the last half of port.settings_surface's open note. 35 suites, 2824->2849 checks, all green.
 
 ---
 
@@ -11,6 +11,8 @@
 The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. The two big UI rounds from this list - the quest-battle fight screens and the forge skill game - are both closed; what remains is a few sharpening threads (the settings surface for Difficulty/Time Limit, mount training/avoidance, languages, enemy variety), tracked in the milestones below.
 
 ### Closed rounds from this list
+
+- ~~Turn clock~~ (landed 2026-10-14): the Time Limit is a tradeoff now - a human turn arms a deadline from the recovered delay table (`time_limit_delay_ms`, `{0,16000,12000,8000,4000}` ms) and the human who outstays it loses the turn. The clock lives on the battle (`clock_now_ms`/`clock_deadline_ms`, the turn_manager's +0x38/+0x3c), armed in `take_turn` only for a human hero (`is_hero && rules.player <> Some`, the original's player gate), fed by the front's one float accumulator; `wait_click` checks the expiry while a question is open, latches `timed_out` so the turn's remaining questions decline, plays `snd_forceendturn` and floats "Time expired!" (the original's `[-%d]` life penalty rides an unpinned vtbl query, so no damage is claimed). The plate shows the `"%02d"` countdown (`(ms+900)/1000`, new `Battle_layout.timer_text`) on the active side only, hidden at Time Limit 0 - `port.turn_clock` records it, and the settings round's "free bonus" note retires; 2849 checks green.
 
 - ~~Settings surface (Difficulty + Time Limit)~~ (landed 2026-10-14): Known Gap 11 retired - both settings are now changeable in-game. A `Settings` city tab carries the hero view's two droplists as click-to-cycle rows (`[AILEVEL0..2]` / `[TIMELIMIT0..4]`), `Campaign.timelimit` (0..4, default 0) mirrors `Campaign.difficulty`, and `rules_for_battle` copies both into `Battle.rules` (the new `time_limit` field, the Sub_44a780.c:651 battle-start copy). The Time Limit bonus pays: `Score.time_limit_scale` ((setting × 5)%) slots into `spoils_of_victory` between the gap and Difficulty, retiring the term that was stuck at 0, and the spoils call sites now read both settings off the battle's rules. The round also settled `turn_manager+0x34` = the Time Limit setting (delay table's five presets, spoils ×5, battle-start copy — nothing increments it), refuting the score's "elapsed turns" reading (`score.time_limit_term` open). The turn clock is the unported half. `port.settings_surface` records it; 2824 checks green.
 
@@ -63,6 +65,15 @@ The campaign/quest engine has no known unported mechanic left: 142 quests run th
   verdict), and `Conv_window` takes the host's runner so a scriptcall battle
   plays on the same window. The screen's HUD reads the fight's own
   `hero_spells`, not the standalone demo list (`port.quest_battle_fight_screen`)
+- **Turn clock (NEW):** the Time Limit times you out - a human turn arms a
+  deadline from `time_limit_delay_ms` (the recovered `{0,16000,12000,8000,4000}`
+  ms table), `wait_click` notices the expiry while a question is open, and the
+  turn force-ends (`snd_forceendturn`, a "Time expired!" float, both open
+  questions declining). The clock lives on the battle (`clock_now_ms`/
+  `clock_deadline_ms`, the turn_manager's +0x38/+0x3c), armed only for a human
+  hero so the AI's instant turns never run it; the active side's plate shows the
+  `"%02d"` countdown (`clock_secs_of_ms`, the str_ltime/str_rtime band) and both
+  plates hide at Time Limit 0 (`port.turn_clock`)
 - **Board & gems:** 8×8 grid, swap validation, match detection, cascades, gravity, refill
 - **Combat:** Hero/foe stats, life/mana, damage, status effects, spell casting
 - **Difficulty (NEW):** the fight's difficulty is the player's
@@ -357,7 +368,7 @@ graphics) - 601
   message queue and the OnEnd box), and companion equip (roster vs party,
   the four refusals, the home gate, the hook following the party, the save
    keeping the roster separate). (These seven are a subset of the 35 suites'
-   ~2824 checks - the whole campaign-side surface, not the full run.)
+   ~2849 checks - the whole campaign-side surface, not the full run.)
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → a real quest battle through `run_quest_battle`
   (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
@@ -369,7 +380,7 @@ graphics) - 601
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 14 (2 open) | 54 |
+| `docs/reverse/evidence.yml` | 103 | 14 (2 open) | 55 |
 
 There are no open questions: the last one, `xp.difficulty_scaling`, was retired
 this round (see the Closed bullet). Questions carry `related`,
@@ -450,8 +461,8 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 35 suites pass (exit 0, ~2824 checks, 2026-10-14). The check count is
-~2824 and moves by one between runs when a suite prints a variable count, so
+All 35 suites pass (exit 0, ~2849 checks, 2026-10-14). The check count is
+~2849 and moves by one between runs when a suite prints a variable count, so
 read `dune runtest`'s exit code (0 = green), not the number. Extractor
 `--check` modes validate against source assets.
 
@@ -502,7 +513,7 @@ read `dune runtest`'s exit code (0 = green), not the number. Extractor
 8. **Languages** — `text_data.ml` ships English only; French, German, Italian and Spanish carry the same 2,638 entries and the extractor takes `--language`
 9. **Item hooks, the rest** - the layer is done as far as it can be: all eight kinds dispatched, 131 of the 133 hook declarations ported, and the two that are not (`known_unported`) are IALS's per-character `SUBTRACT_XP` and ILBC's `GET_CHARACTER_ID`, which need a per-character experience pool and a registry id on the combatant respectively - not hooks, just fields the port does not model
 10. **Mana ceilings** - derived from the skills as `25 + (skill + 1) / 2`, so a character's caps agree with its masteries instead of a chosen 20; the effective-skill query is now closed - level does not fold in, and the port models the full formula (raw skill + item/status OnQuerySkill hooks + temp accumulator). `ADD_TEMP_SKILL` moves the ceiling with the skill, caps the increment at 999 effective, and moves life/max on Morale
-11. **Difficulty / Time Limit, the rest** - landed 2026-10-14: the settings surface is in (`port.settings_surface`) - a Settings city tab cycles both options, `Campaign.timelimit` models the Time Limit (0..4, default 0), `rules_for_battle` copies both into `Battle.rules`, and the Time Limit bonus (`turn_manager+0x34` × 5 %, up to +20 % on the 4-second clock) now pays through `Score.time_limit_scale` in `spoils_of_victory`. What remains open: (a) the turn **clock** - the countdown on the battle plates and the timeout that would make a tight limit a tradeoff rather than a free bonus (the bonus currently pays with no downside), and (b) the score's `+0x34` term, which `score.time_limit_term` flags as mismodelled (`inputs.turns`/BATTLE_SCORE.md:47 say "elapsed turns" but the field is the Time Limit setting)
+11. **Difficulty / Time Limit** - landed 2026-10-14 (two rounds): the settings surface is in (`port.settings_surface`) - a Settings city tab cycles both options, `Campaign.timelimit` models the Time Limit (0..4, default 0), `rules_for_battle` copies both into `Battle.rules`, and the Time Limit bonus (`turn_manager+0x34` × 5 %, up to +20 % on the 4-second clock) pays through `Score.time_limit_scale` in `spoils_of_victory`. The turn **clock** then landed (`port.turn_clock`) - the countdown on the active plate and the timeout that force-ends an over-staying human's turn, so a tight limit is a tradeoff rather than a free bonus. What remains open: the score's `+0x34` term, which `score.time_limit_term` flags as mismodelled (`inputs.turns`/BATTLE_SCORE.md:47 say "elapsed turns" but the field is the Time Limit setting)
 
 ---
 

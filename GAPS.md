@@ -248,16 +248,18 @@ hooks, item event hooks, companion removal, cell selection, AI aiming,
 monster rosters, conversation triggers + per-callback effects, companion
 equip, grid-spell aim hover, mount speed, mount combat bonuses, capture UI,
 capture surfaces, banner slot, runes, rune items, forge UI, mount training,
-campaign fight screens, the forge skill game, the settings surface), and the
-conversation UI now walks actions, renders portraits/backdrops, fires battle
-callbacks and applies each scriptcall's extracted body effects - with road,
-quest-stage and callback fights played on the hosted `Battle_screen` rather
-than bannered (`port.quest_battle_fight_screen`), the Forge button opening
+campaign fight screens, the forge skill game, the settings surface, the turn
+clock), and the conversation UI now
+walks actions, renders portraits/backdrops, fires battle callbacks and
+applies each scriptcall's extracted body effects - with road, quest-stage
+and callback fights played on the hosted `Battle_screen` rather than
+bannered (`port.quest_battle_fight_screen`), the Forge button opening
 the hammer-and-anvil skill game instead of minting instantly
-(`port.item_game_rules`), and the city Settings tab changing Difficulty and
-Turn Time Limit with the Time Limit spoils bonus paying (`port.settings_surface`).
-Pick one:
+(`port.item_game_rules`), the city Settings tab changing Difficulty and
+Turn Time Limit with the Time Limit spoils bonus paying
+(`port.settings_surface`), and a tight Time Limit actually timing you out
+(`port.turn_clock`). Pick one:
 
-- **Turn clock** - the countdown on the battle plates and the timeout that spends a missed turn, which is what makes a tight Time Limit a tradeoff instead of a free +20% bonus (the bonus now pays with no downside); the delay table ({0,16000,12000,8000,4000} ms off turn_manager+0x34) and the existing `spend_missed_turn` path are the recovered pieces
 - **Forge numbers** - recover the skill game's target-points formula, its [MAXRUNEITEM] count and the clipped DEFEAT clock from the exe's `cItemGameMenu` (the RTTI chain is orphaned and it answers no strings, so this needs a deeper class-methods pass than the string-xref rounds); until then `forge.item_game_numbers`' three port choices stand
 - **Score term correction** - apply `score.time_limit_term`: the score reads turn_manager+0x34 as elapsed turns but the field is the Time Limit setting (nothing increments it), so `score.ml`'s `turns` field, `test_score`'s turn-count semantics and `BATTLE_SCORE.md:47` need correcting
+- **Timeout penalty** - pin the `[-%d]` life cost the original floats on a timeout (the unpinned vtbl query behind `FUN_00415800`, gated by `SET_ILLEGAL_MOVE_DAMAGE_ENABLED`), which would make the clock cost life as well as the turn (`port.turn_clock` claims no damage until then)

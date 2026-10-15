@@ -216,10 +216,58 @@ let cast_aim : Board.position option ref = ref None
     scripted rather than probabilistic. *)
 let grid_fx_played = ref 0
 
-(** Advance the clock, expire finished messages, and return whether the screen
-    changed enough to be worth redrawing. *)
+(* The turn clock's front-end half. The battle holds the deadline (the
+   turn_manager's +0x38) but has no wall clock, so the front feeds it the
+   millisecond tick the engine read from DAT_0057f484, notices the expiry
+   while a question is open - the only time the human is deciding - and draws
+   the countdown. [timed_out] latches for the turn so the open question
+   declines at once rather than re-asking; [clock_last_secs] is the displayed
+   second, for the snd_tick rollover. *)
+let timed_out : bool ref = ref false
+let clock_last_secs : int ref = ref 0
+
+(* Feed the battle's turn clock the same wall time the float messages age by:
+   the battle cannot read a clock itself, so DAT_0057f484 is driven here, off
+   the front's one accumulator. *)
+let feed_battle_clock () =
+  match (ui ()).b with
+  | Some b -> b.Battle.clock_now_ms <- int_of_float (!now_seconds *. 1000.0)
+  | None -> ()
+
+(** snd_tick on every whole-second rollover of a running countdown - the
+    frame-function's own gate (FUN_0040F7D0 plays it when the displayed second
+    changes). Only while the clock is armed: the AI's frozen delay never
+    moves, so it never ticks. *)
+let service_clock () =
+  match (ui ()).b with
+  | None -> ()
+  | Some b ->
+    if Battle.clock_armed b then begin
+      let secs = Battle.clock_secs_of_ms (Battle.clock_remaining_ms b) in
+      if secs <> !clock_last_secs then begin
+        ignore (Audio.play (ui ()).audio "snd_tick");
+        clock_last_secs := secs
+      end
+    end
+
+(** The turn ran out: snd_forceendturn, a red float at the offender, and the
+    latch that makes every remaining question of this turn decline at once -
+    the original's [FUN_00415800], minus the [-%d] life penalty (the vtable
+    query behind it is not pinned, so no damage is claimed here). *)
+let fire_timeout () =
+  timed_out := true;
+  ignore (Audio.play (ui ()).audio "snd_forceendturn");
+  Float_text.say (ui ()).float_text ~font:"font_msg_red"
+    ~subject:Float_text.Hero
+    ~anchor:(message_anchor Float_text.Hero)
+    "Time expired!" !now_seconds
+
+(** Advance the clock, expire finished messages, feed the turn clock, and
+    return whether the screen changed enough to be worth redrawing. *)
 let advance_clock (dt : float) : bool =
   now_seconds := !now_seconds +. dt;
+  feed_battle_clock ();
+  service_clock ();
   let before = Float_text.count (ui ()).float_text in
   Float_text.tick (ui ()).float_text !now_seconds;
   Float_text.count (ui ()).float_text <> before
@@ -523,29 +571,60 @@ let draw_decorations (rs : Gl.run list ref) =
 
 (** The turn counters: the two 90x90 plates `GameMenu.xml` puts either side of the
     top panel - `icon_ltimebg` at (135,16) and `icon_rtimebg` at (784,16), with
-    `str_ltime` / `str_rtime` centred on them. [Battle_layout] holds both.
+    `str_ltime` / `str_rtime` centred over them. [Battle_layout] holds both pairs.
 
-    The plates are drawn; what goes on them is not. The original puts each side's
-    *time limit* there - the countdown the hero view's `drop_timelimit` chooses -
-    and this port runs no clock, so an empty plate is the honest rendering: the
-    frame exists, the number it would carry does not. ([TIMELIMIT0..4] is the
-    other half of that options screen; see GAME_KNOWLEDGE_BASE.)
+    What goes on them is the Time Limit countdown: the two-digit seconds the
+    hero view's `drop_timelimit` buys, `"%02d"` of `(ms + 900)/1000` exactly as
+    [FUN_0040F7D0] formats it, on the *active* side only - the original shows one
+    plate, whichever character's turn it is. At Time Limit 0 the original hides
+    both plates entirely ([FUN_0040FCB0]), so an untimed battle draws no
+    countdown furniture. The number sits in the str_ltime / str_rtime band the
+    XML gives it, font_button.
 
     The hourglass ([img_timer_0]) is likewise not drawn - it belongs to the timed
-    minigames, and there is nothing on a battle screen for it to count.
+    minigames, and the battle countdown is plain text.
 
     Both plates only ever drew once the front end started loading the sheet they
     are cut from: their registry rows name `bmp_skin_gemsgrid`, which was not in
     the sheet list, so [Skin.draw] declined silently and the plates were geometry
     with no art behind it. *)
 let draw_timer (rs : Gl.run list ref) =
-  let s = (ui ()).skin in
-  let at (side : Battle_layout.side) =
-    let r = Battle_layout.timer_plate side in
-    { Layout.x = r.Layout.x; y = r.Layout.y; w = 0; h = 0 }
-  in
-  ignore (Skin.draw s rs frame_timer_l ~place:(at Battle_layout.Hero));
-  ignore (Skin.draw s rs frame_timer_r ~place:(at Battle_layout.Foe))
+  let st = ui () in
+  match st.b with
+  | None -> ()
+  | Some b ->
+    if b.Battle.rules.Battle.time_limit > 0 then begin
+      (* The active side is the last [TurnStart] in the log - the same read the
+         turn line below makes. [Battle.side] and [Battle_layout.side] name the
+         two halves differently (Enemy / Foe), so they are mapped here. *)
+      let active =
+        let rec last = function
+          | [] -> Battle.Hero
+          | Battle.TurnStart (_, side, _) :: _ -> side
+          | _ :: rest -> last rest
+        in
+        last (Battle.log_of b)
+      in
+      let side =
+        match active with
+        | Battle.Hero -> Battle_layout.Hero
+        | Battle.Enemy -> Battle_layout.Foe
+      in
+      let plate = Battle_layout.timer_plate side in
+      let frame = if side = Battle_layout.Hero then frame_timer_l else frame_timer_r in
+      ignore
+        (Skin.draw st.skin rs frame
+           ~place:{ plate with Layout.w = 0; Layout.h = 0 });
+      let secs = Battle.clock_secs_of_ms (Battle.clock_remaining_ms b) in
+      match (st.fonts, st.button) with
+      | Some fonts, Some m ->
+        let r = Battle_layout.timer_text side in
+        rs :=
+          !rs
+          @ Font.draw_centred st.gl fonts m (Printf.sprintf "%02d" secs)
+              ~cx:(r.Layout.x + (r.Layout.w / 2)) ~y:r.Layout.y
+      | _ -> ()
+    end
 
 let fx_sprite_size name =
   match List.find_opt (fun (n, _, _, _) -> n = name) (ui ()).fx_textures with
@@ -831,6 +910,10 @@ let draw ?(present = true) () =
     about a second, and would not be fine for anything that has to keep time with
     the battle. It does not: the battle is paused while this runs. *)
 let rec wait_click () =
+  (* The turn already expired: stop waiting and hand the caller a no-click, so
+     the open question declines rather than re-asking against a dead clock. *)
+  if !timed_out then (-1, -1)
+  else begin
   (* The animation clock and the float-message clock are advanced together, and the
      redraw happens when either has something new to show. While a cascade is
      animating this is the only thing running, so it is also the frame loop: the
@@ -839,13 +922,29 @@ let rec wait_click () =
      Tying the two clocks together is deliberate rather than tidy. They are both
      presentation time, they both need to advance together or a message outlives
      the pop it belongs to, and keeping one idle delta avoids the temptation to
-     advance them separately and get that wrong. *)
+     advance them separately and get that wrong. [advance_clock] feeds the turn
+     clock on the same delta, so the Time Limit counts down against the same
+     wall time the messages age by. *)
   let anim_changed = Anim.advance (ui ()).anim frame_seconds in
   (* The effects carry their own clock for the same reason the cascade does, and are
      advanced on the same delta: an effect that runs at a different rate from the
      gems popping around it reads as two systems rather than one. *)
   let fx_changed = Fx.advance (ui ()).fx frame_seconds in
   let messages_changed = advance_clock frame_seconds in
+  (* The turn clock: a human who outstays the Time Limit loses the turn - the
+     original checks the deadline every frame the screen draws (FUN_0040F7D0)
+     and force-ends the turn when it passes (FUN_00415800). Only ever reached
+     while a question is open, which is the only time the human is deciding. *)
+  if
+    (match (ui ()).b with
+    | Some bd when Battle.clock_expired bd -> true
+    | _ -> false)
+  then begin
+    fire_timeout ();
+    draw ();  (* the red float is up before the caller sees the decline *)
+    (-1, -1)
+  end
+  else begin
   if anim_changed || messages_changed || fx_changed then draw ();
   if Tsdl.Sdl.poll_event some_ev then begin
     let t = E.get ev E.typ in
@@ -877,6 +976,8 @@ let rec wait_click () =
     Tsdl.Sdl.delay (Int32.of_int (int_of_float (frame_seconds *. 1000.)));
     wait_click ()
   end
+  end
+  end
 
 let choose_aim (_s : Spell.spell) : Board.position option = !cast_aim
 
@@ -901,7 +1002,8 @@ let choose_spell spells : Spell.spell option =
   flush stdout;
   let rec ask () =
     let mx, my = wait_click () in
-    match Input.in_spell_prompt bg ~live mx my with
+    if !timed_out then None
+    else match Input.in_spell_prompt bg ~live mx my with
     | Input.Cast i when live i ->
         let s : Spell.spell = List.nth spells i in
         (* The button's own click, before the spell's sound. Both are real tags:
@@ -932,7 +1034,8 @@ let choose_spell spells : Spell.spell option =
           (ui ()).aim_shape <- s.Spell.input_type;
           let rec target () =
             let mx, my = wait_click () in
-            match Input.in_target_prompt bg (layout ()) mx my with
+            if !timed_out then None
+            else match Input.in_target_prompt bg (layout ()) mx my with
             | Input.Aim (x, y) ->
                 (ui ()).aim_shape <- 0;
                 cast_aim := Some { Board.x = x; y = y };
@@ -979,7 +1082,8 @@ let choose_swap (_legal : Board.swap list) : Board.swap option =
   let rec ask () =
     let mx, my = wait_click () in
     let first = (ui ()).first_cell in
-    match Input.in_swap_prompt bg lay ~first ~valid mx my with
+    if !timed_out then None
+    else match Input.in_swap_prompt bg lay ~first ~valid mx my with
     | Input.First_cell (x, y) ->
         (ui ()).first_cell <- Some (x, y);
         Printf.printf "  selected (%d,%d) - now click a neighbour\n" x y;
@@ -1083,6 +1187,14 @@ let on_battle_step (_b : Battle.battle) (s : Battle.step) =
   end
 
 let on_battle_event ~(pause_ms : int) (b : Battle.battle) (e : Battle.event) =
+  (* A new turn: clear the timeout latch and re-seed the tick tracker so the
+     turn's first frame does not read as a rollover - the deadline was armed
+     just before this event, so the remaining is the fresh delay. *)
+  (match e with
+  | Battle.TurnStart _ ->
+      timed_out := false;
+      clock_last_secs := Battle.clock_secs_of_ms (Battle.clock_remaining_ms b)
+  | _ -> ());
   (* A cast is the one event whose sound needs more than the event: it depends on
      what the spell does, and the event carries only its id. So the spell is looked
      up by name here, against the fight's own roster - a campaign fight brings
@@ -1115,10 +1227,11 @@ let on_battle_event ~(pause_ms : int) (b : Battle.battle) (e : Battle.event) =
   (* The clock advances whether or not the frame is actually shown. In `--demo`
      there is no real pause, but messages still have to expire or the screen fills
      with every message the battle has ever produced - which is exactly what the
-     first demo screenshot showed. *)
+     first demo screenshot showed. [advance_clock] also feeds the turn clock and
+     runs the snd_tick rollover, so the countdown and its tick age with the same
+     delta the float messages do. *)
   let dt = float_of_int pause_ms /. 1000.0 in
-  now_seconds := !now_seconds +. dt;
-  Float_text.tick (ui ()).float_text !now_seconds;
+  ignore (advance_clock dt);
   if pause_ms > 0 then begin
     draw ();
     Tsdl.Sdl.delay (Int32.of_int pause_ms)
@@ -1259,6 +1372,10 @@ let run (b : Battle.battle) : Battle.battle =
   now_seconds := 0.0;
   drained_frames := 0;
   grid_fx_played := 0;
+  timed_out := false;
+  clock_last_secs := 0;
+  b.Battle.clock_now_ms <- 0;
+  b.Battle.clock_deadline_ms <- None;
   (* A hosted fight is always paced: the cascade is watched, not settled and
      redrawn. `--demo` and `--shot` are the only runs that skip the block, and
      neither goes through here. *)
@@ -1277,7 +1394,8 @@ let run (b : Battle.battle) : Battle.battle =
     with a player in it. *)
 let standalone () =
   let args = Array.to_list Sys.argv in
-  let seed = ref 7 and diff = ref 2 and shot = ref "" and demo_turns = ref 0 in
+  let seed = ref 7 and diff = ref 2 and tl = ref 0 and shot = ref ""
+  and demo_turns = ref 0 in
   let shot_at = ref None in
   (* `--pace` plays a demo with the front end's blocking animation loop, so the
      interactive path can be exercised without a keyboard: same observer, same
@@ -1290,6 +1408,9 @@ let standalone () =
         parse r
     | "--difficulty" :: n :: r ->
         diff := int_of_string n;
+        parse r
+    | "--timelimit" :: n :: r ->
+        tl := int_of_string n;
         parse r
     | "--pace" :: r ->
         pace := true;
@@ -1330,6 +1451,7 @@ let standalone () =
   let rules =
     { Battle.default_rules with
       difficulty = !diff;
+      time_limit = !tl;
       player = (if !demo_turns > 0 then None
                 else Some { Battle.choose_spell; choose_aim; choose_swap }) }
   in
