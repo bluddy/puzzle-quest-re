@@ -4355,7 +4355,26 @@ open_questions:
         (the delay table would read out of bounds past 4, so a live turn count
         there would already be corrupting the clock).
     related: [combat.turn_order]
-    status: open
+    status: recovered
+    resolution: >
+      It is the Time Limit setting, and the score's term is corrected. The
+      write-scan the question asked for was done in the settings round: the
+      only writes to turn_manager+0x34 are =0 (battle setup, Sub_4498a0 /
+      Sub_449be0), = the configured setting (Sub_44a780.c:651, in the same
+      function that copies Difficulty into CBattleManager+0x48), = a negative
+      custom-seconds value, and = a local - nothing ever advances it, so it is
+      not a counter. That also answers the second settle: a live turn count
+      would drive the delay table (exactly five entries) out of bounds after
+      turn four and corrupt the clock, which nothing reports. So the score's
+      `(field + 20) * 25` / `(field + 10) * 250` terms read the Time Limit -
+      a small near-constant base (500..600 solo for a 0..4 setting), and the
+      score's variation comes from the health terms and the co-op loop, not
+      from battle length. The port applies it: score.ml's `inputs.turns`
+      renamed `inputs.time_limit` with the recovered meaning documented, the
+      formula arithmetic unchanged (so every test expectation stands - the
+      wider values like 20/50/500 pin the formula and its clamp, noted as
+      beyond a live fight's 0..4), test_score's narratives corrected, and
+      BATTLE_SCORE.md:47's "Elapsed turns" High-confidence row replaced.
 
 # --------------------------------------------------------- port decisions ----
 

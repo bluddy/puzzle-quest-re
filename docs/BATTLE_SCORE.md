@@ -44,7 +44,7 @@ more inputs:
 
 | Offset | Role |
 | :--- | :--- |
-| `+0x34` | Elapsed turns |
+| `+0x34` | Time Limit setting (0..4), NOT elapsed turns - see below |
 | `+0x2C` | Used only on the co-op path; likely heroes contributed |
 
 ---
@@ -61,21 +61,27 @@ between them, so treat those names as inference.
 ### Solo
 
 ```
-score = (turns + 20) * 25 - max_life + current_life
+score = (time_limit + 20) * 25 - max_life + current_life
 if (score < 1) score = 1
 return score
 ```
 
-No difficulty scaling on this path, and no 50 000 cap. The `turns` term
-dominates: a fight that runs long is worth far more than one ended early, which
-is the intended incentive.
+No difficulty scaling on this path, and no 50 000 cap. The `time_limit` term
+reads the Time Limit setting (0..4), so it is a small fixed base - 500 for
+None up to 600 for the 4-second clock - rather than a count that grows with
+battle length. The score's variation on this path comes from the health terms
+(`- max_life + current_life`), not from how long the fight ran. (The field was
+labelled "Elapsed turns" until the settings round settled it: the delay table
+indexes the same field into the five [TIMELIMIT0..4] presets, the spoils
+multiply it by 5 for a percentage, battle start writes the setting there, and
+nothing ever increments it. See score.time_limit_term.)
 
 ### Co-op
 
 Base value, before the per-character loop:
 
 ```
-score = (turns + 10) * 250
+score = (time_limit + 10) * 250
       + (current_life - max_life) * 4
       - turn_manager[0x2C] * 15
 ```
@@ -274,7 +280,7 @@ to agree.
 | Function is the end-of-battle score, not damage | High — call site and string tags |
 | Both branch formulas, the loop body, the difficulty scaling, the 50 000 cap | High — read from disassembly |
 | The ±150 term is a flat step, not linear | High — `SETGE`/`SETLE` at `0x43DC21` |
-| The `turns` and `m_maxLife` / `m_currentLife` field identities | High — offsets agree across the two functions |
+| The `time_limit` and `m_maxLife` / `m_currentLife` field identities | High — life offsets agree across the two functions; `+0x34` is pinned to the Time Limit setting by the delay table, the spoils and the battle-start copy (score.time_limit_term) |
 | Game mode 4 is a reduced-value mode | Medium — consistent across four call sites, purpose unidentified |
 | The two branches are solo vs co-op | Medium — inferred from the 10x scaling and the `turn_manager[0x2C]` term |
 | The branch flag at `[ESP + 0xC6]` | Low — not resolved to a source field |
@@ -309,6 +315,8 @@ the anti-farm reduction from `FUN_0043d4c0`. `Campaign.spoils_of_victory`
 rolls a defeated monster's carried gold and xp from its Reward range and runs
 both scales over them; the road settle (`process_battle_result`) and the quest
 settle (`quest_battle_settle`) add the result to the match harvest on a win.
-The Time Limit bonus (`turn_manager+0x34 * 5` %) is left out - the port has no
-Time Limit model - so that term is 0, matching the untimed default.
+The Time Limit bonus (`turn_manager+0x34 * 5` %) is wired as
+`Score.time_limit_scale`, applied by `Campaign.spoils_of_victory` between the
+anti-farm gap and this function's difficulty scale - the settings round
+retired the "no Time Limit model" note it used to carry.
 

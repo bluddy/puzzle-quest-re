@@ -21,7 +21,17 @@ type character = {
 type inputs = {
   difficulty : int;  (** 0 easy, 1 normal, 2+ unscaled *)
   game_mode : int;  (** 4 selects the reduced-value multipliers *)
-  turns : int;  (** turn manager +0x34 *)
+  time_limit : int;
+  (** turn_manager +0x34 - the **Time Limit setting** (0..4), not an
+      elapsed-turns count. Three independent readers say so: the turn clock's
+      delay table indexes the same field into exactly the five
+      [TIMELIMIT0..4] presets, the victory spoils multiply it by 5 for a
+      percentage, and battle start writes the configured setting there beside
+      the Difficulty copy - and nothing ever increments it, so it is not a
+      counter. The score's `(field + 20) * 25` term is therefore a small
+      near-constant base (500..600 solo for a 0..4 setting), not a count that
+      grows with battle length. See score.time_limit_term; BATTLE_SCORE.md
+      used to mislabel this "Elapsed turns". *)
   co_op_contributors : int;  (** turn manager +0x2C, co-op path only *)
   co_op : bool;  (** selects the co-op branch *)
 }
@@ -64,13 +74,17 @@ let compute_score ?(party_member_contributes = fun _ _ -> true) ~inputs ~hero_in
   let level_scale = if inputs.game_mode = 4 then 25 else 250 in
   let hundred_scale = if inputs.game_mode = 4 then 10 else 100 in
   if not inputs.co_op then
-    (* (turns + 20) * 25 - max_life + current_life, floored at 1. No
-       difficulty scaling and no 50 000 cap on this path. *)
-    let score = ((inputs.turns + 20) * 25) - hero.max_life + hero.current_life in
+    (* (time_limit + 20) * 25 - max_life + current_life, floored at 1. No
+       difficulty scaling and no 50 000 cap on this path. The term reads the
+       Time Limit setting (0..4), so it is a small base rather than a count
+       that grows - see the inputs record. *)
+    let score =
+      ((inputs.time_limit + 20) * 25) - hero.max_life + hero.current_life
+    in
     if score < 1 then 1 else score
   else
     let base =
-      ((inputs.turns + 10) * 250)
+      ((inputs.time_limit + 10) * 250)
       + ((hero.current_life - hero.max_life) * 4)
       - (inputs.co_op_contributors * 15)
     in
