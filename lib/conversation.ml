@@ -27,9 +27,11 @@ type t = {
   lines: line list;        (** Sequential dialogue, from _0000, _0001, etc. *)
 }
 
-(** Load all conversations from the text table. *)
+(** Load all conversations from the text table. Re-reads the entries each
+    call, so a language switch ([Text_data.set_language]) shows up on the
+    next conversation. *)
 let load_all : unit -> t list = fun () ->
-  let table = Text_data.entries in
+  let table = Text_data.entries () in
   let conv_map = Hashtbl.create 300 in
   let lines_map = Hashtbl.create 300 in
   let is_conv tag =

@@ -2561,10 +2561,14 @@ claims:
       extractors read. They live in fifteen TextLibrary files per language
       (StandardQuestsText, StandardSitesText, StandardItemsText, GameText, ...), and
       without them every name in the game prints as a tag. tools/extract_text_tables.py
-      turns game/Assets/English/*Text.xml into lib/text_data.ml: 2,630 tags behind
-      Text_data.text, which returns the tag unchanged when a string is missing so a
-      gap is visible rather than fatal. All 454 name_text and 294 desc_text tags the
-      campaign modules carry resolve; test_text_data asserts exactly that.
+      turns game/Assets/<Lang>/*Text.xml plus the Conversations and Quests
+      subdirectories into five data modules (text_data_en/fr/de/es/it) behind the
+      Text_data dispatcher: 10,425 tags each, quest step lines included (those tags
+      are nowhere in the top-level tables), and Text_data.text returns the tag
+      unchanged when a string is missing so a gap is visible rather than fatal. All
+      454 name_text and 294 desc_text tags the campaign modules carry resolve;
+      test_text_data asserts exactly that, and that all five languages carry the
+      same tag set.
     evidence:
       - kind: xml
         ref: game/Assets.zip!English/StandardQuestsText.xml
@@ -2574,13 +2578,28 @@ claims:
         ref: tools/extract_text_tables.py
       - kind: code
         ref: test/test_text_data.ml
-    affects: [lib/text_data.ml, lib/campaign_quests.ml, bin/campaign_demo.ml]
+    affects:
+      - lib/text_data.ml
+      - lib/text_data_en.ml
+      - lib/text_data_fr.ml
+      - lib/text_data_de.ml
+      - lib/text_data_es.ml
+      - lib/text_data_it.ml
+      - lib/campaign_quests.ml
+      - bin/campaign_demo.ml
     notes: >
-      7 of the 2,630 tags appear twice, six with identical values; later entries win,
+      7 of the 10,425 tags appear twice, six with identical values; later entries win,
       which is what a map built by parsing in order does. The one that differs is
       [DEMO_HERO_LIMIT], two spellings of the trial-limit message, and nothing reads
-      it. Four other languages carry the same 2,638 entries; the extractor takes
-      --language and ships English.
+      it. All five shipped languages carry the identical 10,425-tag set (verified by
+      the extractor's per-language counts and test_text_data's count assertions), so
+      the switch is a pure table swap. Two extractor bugs the switch round fixed:
+      conversations were read from English/<Language>/Conversations for every
+      language (hardcoded path), and the Quests/ subdirectory was not merged at all -
+      quest step lines rode only the English values baked into campaign_quests.ml.
+      pc/PlatformText.xml (the [PLATFORM]/[CLICKCONT] platform strings) ships for all
+      five languages too but no port code reads those tags, so it stays out of the
+      table.
 
   - id: campaign.capture_eligible
     title: Capture needs a built dungeon and three wins over that same enemy
@@ -5905,5 +5924,56 @@ port_decisions:
       flourish) is unported: the port's battle is modal already.
       This retires the last half of port.settings_surface's open note, so a
       tight Time Limit is a tradeoff rather than a free spoils bonus.
+    supersedes: null
+    date: 2026-10-14
+
+  - id: port.languages
+    decision: >
+      The port switches language live: Text_data keeps its call surface
+      (text / lookup / entries, entries now a function) and dispatches it
+      over five resident data modules - text_data_en/fr/de/es/it, one per
+      shipped language, 10,425 identical tags each including the Conversations
+      and Quests subdirectories - selected by a session int ref holding the
+      exe's recovered ids (0=English 1=French 2=German 3=Spanish 4=Italian).
+      set_language clamps to those five (the exe's ids 5..9 have no table in
+      this build and its existence gate skips them, so the port does not
+      offer them). Every consumer routes through the dispatcher: the tavern's
+      rumors and conversation load_all re-read the entries each call,
+      Campaign_quests.quest_text prefers the current language's table
+      (English keeps the baked q.texts path unchanged), and the city
+      Settings tab gains a third click-to-cycle row showing the recovered
+      name table, with the label a port literal - no asset carries a word
+      for it, because the original has no in-game language row at all.
+    rationale: >
+      The exe's selection runs at startup (FUN at 0x4d8d00): for each of ten
+      ids it checks that <Lang>\GameText.xml exists (the per-language
+      existence gate), then matches a "-FRENCH"-style token in the
+      launch-argument buffer at 0x5af070 (which also carries the PQHERO: and
+      TESTCAPTURE: launch tokens) OR the stored id word; anything unmatched
+      falls back to English. The id lives in the options object at +0x20
+      (ctor 0x4b43b0 writes 0xFFFF = unset; the setter 0x4b4a60 stores the
+      choice, tears down the font/texture lists so the next draw reloads
+      them, and flags +0x24 for ids 7..9 - the CJK languages - while the
+      name table the jump table at 0x4b3d60 pushes reads
+      English/French/German/Spanish/Italian/Polish/Russian/Japanese/Korean/
+      Taiwanese in exactly that id order). GameText carries no [LANGUAGE]
+      family and no option row names a language - the original PC build
+      selects via the launch switch, not a menu - so the port's Settings row
+      (its invented settings surface, already home to Difficulty and Time
+      Limit) is the affordance, and the switch is session-scoped like those
+      two refs: no registry write of the language word was found in this
+      build (the only writers of +0x20 are the ctor and the setter), so
+      persisting the choice belongs with the save round if anywhere. Two
+      extractor bugs were closed for the swap: conversations were hardcoded
+      to English/<Language>/Conversations for every language, and Quests/
+      was not merged - quest step lines exist nowhere else, so a non-English
+      game would have shown English actions behind translated names. The
+      font side needed no work: every shipped face's glyph table already
+      carries the Latin-1 accents (all five fonts hold è é ö ó ü ñ ç at
+      minimum, verified against the four translations' needs), and the
+      --lang shot of the Settings tab renders Difficulté / Aucune / French
+      with the accents in place. Runtime cost: the five tables are about
+      5 MB of generated source resident as five Hashtables - a cold build
+      pays for it, dune caches it after.
     supersedes: null
     date: 2026-10-14

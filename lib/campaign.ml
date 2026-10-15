@@ -630,8 +630,10 @@ let buy_item (player: player) (i: item) : player option =
    paired with its [RUMOR_*_DESC], in table order. Which tavern tells which
    rumor first is in no asset, and the player keeps no book of them yet (the
    INV_RUMORS strings describe one), so this is the raw sequence the window
-   cycles - port.city_services. *)
-let rumors : (string * string) list =
+   cycles - port.city_services. A function, not a value: the tags resolve
+   against the current language, so a switch ([Text_data.set_language]) must
+   re-read the entries rather than keep the ones the module booted with. *)
+let rumors () : (string * string) list =
   List.filter_map
     (fun (k, v) ->
       let n = String.length k in
@@ -641,7 +643,7 @@ let rumors : (string * string) list =
         | Some d -> Some (v, d)
         | None -> None
       else None)
-    Text_data.entries
+    (Text_data.entries ())
 
 (* ------------------------------------------------------------------ *)
 (* Conversation system                                                   *)

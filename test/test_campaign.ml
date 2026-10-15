@@ -1110,14 +1110,30 @@ let () =
     ((Campaign.buy_item { p with Campaign.gold = 0 } forsale) = None
      && p.Campaign.inventory = []);
   check "the tavern has its full fifty-five rumors"
-    (List.length Campaign.rumors = 55);
+    (List.length (Campaign.rumors ()) = 55);
   check "every rumor carries both halves"
-    (List.for_all (fun (n, d) -> n <> "" && d <> "") Campaign.rumors);
+    (List.for_all (fun (n, d) -> n <> "" && d <> "") (Campaign.rumors ()));
   check "the first rumor is the library's first"
-    (match Campaign.rumors with
+    (match Campaign.rumors () with
     | (name, desc) :: _ ->
         name = Text_data.text "[RUMOR_U000_NAME]"
         && desc = Text_data.text "[RUMOR_U000_DESC]"
+    | [] -> false);
+
+  (* Rumors re-read the entries, so a language switch shows translated pairs
+     without a restart - the reason the accessor is a function. *)
+  Text_data.set_language 1;
+  check "French rumors carry the same count"
+    (List.length (Campaign.rumors ()) = 55);
+  check "the first rumor is French after the switch"
+    (match Campaign.rumors () with
+    | (name, desc) :: _ ->
+        name = "Ordres chevaleresques" && desc <> "" && name <> "Knightly Orders"
+    | [] -> false);
+  Text_data.set_language 0;
+  check "back on English the rumor is the library's again"
+    (match Campaign.rumors () with
+    | (name, _) :: _ -> name = "Knightly Orders"
     | [] -> false)
 ;;
 
@@ -1143,10 +1159,10 @@ let () =
     ((Campaign.buy_item { p with Campaign.gold = 0 } forsale) = None
      && p.Campaign.inventory = []);
   check "the tavern has its full fifty-five rumors"
-    (List.length Campaign.rumors = 55);
+    (List.length (Campaign.rumors ()) = 55);
   check "every rumor carries both halves"
-    (List.for_all (fun (n, d) -> n <> "" && d <> "") Campaign.rumors);
-  (match Campaign.rumors with
+    (List.for_all (fun (n, d) -> n <> "" && d <> "") (Campaign.rumors ()));
+  (match Campaign.rumors () with
   | (name, desc) :: _ ->
       check "the first rumor is the library's first"
         (name = Text_data.text "[RUMOR_U000_NAME]"

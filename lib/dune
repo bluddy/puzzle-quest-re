@@ -21,6 +21,11 @@
    skin_data
    fx_data
    text_data
+  text_data_en
+  text_data_fr
+  text_data_de
+  text_data_es
+  text_data_it
   ai
   score
   battle

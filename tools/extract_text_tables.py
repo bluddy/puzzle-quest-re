@@ -1,41 +1,49 @@
 #!/usr/bin/env python3
-"""Generate lib/text_data.ml from the game's global text libraries.
+"""Generate the TextLibrary modules from the game's per-language text tables.
 
 Every string the game shows that is not owned by one particular asset lives in a
 TextLibrary: one XML file per subject, all of them `<Text tag="...">value</Text>`
-entries under a `<TextLibrary>` root. Five languages, each with the same fifteen
-files and the same 2638 entries:
+entries under a `<TextLibrary>` root. The build ships five languages, each with
+the same fifteen top-level files plus two subdirectories the port merges in:
 
-    English/StandardQuestsText.xml    quest titles and descriptions
-    English/StandardSitesText.xml     city names, waypoint and ruin names
-    English/StandardItemsText.xml     item names and descriptions
-    English/StandardMonstersText.xml  monster names, descriptions, capture text
-    English/StandardSpellsText.xml    spell names and descriptions
-    English/StandardProfessionsText.xml  the four classes
-    English/StandardAwardsText.xml    award names
-    English/StandardCompanionsText.xml   companion names and dialogue
-    English/StandardRumorsText.xml    tavern rumors
-    English/StandardQuestGroupsText.xml   quest group headings
-    English/StandardStatusEffectsText.xml status effect names
-    English/StandardSpellEffectsText.xml  spell effect school names
-    English/GameText.xml              interface strings
-    English/RunesText.xml             rune mini-game text
-    English/StandardTutorialsText.xml         tutorial panels
-    English/Conversations/                    conversation dialogues (273 files)
+    <Lang>/StandardQuestsText.xml    quest titles and descriptions
+    <Lang>/StandardSitesText.xml     city names, waypoint and ruin names
+    <Lang>/StandardItemsText.xml     item names and descriptions
+    <Lang>/StandardMonstersText.xml  monster names, descriptions, capture text
+    <Lang>/StandardSpellsText.xml    spell names and descriptions
+    <Lang>/StandardProfessionsText.xml  the four classes
+    <Lang>/StandardAwardsText.xml    award names
+    <Lang>/StandardCompanionsText.xml   companion names and dialogue
+    <Lang>/StandardRumorsText.xml    tavern rumors
+    <Lang>/StandardQuestGroupsText.xml   quest group headings
+    <Lang>/StandardStatusEffectsText.xml status effect names
+    <Lang>/StandardSpellEffectsText.xml  spell effect school names
+    <Lang>/GameText.xml              interface strings
+    <Lang>/RunesText.xml             rune mini-game text
+    <Lang>/TutorialsText.xml         tutorial panels
+    <Lang>/Conversations/            conversation dialogues (273 files)
+    <Lang>/Quests/                   quest step lines (143 files)
 
-This matters because the per-asset extracts do not carry these strings. A quest's
-own `*_Text.xml` holds its ACTION/FIRST/STEP lines but not `[QUEST_X_NAME]`, and
-`campaign_map.ml` stores `[CITY_CBAR_NAME]` rather than "Bartonia" - so without
-this table every name in the game prints as a tag. (Checked: all 454 `name_text`
-and 294 `desc_text` tags the campaign modules reference resolve here.)
+The conversation and quest subdirectories used to be read from English only
+(the conversations path was hardcoded, the quests not merged at all); both are
+per-language in the assets and all five languages carry identical tag sets -
+10,425 tags - so the language switch is a pure table swap. Quest step lines
+([QUEST_X_NAME] tags live here too, not in StandardQuestsText) ride the same
+flat table, which is what lets `Campaign_quests.quest_text` route them by
+language instead of the English values baked into campaign_quests.ml.
 
-Duplicate tags: 7 of the 2630, six of them with identical values. Later entries
-overwrite earlier ones, which is what a map built by parsing in order does. The
-one tag whose two values differ is `[DEMO_HERO_LIMIT]` - two spellings of the
-trial-mode limit message - and nothing in the port reads it.
+The original picks its language at startup (FUN at 0x4d8d00): for each of ten
+ids - 0=English 1=French 2=German 3=Spanish 4=Italian 5=Polish 6=Russian
+7=Japanese 8=Korean 9=Taiwanese, the order and names the exe's own jump table
+at 0x4b3d60 pushes - it checks that `<Lang>\\GameText.xml` exists, then matches
+a `-FRENCH`-style switch in the options string or the stored id word (config
++0x20, default 0xFFFF = unset); anything unmatched falls back to English. Only
+five languages ship in this build's Assets, so ids 5..9 have no table and the
+existence gate skips them. `Text_data.set_language` mirrors the exe's setter
+(0x4b4a60), which stores the id and clears the font/texture caches so the next
+draw reloads them.
 
-    python tools/extract_text_tables.py                  # -> lib/text_data.ml
-    python tools/extract_text_tables.py --language French
+    python tools/extract_text_tables.py                  # -> six modules
     python tools/extract_text_tables.py --check          # fail if stale
 """
 
@@ -47,10 +55,21 @@ import sys
 import xml.etree.ElementTree as ET
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-OUT = REPO / "lib" / "text_data.ml"
+LIB = REPO / "lib"
 ASSETS = REPO / "game" / "Assets"
 
-LANGUAGES = ("English", "French", "German", "Italian", "Spanish")
+# The recovered id table: original language id -> (module suffix, asset dir).
+# Ids 0..4 are the five that ship; the exe knows 5..9 too but their GameText
+# files are absent from this build and its existence gate skips them.
+SHIPPED = (
+    (0, "en", "English"),
+    (1, "fr", "French"),
+    (2, "de", "German"),
+    (3, "es", "Spanish"),
+    (4, "it", "Italian"),
+)
+KNOWN_IDS = ("English", "French", "German", "Spanish", "Italian",
+             "Polish", "Russian", "Japanese", "Korean", "Taiwanese")
 
 
 def ocaml_string(s: str) -> str:
@@ -75,11 +94,11 @@ def ocaml_string(s: str) -> str:
 
 
 def load(language: str) -> tuple[dict[str, str], list[str], int, int]:
-    """All TextLibrary files for one language.
+    """All TextLibrary files for one language: top level, Conversations, Quests.
 
     Returns (tag -> text, file names in order, entry count, duplicate tags).
-    Later entries win; files are read in sorted name order so the result does not
-    depend on the filesystem.
+    Later entries win; files are read in sorted name order so the result does
+    not depend on the filesystem.
     """
     lang_dir = ASSETS / language
     if not lang_dir.is_dir():
@@ -88,11 +107,12 @@ def load(language: str) -> tuple[dict[str, str], list[str], int, int]:
     if not files:
         raise SystemExit(f"error: no *Text.xml under {lang_dir}")
 
-    # Also load conversation texts from the Conversations subdirectory
-    conv_dir = ASSETS / "English" / "Conversations"
-    if conv_dir.is_dir():
-        conv_files = sorted(conv_dir.glob("*_Text.xml"))
-        files.extend(conv_files)
+    # Conversation dialogues and quest step lines are per-language TextLibrary
+    # files in their own subdirectories - merge them all, the tags are global.
+    for sub in ("Conversations", "Quests"):
+        d = lang_dir / sub
+        if d.is_dir():
+            files.extend(sorted(d.glob("*_Text.xml")))
 
     table: dict[str, str] = {}
     entries = 0
@@ -110,20 +130,17 @@ def load(language: str) -> tuple[dict[str, str], list[str], int, int]:
     return table, [p.name for p in files], entries, len(dupes)
 
 
-def render(table: dict[str, str], language: str, files: list[str],
-           entries: int, dupes: int) -> str:
+def render_data(table: dict[str, str], language: str, files: list[str],
+                entries: int, dupes: int) -> str:
     lines = [
         "(* Generated by tools/extract_text_tables.py - do not edit. *)",
         "",
         f"(* The {language} TextLibrary: {len(table):,} tags from {len(files)} files",
-        "   under game/Assets/%s/ - the Standard*Text tables with GameText," % language,
-        "   RunesText and TutorialsText.",
-        "",
-        "   These are the strings no per-asset extract carries. A quest's own text",
-        "   file has its step lines but not [QUEST_X_NAME]; campaign_map stores",
-        "   [CITY_CBAR_NAME], not \"Bartonia\". Anything that shows a name resolves",
-        "   the tag here first and falls back to the tag itself, so a missing string",
-        "   reads as a tag rather than raising.",
+        "   under game/Assets/%s/ - the fifteen Standard*/Game/Runes/Tutorials" % language,
+        "   tables plus the Conversations and Quests subdirectories (the quest",
+        "   step lines and the dialogue live there, not in the top-level",
+        "   tables). All five shipped languages carry the same tag set, so the",
+        "   language switch in Text_data is a table swap and nothing else.",
         "",
         f"   {entries} entries read, {dupes} tags seen twice; later entries won. *)",
         "",
@@ -134,7 +151,7 @@ def render(table: dict[str, str], language: str, files: list[str],
     lines += [
         "]",
         "",
-        "let table : (string, string) Hashtbl.t = Hashtbl.create 4096",
+        "let table : (string, string) Hashtbl.t = Hashtbl.create 16384",
         "let () = List.iter (fun (k, v) -> Hashtbl.replace table k v) entries",
         "",
         "let lookup (tag : string) : string option = Hashtbl.find_opt table tag",
@@ -146,39 +163,117 @@ def render(table: dict[str, str], language: str, files: list[str],
     return "\n".join(lines)
 
 
+def render_dispatcher() -> str:
+    """The language-aware front: text_data.ml keeps the consumers' API.
+
+    Text_data.text / lookup keep their signatures and route through the
+    current language; entries becomes a function so module-level consumers
+    (rumors, conversation load_all) re-read after a switch.
+    """
+    names = "; ".join(ocaml_string(n) for n in
+                      [d for _, _, d in SHIPPED])
+    dispatch_entries = "\n".join(
+        f"  | {lang_id} -> Text_data_{suffix}.entries"
+        for lang_id, suffix, _ in SHIPPED[1:])
+    dispatch_lookup = "\n".join(
+        f"  | {lang_id} -> Text_data_{suffix}.lookup tag"
+        for lang_id, suffix, _ in SHIPPED[1:])
+    return "\n".join([
+        "(* Generated by tools/extract_text_tables.py - do not edit. *)",
+        "",
+        "(* The language front over the five shipped TextLibrary tables.",
+        "",
+        "   The original picks a language at startup from ten ids - 0=English",
+        "   1=French 2=German 3=Spanish 4=Italian, then Polish/Russian/",
+        "   Japanese/Korean/Taiwanese - by checking that <Lang>\\GameText.xml",
+        "   exists and matching a -FRENCH-style switch or the stored id",
+        "   (config +0x20, 0xFFFF = unset); this build ships five, so the",
+        "   setter clamps to them. [Text_data.set_language] mirrors the exe's",
+        "   setter (0x4b4a60), which stores the id and clears the font and",
+        "   texture caches so the next draw reloads them - here the tables are",
+        "   all resident and a lookup routes through the new one, which is why",
+        "   [entries] is a function: the module-level consumers (the tavern's",
+        "   rumors, conversation load_all) must re-read after a switch.",
+        "",
+        "   The five data modules carry identical tag sets (10,425 tags each),",
+        "   quest step lines included, so every tag resolves in every",
+        "   language. Anything missing falls back to the tag itself, as the",
+        "   English table always has. *)",
+        "",
+        "(** The current language, as the original's id: [Text_data.name_of]",
+        "    renders it and [set_language] changes it (clamped to the five",
+        "    that ship; the exe's ids 5..9 have no table in this build and its",
+        "    existence gate skips them, so the port does not offer them). *)",
+        "let language : int ref = ref 0",
+        "",
+        "(** The recovered name table, in id order - the exe's jump table at",
+        "    0x4b3d60 pushes exactly these strings. *)",
+        f"let names : string array = [| {names} |]",
+        "",
+        "let name_of (id : int) : string =",
+        "  if id >= 0 && id < Array.length names then names.(id)",
+        "  else names.(0)",
+        "",
+        "let is_shipped (id : int) : bool = id >= 0 && id < Array.length names",
+        "",
+        "let is_english () : bool = !language = 0",
+        "",
+        "let set_language (id : int) : unit =",
+        "  language := if is_shipped id then id else 0",
+        "",
+        "let entries () : (string * string) list =",
+        "  match !language with",
+        dispatch_entries,
+        "  | _ -> Text_data_en.entries",
+        "",
+        "let lookup (tag : string) : string option =",
+        "  match !language with",
+        dispatch_lookup,
+        "  | _ -> Text_data_en.lookup tag",
+        "",
+        "let text (tag : string) : string =",
+        "  match lookup tag with Some s -> s | None -> tag",
+        "",
+    ])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--language", default="English", choices=LANGUAGES,
-                    help="whose text libraries to extract")
-    ap.add_argument("--out", type=pathlib.Path, default=OUT)
     ap.add_argument("--check", action="store_true",
-                    help="exit non-zero if the committed file differs")
+                    help="exit non-zero if any committed file differs")
     args = ap.parse_args()
 
-    table, files, entries, dupes = load(args.language)
-    if not table:
-        print("error: tables parsed empty", file=sys.stderr)
-        return 1
-    print(f"  {args.language}: {len(table):,} tags from {len(files)} files "
-          f"({entries} entries, {dupes} duplicated)")
-
-    text = render(table, args.language, files, entries, dupes)
+    outputs: dict[pathlib.Path, str] = {LIB / "text_data.ml": render_dispatcher()}
+    for lang_id, suffix, language in SHIPPED:
+        table, files, entries, dupes = load(language)
+        if not table:
+            print("error: tables parsed empty", file=sys.stderr)
+            return 1
+        print(f"  [{lang_id}] {language}: {len(table):,} tags from "
+              f"{len(files)} files ({entries} entries, {dupes} duplicated)")
+        outputs[LIB / f"text_data_{suffix}.ml"] = render_data(
+            table, language, files, entries, dupes)
 
     if args.check:
-        if not args.out.is_file():
-            print(f"error: {args.out} missing", file=sys.stderr)
-            return 1
-        if args.out.read_text(encoding="utf-8") != text:
-            print(f"error: {args.out} is stale, re-run tools/extract_text_tables.py",
-                  file=sys.stderr)
+        stale = False
+        for out, text in outputs.items():
+            if not out.is_file():
+                print(f"error: {out} missing", file=sys.stderr)
+                stale = True
+            elif out.read_text(encoding="utf-8") != text:
+                print(f"error: {out} is stale, re-run tools/extract_text_tables.py",
+                      file=sys.stderr)
+                stale = True
+        if stale:
             return 1
         print("  up to date")
         return 0
 
-    args.out.write_text(text, encoding="utf-8")
-    print(f"  wrote {args.out} ({len(text):,d} bytes)")
+    for out, text in outputs.items():
+        out.write_text(text, encoding="utf-8")
+        print(f"  wrote {out} ({len(text):,d} bytes)")
     return 0
 
 

@@ -212,15 +212,15 @@ let open_city (ui : ui) (cid : string) : unit =
 
 (** The console's half of the tavern: the name is on screen, the whole text     is where a paragraph can be read. The panel has no word-wrap - that is a     font feature this front does not use yet. *)
 let show_rumor (cv : city_view) : unit =
-  match List.nth_opt Campaign.rumors cv.rumor with
+  match List.nth_opt (Campaign.rumors ()) cv.rumor with
   | Some (n, d) ->
       Printf.printf "  rumor %d/%d - %s\n    %s\n" (cv.rumor + 1)
-        (List.length Campaign.rumors) n d;
+        (List.length (Campaign.rumors ())) n d;
       flush stdout
   | None -> ()
 
 let advance_rumor (cv : city_view) : unit =
-  let n = List.length Campaign.rumors in
+  let n = List.length (Campaign.rumors ()) in
   if n > 0 then begin
     cv.rumor <- (cv.rumor + 1) mod n;
     show_rumor cv
@@ -473,7 +473,13 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
              and wraps. A droplist widget is a port choice; the row strings and
              the 0..2 / 0..4 clamps are the recovered parts. The settings are
              machine-wide in the original (registry), so they live in the two
-             Campaign refs rather than in this city. *)
+             Campaign refs rather than in this city.
+
+             The third row is the language: the original has no in-game row for
+             it (GameText carries no [LANGUAGE] tag; selection is a -FRENCH-style
+             launch-argument switch behind the existence gate, see Text_data), so
+             the port offers the five shipped languages here as a cycle row - the
+             label is a port literal, the values the exe's own name table. *)
           (match i with
           | 0 ->
               Campaign.set_difficulty ((!Campaign.difficulty + 1) mod 3);
@@ -488,6 +494,12 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
                 (Text_data.text "[TIMELIMIT]")
                 (Text_data.text
                    (Printf.sprintf "[TIMELIMIT%d]" !Campaign.timelimit));
+              flush stdout
+          | 2 ->
+              Text_data.set_language
+                ((!Text_data.language + 1) mod (Array.length Text_data.names));
+              Printf.printf "  Language : %s\n"
+                (Text_data.name_of !Text_data.language);
               flush stdout
           | _ -> ()))
   | City_layout.Forge ->
@@ -593,14 +605,14 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
         City_layout.row_x
         (City_layout.row_y0 + (City_layout.max_rows * City_layout.row_step) + 8)
   | Tavern -> (
-      match List.nth_opt Campaign.rumors cv.rumor with
+      match List.nth_opt (Campaign.rumors ()) cv.rumor with
       | Some (n, _) ->
           text ~colour:(Layout.rgb 240 210 90) n
             (City_layout.row_x + 30)
             City_layout.row_y0;
           text ~colour:(Layout.rgb 150 150 160)
             (Printf.sprintf "rumor %d/%d - click for another"
-               (cv.rumor + 1) (List.length Campaign.rumors))
+               (cv.rumor + 1) (List.length (Campaign.rumors ())))
             City_layout.row_x
             (City_layout.row_y0 + 30)
       | None -> ())
@@ -760,7 +772,10 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
          list's own geometry: label left, the current value right in the gold
          highlight. The values come from the same [AILEVEL*]/[TIMELIMIT*] tags
          the original droplist rows carry; a droplist widget is a port choice
-         (recorded in port.settings_surface). *)
+         (recorded in port.settings_surface). The third row is the language -
+         a port row (the original has no row: it selects via a launch-argument
+         switch and the existence gate, see Text_data), its label a literal and
+         its values Text_data's recovered name table. *)
       let setting_row i label value =
         if i < City_layout.max_rows then begin
           text label (City_layout.row_x + 30) (row_y i + 3);
@@ -775,6 +790,7 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
       setting_row 1
         (Text_data.text "[TIMELIMIT]")
         (Text_data.text (Printf.sprintf "[TIMELIMIT%d]" !Campaign.timelimit));
+      setting_row 2 "Language" (Text_data.name_of !Text_data.language);
       text ~colour:(Layout.rgb 150 150 160)
         "click a row to cycle the option"
         City_layout.row_x
@@ -1520,7 +1536,8 @@ let step (ui : ui) (dt : float) : unit =
 let () =
   Random.self_init ();
   let shot = ref "" and open_city_flag = ref false
-  and itemgame_flag = ref false and settings_flag = ref false in
+  and itemgame_flag = ref false and settings_flag = ref false
+  and lang = ref (-1) in
   Arg.parse
     [ ( "--shot",
         Arg.Set_string shot,
@@ -1533,9 +1550,17 @@ let () =
         "open the forge skill game over the gifted triple (for --shot)" );
       ( "--settings",
         Arg.Set settings_flag,
-        "open the city panel's Settings tab on startup (for --shot)" ) ]
+        "open the city panel's Settings tab on startup (for --shot)" );
+      ( "--lang",
+        Arg.Set_int lang,
+        "boot in language 0..4 (English..Italian), for --shot" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings]";
+    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N]";
+  (* The language sets before anything draws or any module-level table is
+     read through Text_data - the whole switch is live, but a shot wants the
+     boot language to be the one it photographs. Unshipped ids fall back to
+     English inside set_language. *)
+  if !lang >= 0 then Text_data.set_language !lang;
   let gl =
     Gl.create ~title:"Puzzle Quest - world map" ~width:window_w
       ~height:window_h

@@ -2169,10 +2169,22 @@ def main():
     lines.append("let quests_at_location loc = List.filter (fun q -> q.avail_location = loc) quests")
     lines.append("")
     # The quest's own *_Text.xml has the step lines but not [QUEST_X_NAME] -
-    # titles and descriptions live in English/StandardQuestsText.xml, so an
-    # unknown tag falls through to the global table rather than returning the
-    # tag (see tools/extract_text_tables.py).
-    lines.append("let quest_text q tag = try List.assoc tag q.texts with Not_found -> Text_data.text tag")
+    # titles and descriptions live in StandardQuestsText.xml, so an unknown
+    # tag falls through to the global table rather than returning the tag
+    # (see tools/extract_text_tables.py).
+    #
+    # q.texts is the ENGLISH extract, baked per quest: on English it stays
+    # the first lookup (unchanged behaviour, the baked values win). Every
+    # other language routes straight to Text_data.text, whose table carries
+    # the quest step tags for its own language - all five tables merged the
+    # per-language Quests/ directory, identical tag sets - so a French game
+    # shows French action lines instead of the English values this file
+    # baked. Text_data.is_english is the branch; Text_data.text is the
+    # tag-itself fallback both paths share.
+    lines.append("let quest_text q tag =")
+    lines.append("  if Text_data.is_english () then")
+    lines.append("    (try List.assoc tag q.texts with Not_found -> Text_data.text tag)")
+    lines.append("  else Text_data.text tag")
     lines.append("let quest_name q = quest_text q q.name_text")
     lines.append("let quest_desc q = quest_text q q.desc_text")
     lines.append("")

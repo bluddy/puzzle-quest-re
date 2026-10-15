@@ -261,8 +261,9 @@ Turn Time Limit with the Time Limit spoils bonus paying
 (`port.turn_clock`), the skill game's target formula and cap recovered off
 UTF-16 xrefs (`forge.item_game_numbers`), the DEFEAT rule settled as
 minigame-no-moves against battle's mana burn (`forge.item_game_defeat_clock`),
-and a timeout costing 5 life as well as the turn (`port.turn_clock`).
+a timeout costing 5 life as well as the turn (`port.turn_clock`), and the
+five-language switch wired live - five resident tables, a Settings-tab row,
+quest steps and conversations included (`port.languages`).
 Evidence is back to zero open questions. Pick one:
 
-- **Languages** - `text_data.ml` ships English only while French/German/Italian/Spanish carry the same 2,638 entries and the extractor already takes `--language`; wire a language switch and the other four tables (Known Gap 8)
 - **Save/load wiring** - the engine round-trips through `campaign_save` but nothing in the map front calls it (only the console demo does). Confirmed for the original: it auto-saves regularly and loads from the main menu's Continue - so the port needs the auto-save trigger points (a `Hero_SaveToFile` xref) and a main-menu/Continue entry, which makes this the bigger structural round
