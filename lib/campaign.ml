@@ -1638,6 +1638,22 @@ let take_pending_message () : pending_message option =
   | [] -> None
   | m :: rest -> pending_messages := rest; Some m
 
+(* Story cutscenes queued by QUEST_CUTSCENE (the five sites in Q0Q8, Q1Q9,
+   Q2Q9 and Q3Q7's pair, all inside callback bodies). Same contract as the
+   messages: effects push, the front pops one at a time with
+   [take_pending_cutscene] and plays it over the map before the dialogue or
+   battle that follows continues - the port has no cutscene manager to
+   block in, so the queue is the block. *)
+let pending_cutscenes : string list ref = ref []
+
+let queue_cutscene (path : string) : unit =
+  pending_cutscenes := !pending_cutscenes @ [ path ]
+
+let take_pending_cutscene () : string option =
+  match !pending_cutscenes with
+  | [] -> None
+  | c :: rest -> pending_cutscenes := rest; Some c
+
 (* [enter_location] lives at the end of this file with the rest of the
    location-action flow: its enter_effects need apply_callback_effect (and
    quest_turn_in for the few arrival Completes), both defined later. *)
@@ -2080,6 +2096,11 @@ let apply_callback_effect (p : player) (qid : string) (e : callback_effect) : pl
   | GiveAward id -> apply_quest_effect p (RewardAward id)
   | GiveCompanion id -> apply_quest_effect p (RewardCompanion id)
   | Conversation conv -> queue_conversation conv; p
+  | Cutscene path ->
+    (* the cutscene is the body's next beat: queue it, the front plays it
+       when the map is idle (the Lua call would have blocked there) *)
+    queue_cutscene path;
+    p
   | ShowMessage (title, text, cb) ->
     queue_message ~qid ~callback:cb title text; p
 

@@ -219,6 +219,45 @@ let () =
     (cells 3 (8, 0) = [] && cells 1 (3, 8) = [] && cells 2 (-1, 4) = [])
 
 let () =
+  (* The main menu is a transcription: ten buttons at MainMenu.xml's own
+     numbers, hit-tested exactly - and the rows the XML groups with its
+     gamepad chains (21/22, 1/2/4, 7, 5/6, 0) keep their gaps. *)
+  check "the menu carries the ten buttons"
+    (List.length Main_menu_layout.buttons = 10);
+  check "New Quest is at its XML rect"
+    (match Main_menu_layout.button_at (660 + 150) (180 + 25) with
+    | Some b -> b.Main_menu_layout.id = 21
+    | None -> false);
+  check "Continue Quest is the second row"
+    (match Main_menu_layout.button_at 800 255 with
+    | Some b -> b.Main_menu_layout.id = 22
+    | None -> false);
+  check "Quit hangs on id 0"
+    (match Main_menu_layout.button_at 800 695 with
+    | Some b -> b.Main_menu_layout.id = 0
+    | None -> false);
+  check "Buy Now sits in the bottom-left"
+    (match Main_menu_layout.button_at 100 700 with
+    | Some b -> b.Main_menu_layout.id = 10
+    | None -> false);
+  check "the gap between Continue and Single Player misses"
+    (Main_menu_layout.button_at 800 290 = None);
+  check "a point left of the button column misses"
+    (Main_menu_layout.button_at 400 200 = None);
+  check "the right edge of a button still hits, one past it does not"
+    (match
+       ( Main_menu_layout.button_at 959 200,
+         Main_menu_layout.button_at 960 200 )
+     with
+    | Some b, None -> b.Main_menu_layout.id = 21
+    | _ -> false);
+  check "title, version and copyright carry their tags"
+    (let t, _, _, _, _ = Main_menu_layout.title in
+     let v, _, _, _, _ = Main_menu_layout.version in
+     let c, _, _, _, _ = Main_menu_layout.copyright in
+     t = "[MAINMENU]" && v = "[VERSION]" && c = "[COPYRIGHT]")
+
+let () =
   if !failures = 0 then print_endline "all gfx layout tests passed"
   else begin
     Printf.printf "%d gfx layout test(s) failed\n" !failures;

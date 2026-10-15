@@ -228,6 +228,10 @@ CALL_PATTERNS = {
         r'QUEST_REMOVE_COMPANION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)\s*\)'),
     'conversation': re.compile(
         r'QUEST_CONVERSATION\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'),
+    # the story cutscenes: a literal path in the shipped corpus (Chap2/3/4
+    # intros and Q3Q7's two endings, all inside callback bodies).
+    'cutscene': re.compile(
+        r'QUEST_CUTSCENE\s*\(\s*("[^"\n]*"|[A-Za-z_]\w*)'),
     'complete': re.compile(r'QUEST_COMPLETE\s*\('),
     # groups: callback flag, title arg, text arg, location arg, quest id
     # token, callback name token (the last two only on the _CALLBACK form;
@@ -1193,6 +1197,35 @@ def analyze_lua(src, qid, stats):
                           (-1, "", tuple(comp), tuple(sorted(vars_)),
                            tuple(sorted(items)), tuple(clauses)),
                           hit.start(), ('conversation', cid))
+        # QUEST_CUTSCENE: the story cutscenes. Same placement rules as the
+        # conversations - callback sites keep their effect rows, event hooks
+        # fold into the groups - so a cutscene fires with the branch Lua
+        # would have run. The Lua literal carries its own escapes (the
+        # corpus writes "CutScenes\\Chap2_Intro.xml" for one backslash), so
+        # the path is unescaped before it rides the queue; scene_of strips
+        # the directory and extension at lookup either way.
+        for hit in CALL_PATTERNS['cutscene'].finditer(body):
+            stats['extracted']['cutscene'] += 1
+            stats['hooks'][('cutscene', hook)] += 1
+            tok = resolve(hit.group(1), consts)
+            if tok is None:
+                stats['unresolved'].append((qid, hook, hit.group(1)))
+                continue
+            path = tok.replace('\\\\', '\\')
+            if is_callback:
+                cb_row(hit, 'cutscene', path)
+            elif ev is not None:
+                for key in keys_for(ev, hit.start()):
+                    add_group(ev, key, hit.start(), ('cutscene', path))
+            else:
+                # outside callbacks and the four events: keep it as a
+                # wildcard execute entry rather than drop the cutscene.
+                _s, _l, _sd, _a, comp, vars_, items, clauses = \
+                    lookup(hit.start())
+                add_group('execute',
+                          (-1, "", tuple(comp), tuple(sorted(vars_)),
+                           tuple(sorted(items)), tuple(clauses)),
+                          hit.start(), ('cutscene', path))
         # QUEST_COMPLETE / QUEST_MESSAGE: event hooks feed the groups,
         # callback sites keep their effect rows; anything else (CompleteQ's
         # body, OnCancelAction) is counted for reconciliation only.
@@ -1587,7 +1620,8 @@ def ocaml_effect(kind, val):
         return (f'ShowMessage ("{ocaml_str(title)}", '
                 f'"{ocaml_str(text)}", "{ocaml_str(cb)}")')
     ctor = {'item': 'GiveItem', 'award': 'GiveAward',
-            'companion': 'GiveCompanion', 'conversation': 'Conversation'}[kind]
+            'companion': 'GiveCompanion', 'conversation': 'Conversation',
+            'cutscene': 'Cutscene'}[kind]
     return f'{ctor} "{ocaml_str(val)}"'
 
 
@@ -1997,6 +2031,7 @@ def main():
     lines.append("  | GiveAward of string")
     lines.append("  | GiveCompanion of string")
     lines.append("  | Conversation of string")
+    lines.append("  | Cutscene of string")
     lines.append("  | ShowMessage of string * string * string")
     lines.append("")
     lines.append("(* one script-var test: (name, ~=, value) - absent = 0 *)")

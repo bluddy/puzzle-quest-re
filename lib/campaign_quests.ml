@@ -10,6 +10,7 @@ type callback_effect =
   | GiveAward of string
   | GiveCompanion of string
   | Conversation of string
+  | Cutscene of string
   | ShowMessage of string * string * string
 
 (* one script-var test: (name, ~=, value) - absent = 0 *)
@@ -5983,7 +5984,7 @@ let quests = [
     conversations_begin = [("Conv_Q0Q8a", [("NKHA", true)])];
     conversations_abandon = [];
     conversation_callbacks = [];
-    callback_effects = [("CallbackQueen", [([], [], [], [], GiveXp 400)]); ("CallbackReward", [([], [], [], [], Complete)])];
+    callback_effects = [("CallbackQueen", [([], [], [], [], GiveXp 400)]); ("CallbackReward", [([], [], [], [], Cutscene "CutScenes\\Chap2_Intro.xml"); ([], [], [], [], Complete)])];
     query_actions = [(1, "CBAR", [], [], [], [], "[Q0Q8_ACTION0]")];
     enter_effects = [];
     execute_effects = [(-1, "", [], [], [], [], [Conversation "Conv_Q0Q8b"], false)];
@@ -15692,7 +15693,7 @@ let quests = [
     conversations_begin = [("Conv_Q1Q9a", [])];
     conversations_abandon = [];
     conversation_callbacks = [];
-    callback_effects = [("CallbackConvA", [([], [], [], [], SetQuestState 1)]); ("CallbackConvB", [([], [], [], [], GiveXp 500); ([], [], [], [], GiveItem "IEGM")]); ("CallbackReward", [([], [], [], [], Complete)])];
+    callback_effects = [("CallbackConvA", [([], [], [], [], SetQuestState 1)]); ("CallbackConvB", [([], [], [], [], GiveXp 500); ([], [], [], [], GiveItem "IEGM")]); ("CallbackReward", [([], [], [], [], Cutscene "CutScenes\\Chap3_Intro.xml"); ([], [], [], [], Complete)])];
     query_actions = [(1, "WHBG", [], [], [], [], "[QUEST_Q1Q9_ACTION]")];
     enter_effects = [(-1, "WHBG", [], [], [], [], [ShowMessage ("[QUEST_Q1Q9_NAME]", "[QUEST_Q1Q9_MECHATAUR]", "")], false)];
     execute_effects = [];
@@ -27571,7 +27572,7 @@ let quests = [
     conversations_begin = [("Conv_Q2Q9a", [])];
     conversations_abandon = [];
     conversation_callbacks = [];
-    callback_effects = [("CallbackConvA", [([], [], [], [], SetQuestState 1)]); ("CallbackConvB", [([], [], [], [], SetVar ("doneFlickerConv", 1))]); ("CallbackConvC", [([], [], [], [], SetVar ("doneMinogothConv", 1))]); ("CallbackConvD", [([], [], [], [], ShowMessage ("[QUEST_Q2Q9_NAME]", "[QUEST_Q2Q9_KILL]", "")); ([], [], [], [], SetQuestState 2)]); ("CallbackConvE", [([], [], [], [], GiveXp 600); ([], [], [], [], GiveItem "IAOM")]); ("CallbackReward", [([], [], [], [], Complete)])];
+    callback_effects = [("CallbackConvA", [([], [], [], [], SetQuestState 1)]); ("CallbackConvB", [([], [], [], [], SetVar ("doneFlickerConv", 1))]); ("CallbackConvC", [([], [], [], [], SetVar ("doneMinogothConv", 1))]); ("CallbackConvD", [([], [], [], [], ShowMessage ("[QUEST_Q2Q9_NAME]", "[QUEST_Q2Q9_KILL]", "")); ([], [], [], [], SetQuestState 2)]); ("CallbackConvE", [([], [], [], [], GiveXp 600); ([], [], [], [], GiveItem "IAOM")]); ("CallbackReward", [([], [], [], [], Cutscene "CutScenes\\Chap4_Intro.xml"); ([], [], [], [], Complete)])];
     query_actions = [(1, "COHT", [], [], [], [], "[QUEST_Q2Q9_ACTION]"); (2, "CHTP", [], [], [], [([1], ["COHT"], None, [], [], [])], "[QUEST_Q2Q9_RETURN]")];
     enter_effects = [(-1, "COHT", [("NFLI", true)], [("doneFlickerConv", false, 0)], [], [], [Conversation "Conv_Q2Q9b"], false)];
     execute_effects = [(1, "", [], [("doneMinogothConv", false, 0)], [], [], [Conversation "Conv_Q2Q9c"], false); (2, "", [], [], [], [([1], [], None, [], [], [])], [Conversation "Conv_Q2Q9e"], false)];
@@ -35132,7 +35133,7 @@ let quests = [
     conversations_begin = [("Conv_Q3Q7a", []); ("Conv_Q3Q7aa", [])];
     conversations_abandon = [];
     conversation_callbacks = [("CallbackDrong", ["Conv_Q3Q7b"])];
-    callback_effects = [("CallbackConvA", [([], [], [], [], SetQuestState 1)]); ("CallbackConvB", [([], [], [], [], GiveGold 1000); ([], [], [], [], GiveXp 2000)]); ("CallbackConvC", [([("NDRO", true)], [], [], [], ShowMessage ("[QUEST_Q3Q7_NAME]", "[QUEST_Q3Q7_HUNGRY]", "CallbackDrong"))]); ("CallbackDrong", [([], [], [], [], Conversation "Conv_Q3Q7b")]); ("CallbackEnd", [([], [], [], [], Complete)])];
+    callback_effects = [("CallbackConvA", [([], [], [], [], SetQuestState 1)]); ("CallbackConvB", [([], [], [], [], GiveGold 1000); ([], [], [], [], GiveXp 2000)]); ("CallbackConvC", [([("NDRO", true)], [], [], [], ShowMessage ("[QUEST_Q3Q7_NAME]", "[QUEST_Q3Q7_HUNGRY]", "CallbackDrong"))]); ("CallbackDrong", [([], [], [], [], Conversation "Conv_Q3Q7b")]); ("CallbackEnd", [([], [], [], [], Cutscene "CutScenes\\Chap4_End_good.xml"); ([], [], [], [], Cutscene "CutScenes\\Chap4_End_evil.xml"); ([], [], [], [], Complete)])];
     query_actions = [(1, "CLBC", [], [], [], [], "[QUEST_Q3Q7_ACTION]")];
     enter_effects = [];
     execute_effects = [];

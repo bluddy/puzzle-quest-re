@@ -434,6 +434,64 @@ check "Q3D1/CallbackConvB applies state 5 before its battle settles"
          state_of r.Campaign.cb_player "Q3D1" = (if won then Some 6 else Some 5)));
 
 (* ---------------------------------------------------------------- *)
+(* QUEST_CUTSCENE: the story cutscenes ride the callback rows        *)
+(* ---------------------------------------------------------------- *)
+
+(* The five sites in the corpus, all inside callback bodies (Q0Q8, Q1Q9,
+   Q2Q9 reward callbacks and Q3Q7's endings callback): the extractor keeps
+   them as Cutscene rows beside the grants, and apply_callback_effect queues
+   the path - the front pops it when the map is idle and plays it. This
+   block is one parenthesised let-chain so it rides the sequence the
+   surrounding checks already are (a structure-level let after their
+   trailing semicolon would leave that sequence dangling). *)
+(let rec drain_cutscenes () =
+   match Campaign.take_pending_cutscene () with
+   | None -> ()
+   | Some _ -> drain_cutscenes ()
+ in
+ let cutscene_paths qid cb =
+   let q = quest qid in
+   match List.assoc_opt cb q.Campaign_quests.callback_effects with
+   | None -> []
+   | Some rows ->
+     List.filter_map
+       (fun (_, _, _, _, e) ->
+         match e with
+         | Campaign_quests.Cutscene p -> Some p
+         | _ -> None)
+       rows
+ in
+ drain_cutscenes ();
+ check "Q0Q8/CallbackReward plays the Chap2 intro"
+   (cutscene_paths "Q0Q8" "CallbackReward"
+   = [ "CutScenes\\Chap2_Intro.xml" ]);
+ check "Q1Q9/CallbackReward plays the Chap3 intro"
+   (cutscene_paths "Q1Q9" "CallbackReward"
+   = [ "CutScenes\\Chap3_Intro.xml" ]);
+ check "Q2Q9/CallbackReward plays the Chap4 intro"
+   (cutscene_paths "Q2Q9" "CallbackReward"
+   = [ "CutScenes\\Chap4_Intro.xml" ]);
+ let endings = cutscene_paths "Q3Q7" "CallbackEnd" in
+ check "Q3Q7/CallbackEnd plays both endings"
+   (List.length endings = 2
+   && List.mem "CutScenes\\Chap4_End_good.xml" endings
+   && List.mem "CutScenes\\Chap4_End_evil.xml" endings);
+
+ (* The effect arm: it queues and leaves the player alone - a cutscene is
+    a beat, not a grant. *)
+ drain_cutscenes ();
+ let p0 = fresh () in
+ let p1 =
+   Campaign.apply_callback_effect p0 "Q0Q8"
+     (Campaign_quests.Cutscene "CutScenes\\Chap2_Intro.xml")
+ in
+ check "the Cutscene effect leaves the player alone" (p1 = p0);
+ check "and queues the scene"
+   (Campaign.take_pending_cutscene ()
+   = Some "CutScenes\\Chap2_Intro.xml");
+ check "the scene queue drains" (Campaign.take_pending_cutscene () = None));
+
+(* ---------------------------------------------------------------- *)
 (* Global state cleanup                                              *)
 (* ---------------------------------------------------------------- *)
 

@@ -1538,11 +1538,36 @@ let step (ui : ui) (dt : float) : unit =
     | None, _ -> ()
   end
 
+(* The shell's stages - the assembly the original's startup runs: the boot
+   logo slideshow (the one CutScene the executable references, pushed at
+   0x4d88f1), then the main menu (MainMenu.xml, transcribed by
+   Main_menu_layout), then the game. [Cutscene] wraps whichever stage is
+   next so a story cutscene (the five QUEST_CUTSCENE sites) plays over the
+   map and returns to it; the player itself lives in Cutscene_screen.
+   Any dev flag (--fresh, --city, --itemgame, --settings, --shot without
+   --menu) lands straight in [Play] with a new hero - deterministic shots,
+   and the auto-save load moved out of boot into the menu's Continue Quest
+   (GAME_KNOWLEDGE_BASE: New Quest and Continue Quest drop you straight
+   into the game). *)
+type shell =
+  | Intro
+  | Menu
+  | Cutscene of Cutscene_data.scene * shell
+  | Play
+
+let shell : shell ref = ref Intro
+
+(* The live cutscene player for [Intro] and [Cutscene], owned by the shell
+   the same way the shell owns its stage. *)
+let active_scene : Cutscene_screen.t option ref = ref None
+
 let () =
   Random.self_init ();
   let shot = ref "" and open_city_flag = ref false
   and itemgame_flag = ref false and settings_flag = ref false
-  and lang = ref (-1) and fresh_flag = ref false in
+  and lang = ref (-1) and fresh_flag = ref false
+  and menu_flag = ref false and intro_flag = ref false
+  and scene_arg = ref "" in
   Arg.parse
     [ ( "--shot",
         Arg.Set_string shot,
@@ -1561,9 +1586,18 @@ let () =
         "boot in language 0..4 (English..Italian), for --shot" );
       ( "--fresh",
         Arg.Set fresh_flag,
-        "start a new hero even when pq_save.json exists (the Continue boot loads it by default)" ) ]
+        "skip the intro and menu and start a new hero" );
+      ( "--menu",
+        Arg.Set menu_flag,
+        "land on the main menu (for --shot)" );
+      ( "--intro",
+        Arg.Set intro_flag,
+        "land on the boot intro (for --shot)" );
+      ( "--scene",
+        Arg.Set_string scene_arg,
+        "play the named cutscene instead of the boot logo (for --shot)" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N] [--fresh]";
+    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N] [--fresh] [--menu] [--intro] [--scene NAME]";
   (* The language sets before anything draws or any module-level table is
      read through Text_data - the whole switch is live, but a shot wants the
      boot language to be the one it photographs. Unshipped ids fall back to
@@ -1600,37 +1634,31 @@ let () =
       Printf.printf "  no font atlases in %s - run tools/extract_gfx_assets.py (no labels)\n"
         (Font.face_dir ())
   | Some _ -> ());
-  (* Continue boots from the auto-save when one is there - the original's
-     load flow behind the main menu's hero select ([MSG_LOAD]); the port has
-     no menu, so the file's presence IS the Continue, and --fresh is the
-     New Quest. A loaded hero stands at their last city; a node id that is
-     not a city falls back to the profession's start (the front only opens
-     city panels by id). A fresh hero marks dirty immediately, so the very
-     first frame writes the file Continue needs. *)
-  let hero, start_city =
-    match (if !fresh_flag then None else Campaign_autosave.load ()) with
-    | Some (p, _quests, _completed, _awards, _loc, _travel) ->
-        let sc =
-          match p.Campaign.current_city with
-          | Some cid ->
-              (try
-                 ignore (Campaign_map.city_by_id cid);
-                 cid
-               with Not_found ->
-                 p.Campaign.profession.Campaign_professions.start_city)
-          | None -> p.Campaign.profession.Campaign_professions.start_city
-        in
-        Printf.printf "  continued from %s: %s (level %d, %d gold)\n"
-          Campaign_autosave.filename p.Campaign.name p.Campaign.level
-          p.Campaign.gold;
-        flush stdout;
-        (p, sc)
-    | None ->
-        let start = Campaign.create_player "Hero" "PWAR" 0 1 in
-        let sc = start.Campaign.profession.Campaign_professions.start_city in
-        let p = { start with Campaign.current_city = Some sc } in
-        Campaign.mark_dirty ();
-        (p, sc)
+  (* A new hero at their profession's start city - what New Quest and every
+     dev flag build. The placeholder below (the menu path) is NOT marked
+     dirty: until a menu action starts a game, nothing may pump it, or a
+     placeholder frame would overwrite the save Continue points at. *)
+  let fresh_hero () =
+    let start = Campaign.create_player "Hero" "PWAR" 0 1 in
+    let sc = start.Campaign.profession.Campaign_professions.start_city in
+    ({ start with Campaign.current_city = Some sc }, sc)
+  in
+  let to_play =
+    (!shot <> "" || !open_city_flag || !itemgame_flag || !settings_flag
+    || !fresh_flag)
+    && not !menu_flag && not !intro_flag && !scene_arg = ""
+  in
+  let shell_start =
+    if to_play then Play else if !menu_flag then Menu else Intro
+  in
+  shell := shell_start;
+  let hero, start_city = fresh_hero () in
+  let hero =
+    if to_play then begin
+      Campaign.mark_dirty ();
+      hero
+    end
+    else hero
   in
   let system = Font_layout.metrics_of_tag "font_system" in
   let ui =
@@ -1686,6 +1714,257 @@ let () =
     | None -> ()
     | Some cv -> cv.tab <- Settings
   end;
+  (* The menu's ground: img_mainmenufx is a UserGraphic behind a Lua
+     callback (callback_mainmenufx) the port has no native for, so the
+     standard backdrop stands in (port.cutscene_shell) - darkened so the
+     gold labels read over any art. *)
+  let menu_bg =
+    Conv_window.load_conv_image "Assets/Skin/Skin_Backdrop_Standard.jpg"
+  in
+  (* Push [sc] over whatever stage is next; the player ends the stage. *)
+  let play_scene (label : string) (sc : Cutscene_data.scene)
+      (resume : shell) : unit =
+    let n_cues =
+      let lang = !Text_data.language in
+      if lang >= 0 && lang < Array.length sc.Cutscene_data.cues then
+        Array.length sc.Cutscene_data.cues.(lang)
+      else 0
+    in
+    Printf.printf "  cutscene: %s%s (click or Esc skips)\n" label
+      (if n_cues > 0 then " with subtitles" else "");
+    flush stdout;
+    active_scene := Some (Cutscene_screen.create sc);
+    shell := Cutscene (sc, resume)
+  in
+  (* Quit runs through this ref: the menu handler fires before the loop
+     binds [running]. *)
+  let quit_requested = ref false in
+  (* Click or Esc during a scene: mark it finished - the next frame's
+     [step_shell] walks back to the stage it wrapped. A scene with no
+     player (never started) falls straight through to that stage. *)
+  let skip_stage () : unit =
+    match !active_scene with
+    | Some t -> Cutscene_screen.skip t
+    | None ->
+      shell :=
+        (match !shell with
+        | Cutscene (_, resume) -> resume
+        | Intro -> Menu
+        | other -> other)
+  in
+  (* New Quest: a fresh hero, written out immediately (the file Continue
+     needs exists before the opening cutscene's first frame), then the
+     story's opening - Chap1_Intro, which nothing in this build references
+     (no QUEST_CUTSCENE site, no exe string xref): playing it here is the
+     documented port choice, the beat the Chap2-4 sequence implies. *)
+  let start_new_game () : unit =
+    let hero, _sc = fresh_hero () in
+    ui.player <- hero;
+    ignore (Campaign_autosave.save ui.player);
+    Printf.printf "  new quest: %s at %s\n" hero.Campaign.name
+      (match hero.Campaign.current_city with
+      | Some c -> c
+      | None -> "?");
+    flush stdout;
+    match Cutscene_data.scene_of "Chap1_Intro" with
+    | Some sc -> play_scene "Chap1_Intro" sc Play
+    | None -> shell := Play
+  in
+  (* Continue Quest: the load - GAME_KNOWLEDGE_BASE's "drops you straight
+     into the game" entry. A missing or unreadable file leaves the menu up
+     with a printed reason; the button draws greyed when there is none. *)
+  let continue_game () : unit =
+    if not (Sys.file_exists Campaign_autosave.filename) then begin
+      Printf.printf "  no save at %s yet - start a New Quest first\n"
+        Campaign_autosave.filename;
+      flush stdout
+    end
+    else
+      match Campaign_autosave.load () with
+      | None ->
+        Printf.printf "  %s could not be read - starting nothing\n"
+          Campaign_autosave.filename;
+        flush stdout
+      | Some (p, _quests, _completed, _awards, _loc, _travel) ->
+        ui.player <- p;
+        Printf.printf "  continued: %s (level %d, %d gold)\n" p.Campaign.name
+          p.Campaign.level p.Campaign.gold;
+        flush stdout;
+        shell := Play
+  in
+  let menu_click (mx : int) (my : int) : unit =
+    match Main_menu_layout.button_at mx my with
+    | None -> ()
+    | Some b ->
+      (match b.Main_menu_layout.id with
+      | 21 -> start_new_game ()
+      | 22 -> continue_game ()
+      | 0 -> quit_requested := true
+      | id ->
+        (* the screens behind these exist in the original but not the port:
+           each says so rather than pretending to open. *)
+        let what =
+          match id with
+          | 1 ->
+            "the hero view (Instant Action, Create Hero, the droplist settings) is not ported"
+          | 2 | 4 -> "multiplayer is not ported"
+          | 7 -> "the Options menu is not ported - the city Settings tab carries Difficulty, Time Limit and Language"
+          | 5 | 6 -> "high scores are not ported"
+          | 10 -> "the storefront link is not ported"
+          | _ -> "not ported"
+        in
+        Printf.printf "  [%s]: %s\n" b.Main_menu_layout.label_tag what;
+        flush stdout)
+  in
+  (* One frame of any stage. The play pump rides [step]; a cutscene drains
+     Campaign's queue the moment the map would otherwise act - the Lua call
+     would have blocked there, and the queue is the port's block. *)
+  let step_shell (dt : float) : unit =
+    let dt = min dt 0.1 in
+    match !shell with
+    | Intro | Cutscene _ ->
+      (match !active_scene with
+      | Some t ->
+        Cutscene_screen.step t dt;
+        if Cutscene_screen.finished t then begin
+          active_scene := None;
+          shell :=
+            (match !shell with
+            | Cutscene (_, resume) -> resume
+            | Intro -> Menu
+            | other -> other)
+        end
+      | None ->
+        shell :=
+          (match !shell with
+          | Cutscene (_, resume) -> resume
+          | Intro -> Menu
+          | other -> other))
+    | Menu -> ()
+    | Play ->
+      step ui dt;
+      (match Campaign.take_pending_cutscene () with
+      | Some path ->
+        (match Cutscene_data.scene_of path with
+        | Some sc -> play_scene path sc Play
+        | None ->
+          Printf.printf "  cutscene missing from the data: %s\n" path;
+          flush stdout)
+      | None -> ())
+  in
+  let draw_scene ?(present = true) (t : Cutscene_screen.t) : unit =
+    let gl = ui.gl in
+    Gl.begin_frame gl;
+    let rs = ref [] in
+    solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+      (Layout.rgb 0 0 0);
+    Cutscene_screen.draw rs gl ui.fonts ui.system t;
+    Gl.submit gl !rs;
+    if present then Gl.present gl
+  in
+  let draw_menu ?(present = true) () : unit =
+    let gl = ui.gl in
+    Gl.begin_frame gl;
+    let rs = ref [] in
+    (match menu_bg with
+    | Some (tex, iw, ih) ->
+      let first =
+        Gl.push_quad ~tex_size:(iw, ih) gl
+          { Layout.x = 0; y = 0; w = window_w; h = window_h }
+          (Some { Layout.x = 0; y = 0; w = iw; h = ih })
+          (Layout.rgb 255 255 255)
+      in
+      rs :=
+        !rs
+        @ [ { Gl.first; count = 6; tex = Some tex;
+              colour = Layout.rgba 0 0 0 140; clip = None; blend = None } ]
+    | None ->
+      solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+        (Layout.rgb 18 20 28));
+    (match (ui.fonts, ui.system) with
+    | Some ff, Some m ->
+      let label ?(colour = Layout.rgb 240 210 90) (tag : string) ~(cx : int)
+          ~(y : int) : unit =
+        let s = Text_data.text tag in
+        let w = Font_layout.measure m s in
+        rs := !rs @ Font.draw gl ff m ~colour s ~x:(cx - (w / 2)) ~y
+      in
+      let ttag, tx, ty, tw, _justify = Main_menu_layout.title in
+      (* the XML centres [MAINMENU] in its own box: cx = x + w/2 *)
+      label ttag ~cx:(tx + (tw / 2)) ~y:ty;
+      List.iter
+        (fun (b : Main_menu_layout.button) ->
+          let grey =
+            b.Main_menu_layout.id = 22
+            && not (Sys.file_exists Campaign_autosave.filename)
+          in
+          solid rs gl
+            { Layout.x = b.Main_menu_layout.x; y = b.Main_menu_layout.y;
+              w = b.Main_menu_layout.w; h = b.Main_menu_layout.h }
+            (if grey then Layout.rgb 34 36 44 else Layout.rgb 44 48 60);
+          let colour =
+            if grey then Layout.rgb 120 122 132 else Layout.rgb 240 210 90
+          in
+          label ~colour b.Main_menu_layout.label_tag
+            ~cx:(b.Main_menu_layout.x + (b.Main_menu_layout.w / 2))
+            ~y:(b.Main_menu_layout.y + 17))
+        Main_menu_layout.buttons;
+      let grey_txt = Layout.rgb 150 150 160 in
+      let vtag, vx, vy, vw, vjustify = Main_menu_layout.version in
+      (* [VERSION] ships as "Version %s"; the exe carries no version
+         resource to feed it, so the port substitutes its own (kept beside
+         dune-project's version). *)
+      let subst_version s =
+        match String.index_opt s '%' with
+        | Some i
+          when i + 1 < String.length s && s.[i + 1] = 's' ->
+          String.sub s 0 i ^ "0.1.0"
+          ^ String.sub s (i + 2) (String.length s - i - 2)
+        | _ -> s
+      in
+      let vs = subst_version (Text_data.text vtag) in
+      let vx =
+        if vjustify = "left" then vx
+        else vx + (vw / 2) - (Font_layout.measure m vs / 2)
+      in
+      rs := !rs @ Font.draw gl ff m ~colour:grey_txt vs ~x:vx ~y:vy;
+      let ctag, cx0, cy0, cw0, cjustify = Main_menu_layout.copyright in
+      let cs = Text_data.text ctag in
+      let cx0 =
+        if cjustify = "center" then
+          cx0 + (cw0 / 2) - (Font_layout.measure m cs / 2)
+        else cx0
+      in
+      rs := !rs @ Font.draw gl ff m ~colour:grey_txt cs ~x:cx0 ~y:cy0
+    | _ -> ());
+    Gl.submit gl !rs;
+    if present then Gl.present gl
+  in
+  let draw_shell ?(present = true) () : unit =
+    match !shell with
+    | Play -> draw ~present ui
+    | Menu -> draw_menu ~present ()
+    | Intro | Cutscene _ ->
+      (match !active_scene with
+      | Some t -> draw_scene ~present t
+      | None -> draw ~present ui)
+  in
+  (* The intro plays unless a dev flag skipped the shell. --scene NAME
+     swaps the boot logo for any shipped cutscene, the photographing tool
+     for the chapter slides. *)
+  (match !shell with
+  | Intro ->
+    let want = if !scene_arg = "" then "Logo_ESRB_10" else !scene_arg in
+    (match Cutscene_data.scene_of want with
+    | Some sc ->
+      Printf.printf "  intro scene: %s\n" want;
+      flush stdout;
+      active_scene := Some (Cutscene_screen.create sc)
+    | None ->
+      Printf.printf "  no such scene: %s - straight to the menu\n" want;
+      flush stdout;
+      shell := Menu)
+  | _ -> ());
   Printf.printf
     "renderer: %s\n  GL: %s\n  map: %d world px at 3/8 scale, origin (%d, %d)\n"
     (Gl.renderer_name ()) (Gl.gl_version ()) Map_view.world Map_view.origin_x
@@ -1693,10 +1972,27 @@ let () =
   print_endline
     "  click a revealed node to walk there; the city's Actions tab runs quest\n  actions (their dialogue opens over the map); click the popup to fight;\n  close the window to quit";
   flush stdout;
-  (* --shot is how this front is checked without a display: one frame, the
-     same raw RGBA path the battle front photographs with. *)
+  (* --shot is how this front is checked without a display: one frame of
+     whatever stage the flags selected, the same raw RGBA path the battle
+     front photographs with. A scene gets stepped forward a second first -
+     frame zero of every slideshow is black (the descriptor's opening gap),
+     so an unadvanced shot would photograph nothing. *)
   if !shot <> "" then begin
-    draw ~present:false ui;
+    Printf.printf "  shot stage: %s\n"
+      (match !shell with
+      | Intro -> "intro"
+      | Menu -> "menu"
+      | Cutscene _ -> "cutscene"
+      | Play -> "play");
+    (match !shell with
+    | Intro | Cutscene _ ->
+      (* two seconds: past the opening gap and the chapter fade-in, so the
+         art and the first cue are both on screen *)
+      for _ = 1 to 40 do
+        step_shell 0.05
+      done
+    | _ -> ());
+    draw_shell ~present:false ();
     let px = Gl.read_frame_rgba ~width:window_w ~height:window_h in
     let oc = open_out_bin !shot in
     output_string oc (Printf.sprintf "P6\n%d %d\n255\n" window_w window_h);
@@ -1721,10 +2017,23 @@ let () =
     while Sdl.poll_event (Some ev) && !running do
       let t = E.get ev E.typ in
       if t = E.quit then running := false
-      else if t = E.mouse_button_down then
-        handle_click ui (E.get ev E.mouse_button_x)
-          (E.get ev E.mouse_button_y)
+      else if t = E.mouse_button_down then begin
+        let mx = E.get ev E.mouse_button_x in
+        let my = E.get ev E.mouse_button_y in
+        match !shell with
+        | Menu -> menu_click mx my
+        | Intro | Cutscene _ -> skip_stage ()
+        | Play -> handle_click ui mx my
+      end
+      else if t = E.key_down && E.get ev E.keyboard_keycode = 27 then
+        (* Esc skips a scene, quits from the menu (the XML hangs Quit on
+           key 27), and does nothing in play - the window close quits. *)
+        (match !shell with
+        | Menu -> quit_requested := true
+        | Intro | Cutscene _ -> skip_stage ()
+        | Play -> ())
     done;
+    if !quit_requested then running := false;
     if !running then begin
       let now = Sdl.get_ticks () in
       let dt =
@@ -1732,8 +2041,8 @@ let () =
       in
       last := now;
       (* Cap the frame: a stall must not teleport the hero across a road. *)
-      step ui (min dt 0.1);
-      draw ui;
+      step_shell dt;
+      draw_shell ();
       Sdl.delay 16l
     end
   done;

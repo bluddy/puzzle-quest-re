@@ -11,7 +11,7 @@
 ; not have to link.
 (tests
  (names test_gfx_layout test_gfx_input test_gfx_assets test_gfx_font_layout test_gfx_float_text test_gfx_sound_map test_gfx_anim test_gfx_fx
-         test_spell_fx test_gfx_map test_gfx_conv test_gfx_capture test_gfx_battle_layout test_gfx_item_game)
+         test_spell_fx test_gfx_conv test_gfx_capture test_gfx_battle_layout test_gfx_item_game test_gfx_cutscene)
   (libraries puzzle_quest_lib pq_gfx))
 
 (env

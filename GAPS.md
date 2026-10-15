@@ -127,7 +127,7 @@
 ### 12. Game Flow / Menus
 | Gap | Details |
 |-----|---------|
-| Main menu | New Game / Load Game / Options / Credits - and a finding from the auto-save round: the original's MainMenu.xml has NO hero-load button ([CONTINUE] is the VictoryMenu's; loading is the SinglePlayer flow behind [MSG_LOAD]), so the port's Continue is the save file's presence at boot, with --fresh as New Quest (`port.autosave`) |
+| Main menu | ~~landed (`port.cutscene_shell`)~~ - the shell boots Logo_ESRB_10 (the only CutScene the exe references) into a transcribed MainMenu.xml: New Quest (fresh hero + the Chap1_Intro cutscene), Continue Quest (the auto-save load, greyed without a file), Quit/Esc all live; the buttons whose screens are not ported - Single Player (the hero view), Multiplayer, Options, High Scores, Buy Now - print that honestly. What remains here: the hero view/Create Hero behind Single Player (row 12's character creation) |
 | Pause menu | Resume / Save / Load / Options / Quit - saving is automatic (the per-frame pump), so a manual Save row would be new behaviour, not a port |
 | Options | Volume, key remap, color-blind, UI scale — the OptionsMenu (OptionsMenu.xml) is still open; the Difficulty / Turn Time Limit settings that lived on the hero view landed instead as the city Settings tab (`port.settings_surface`), language as its third row (`port.languages`) |
 | Save slots | Multiple save files, metadata preview - the port writes one pq_save.json; the original holds one .pqhero per hero name under Saves\, enumerated by the SinglePlayer flow |
@@ -166,7 +166,7 @@
 | **8 ✅** | Campaign fight screens | Road, quest-stage and callback fights play on the hosted `Battle_screen` instead of running headless (`port.quest_battle_fight_screen`): the runners split into open + settle with `?human`, the map hosts the screen and feeds `complete_action` the real verdict |
 | **8 ✅** | Forge skill game | The `[FORGEITEMS_FAIL]` board off Rules_ItemGame.png: hammer-and-anvil gems, the 4/5-of-a-kind line clears, the heroic spawn, the board reset, the `[MAXRUNEITEM]` cap of 250 and the recovered target formula `clamp((difficulty-100)/55,1,21)` (`port.item_game_rules`, `forge.item_game_numbers` and `forge.item_game_defeat_clock` all recovered - the DEFEAT rule is minigame-no-moves against battle's mana burn) |
 | **8** | Equipment/item effects + mount | Stat progression depth |
-| **9** | Character creation + main menu | Polish for "game" feel |
+| **9** | Character creation + main menu | Polish for "game" feel - the main menu itself landed (`port.cutscene_shell`); what remains of this row is character creation (the hero view's Create/Delete Hero) |
 | **10** | Full graphics battle + AI overhaul | Competitive AI, visual polish |
 
 ---

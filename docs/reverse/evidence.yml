@@ -6037,3 +6037,76 @@ port_decisions:
       --fresh overwrites).
     supersedes: null
     date: 2026-10-14
+
+  - id: port.cutscene_shell
+    decision: >
+      The game shell runs as the original''s startup does: a boot intro
+      slideshow, then the main menu, then the game - a stage machine in the
+      map front (shell = Intro | Menu | Cutscene of scene * shell | Play)
+      whose cutscene stage wraps whatever is next, so the same player runs
+      both the shell''s own scenes and the story cutscenes the quest engine
+      queues. Intro is Logo_ESRB_10, the ONLY CutScene the executable
+      references; the menu is MainMenu.xml transcribed to
+      Main_menu_layout (ten buttons at the XML''s numbers, the title,
+      version and copyright strings), where New Quest starts a fresh hero,
+      writes it out, and plays Chap1_Intro over the map, Continue Quest
+      loads pq_save.json (greyed when absent), and Quit quits - the other
+      buttons print what is not ported rather than pretending. The auto
+      -save load moved out of boot into Continue, because
+      GAME_KNOWLEDGE_BASE pins New Quest and Continue Quest as the two
+      entries that "drop you straight into the game". Story cutscenes:
+      QUEST_CUTSCENE rides the extracted callback rows as a Cutscene
+      effect, apply_callback_effect queues the path, and the front pops
+      one when the map is idle - the Lua call would have blocked there.
+    rationale: >
+      The boot is FUN_004d88f0: push "CutScenes\Logo_ESRB_10.xml", play it
+      through the cutscene singleton (0x4a9bf0 / 0x4aa0d0) - called from
+      the main init at 0x4da034. The other eleven Logo_* descriptors have
+      no reference anywhere in the exe (other distributors'' builds), and
+      Chap1_Intro has NO reference either: no QUEST_CUTSCENE site in the
+      four corpus files that carry them (Q0Q8, Q1Q9, Q2Q9, Q3Q7 - each in
+      a callback body, which is where the extractor keeps them), no exe
+      string xref (0x520318 is unreferenced as an immediate). So the
+      shipped game never plays Chap1; the port plays it on New Quest as a
+      documented port choice - the opening the Chap2-4 sequence implies -
+      not as recovered behaviour. The cutscene FORMAT the port implements
+      is the shipped pair: an outer per-language descriptor (total
+      duration, viewport, subtitle anchor, voice path, timed cue lines -
+      cues and voice are the only per-language parts, so Text_data''s
+      switch moves them live) over a shared inner SlideShow (bitmaps,
+      placements inside the viewport, and Displays whose Key lists - the
+      XML attribute is "parameter" - interpolate alpha and y against the
+      display''s own start, later displays layering over earlier ones,
+      which is how Chap1''s fade-to-black sits over the pan). The
+      viewport clips every image (the 1024x630 chapter art inside
+      0,128,1024x512: without the scissor it would run under the
+      subtitles at texty=652), and the logo slides'' "black" frames are
+      image 0 placed off-screen - nothing drawn is the black the slideshow
+      comments name. Two data bugs the shots caught: the logo art ships
+      only under CutScenes/pc/ (the generator now resolves each bitmap to
+      the file that exists) and the first Key pass read "param" where the
+      XML writes "parameter", which left every fade at full opacity. The
+      five QUEST_CUTSCENE sites unescape their Lua literals (the corpus
+      writes \\ for one backslash) before the path rides the queue, and
+      scene_of normalises directories and extension at lookup. What is
+      unwired, all recorded rather than faked: img_mainmenufx is a
+      UserGraphic behind the callback_mainmenufx Lua callback the port has
+      no native for, so the menu draws the standard backdrop dimmed;
+      asset_buttwide''s art is not in the extraction, so buttons are the
+      city panel''s solid-rect treatment; the front has no audio device,
+      so snd_buttdown/buttup, snd_cutscene and the per-language voices
+      are silent; font_button is not loaded, so labels draw in the system
+      font; Version %s substitutes the port''s own 0.1.0 (the exe carries
+      no version resource); and skip-on-click-or-Esc is a port choice -
+      the original''s cutscene manager (0x4aa0d0) is opaque and the
+      descriptors carry no skip affordance. Verified by photography the
+      house way: --intro lands the ESRB slide fullscreen, --menu
+      photographs the full menu with Continue greyed over a missing save,
+      --scene Chap1_Intro at two seconds shows the pan and the English
+      cue, --lang 1 the same scene with the French cue wrapped and
+      accented - plus test_gfx_cutscene (the timeline, the lookup, the
+      cue layer in five languages, the key interpolation), the menu hit
+      tests in test_gfx_layout, and the five extraction pins and the
+      queue arm in test_callback_effects.
+    supersedes: null
+    date: 2026-10-14
