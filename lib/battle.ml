@@ -82,6 +82,16 @@ type rules = {
   difficulty : int;
   (** 0 easy, 1 normal, 2 hard - the player's Difficulty option, not a level
       band; see [Campaign.difficulty] and [Spell.difficulty_for_levels] *)
+  time_limit : int;
+  (** 0 none, 1 16 sec, 2 12 sec, 3 8 sec, 4 4 sec - the player's Turn Time
+      Limit option, the other dropdown the hero view offers beside Difficulty.
+      This is the battle-start copy of it: the engine writes the setting into
+      turn_manager+0x34 at start (Sub_44a780.c:651, in the same function that
+      copies Difficulty into CBattleManager+0x48), the turn clock's delay table
+      reads it ({0,16000,12000,8000,4000} ms, matching [TIMELIMIT0..4]), and
+      the victory spoils pay (setting x 5)% for it. The port copies it into the
+      rules for the same reason Difficulty rides here, but models no turn clock
+      yet - so nothing in the loop reads it; see Campaign.timelimit. *)
   hero_level : int;
   hero_level_cap : int;
   max_turns : int;  (** stalemate guard *)
@@ -102,6 +112,7 @@ type rules = {
 let default_rules =
   {
     difficulty = 1;
+    time_limit = 0;
     hero_level = 10;
     hero_level_cap = 20;
     max_turns = 200;

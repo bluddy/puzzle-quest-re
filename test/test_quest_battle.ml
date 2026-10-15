@@ -94,20 +94,54 @@ let fresh () = warrior 1
 let () =
   let max_rng n = if n <= 0 then 0 else n - 1 in
   let mrat = Campaign_monsters.monster_by_id "MRAT" in
-  let gs, xs = Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:1 in
+  let gs, xs =
+    Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:1
+      ~time_limit:0
+  in
   check_int "spoils: max roll at level parity is the range top" gs 60;
   check_int "spoils: xp max roll is the range top" xs 25;
-  let g0, x0 = Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:0 in
+  let g0, x0 =
+    Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:0
+      ~time_limit:0
+  in
   check_int "spoils: easy scales gold by 3/4" g0 45;
   check_int "spoils: easy scales xp by 3/4" x0 18;
-  let g2, x2 = Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:2 in
+  let g2, x2 =
+    Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:2
+      ~time_limit:0
+  in
   check_int "spoils: hard scales gold by 5/4" g2 75;
   check_int "spoils: hard scales xp by 5/4" x2 31;
   (* A hero 15 levels over a base-1 enemy is excess 12, which floors the
      gap at 1/10. *)
-  let gg, gx = Campaign.spoils_of_victory max_rng ~hero_level:15 mrat ~difficulty:1 in
+  let gg, gx =
+    Campaign.spoils_of_victory max_rng ~hero_level:15 mrat ~difficulty:1
+      ~time_limit:0
+  in
   check_int "spoils: a far-overlevel hero floors gold at 1/10" gg 6;
   check_int "spoils: a far-overlevel hero floors xp at 1/10" gx 2;
+  (* The Time Limit bonus: (setting x 5)% off the top of the Reward range,
+     paid between the gap and the Difficulty scale (FUN_0043E400's order). *)
+  let t1g, t1x =
+    Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:1
+      ~time_limit:1
+  in
+  check_int "spoils: a 16-sec clock adds 5% gold" t1g 63;
+  check_int "spoils: a 16-sec clock adds 5% xp" t1x 26;
+  let t4g, t4x =
+    Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:1
+      ~time_limit:4
+  in
+  check_int "spoils: a 4-sec clock adds 20% gold" t4g 72;
+  check_int "spoils: a 4-sec clock adds 20% xp" t4x 30;
+  (* Order: gap, then clock, then Difficulty - so the 20% lands on the raw
+     value and Easy's 3/4 then discounts the result. *)
+  let cg, cx =
+    Campaign.spoils_of_victory max_rng ~hero_level:1 mrat ~difficulty:0
+      ~time_limit:4
+  in
+  check_int "gold: a 4-sec clock then Easy" cg 54;
+  check_int "xp: a 4-sec clock then Easy" cx 22;
   ()
 
 let state_of (p : Campaign.player) qid = List.assoc_opt qid p.Campaign.active_quests

@@ -82,6 +82,7 @@ type city_tab =
   | Pets
   | Forge
   | Training
+  | Settings
 
 type city_view = {
   cid : string;
@@ -185,7 +186,8 @@ let next_tab (t : city_tab) : city_tab =
   | Companions -> Pets
   | Pets -> Forge
   | Forge -> Training
-  | Training -> Shop
+  | Training -> Settings
+  | Settings -> Shop
 
 let tab_label (t : city_tab) : string =
   match t with
@@ -197,6 +199,7 @@ let tab_label (t : city_tab) : string =
   | Pets -> Text_data.text "[PETS]"
   | Forge -> Text_data.text "[FORGEITEMS]"
   | Training -> Text_data.text "[TRAINMOUNTS]"
+  | Settings -> Text_data.text "[SETTINGS]"
 
 let open_city (ui : ui) (cid : string) : unit =
   ui.city <-
@@ -463,7 +466,30 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
                          (string_of_int ch.Campaign.seconds));
                     flush stdout
                 | None -> ()
-              end))
+              end)
+      | Settings ->
+          (* The hero view's two dropdowns (SinglePlayerMenu's drop_difficulty
+             and drop_timelimit), as cycle rows: one click advances the value
+             and wraps. A droplist widget is a port choice; the row strings and
+             the 0..2 / 0..4 clamps are the recovered parts. The settings are
+             machine-wide in the original (registry), so they live in the two
+             Campaign refs rather than in this city. *)
+          (match i with
+          | 0 ->
+              Campaign.set_difficulty ((!Campaign.difficulty + 1) mod 3);
+              Printf.printf "  %s : %s\n"
+                (Text_data.text "[DIFFICULTY]")
+                (Text_data.text
+                   (Printf.sprintf "[AILEVEL%d]" !Campaign.difficulty));
+              flush stdout
+          | 1 ->
+              Campaign.set_timelimit ((!Campaign.timelimit + 1) mod 5);
+              Printf.printf "  %s : %s\n"
+                (Text_data.text "[TIMELIMIT]")
+                (Text_data.text
+                   (Printf.sprintf "[TIMELIMIT%d]" !Campaign.timelimit));
+              flush stdout
+          | _ -> ()))
   | City_layout.Forge ->
       if cv.tab <> Forge then ()
       else (
@@ -501,7 +527,8 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
   | City_layout.Elsewhere -> (
       match cv.tab with
       | Tavern -> advance_rumor cv
-      | Shop | Spells | Actions | Companions | Pets | Forge | Training -> ())
+      | Shop | Spells | Actions | Companions | Pets | Forge | Training
+      | Settings -> ())
 
 (** The city panel: dim the map, then ShopMenu's own furniture - title,     gold line, the list at y=170, mode and Done at y=402. *)
 let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
@@ -726,6 +753,32 @@ let draw_city (rs : Gl.run list ref) (gl : Gl.context) (ui : ui)
         | None -> Text_data.text "[TRAINMOUNTS_HELP1]"
       in
       text ~colour:(Layout.rgb 150 150 160) status City_layout.row_x
+        (City_layout.row_y0
+        + (City_layout.max_rows * City_layout.row_step)
+        + 8)
+  | Settings ->
+      (* The hero view's two droplists, laid out as cycle rows on the city
+         list's own geometry: label left, the current value right in the gold
+         highlight. The values come from the same [AILEVEL*]/[TIMELIMIT*] tags
+         the original droplist rows carry; a droplist widget is a port choice
+         (recorded in port.settings_surface). *)
+      let setting_row i label value =
+        if i < City_layout.max_rows then begin
+          text label (City_layout.row_x + 30) (row_y i + 3);
+          let w = measure value in
+          text ~colour:(Layout.rgb 240 210 90) value
+            (City_layout.row_x + City_layout.row_w - w - 8) (row_y i + 3)
+        end
+      in
+      setting_row 0
+        (Text_data.text "[DIFFICULTY]")
+        (Text_data.text (Printf.sprintf "[AILEVEL%d]" !Campaign.difficulty));
+      setting_row 1
+        (Text_data.text "[TIMELIMIT]")
+        (Text_data.text (Printf.sprintf "[TIMELIMIT%d]" !Campaign.timelimit));
+      text ~colour:(Layout.rgb 150 150 160)
+        "click a row to cycle the option"
+        City_layout.row_x
         (City_layout.row_y0
         + (City_layout.max_rows * City_layout.row_step)
         + 8));
@@ -1468,7 +1521,7 @@ let step (ui : ui) (dt : float) : unit =
 let () =
   Random.self_init ();
   let shot = ref "" and open_city_flag = ref false
-  and itemgame_flag = ref false in
+  and itemgame_flag = ref false and settings_flag = ref false in
   Arg.parse
     [ ( "--shot",
         Arg.Set_string shot,
@@ -1478,9 +1531,12 @@ let () =
         "open the start city's panel on startup (for --shot)" );
       ( "--itemgame",
         Arg.Set itemgame_flag,
-        "open the forge skill game over the gifted triple (for --shot)" ) ]
+        "open the forge skill game over the gifted triple (for --shot)" );
+      ( "--settings",
+        Arg.Set settings_flag,
+        "open the city panel's Settings tab on startup (for --shot)" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE] [--city] [--itemgame]";
+    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings]";
   let gl =
     Gl.create ~title:"Puzzle Quest - world map" ~width:window_w
       ~height:window_h
@@ -1563,6 +1619,14 @@ let () =
         in
         ui.forge_game <-
           Some ("UDAG", "UCRA", "UFIR", Item_game.create ~rng:Random.int ~target ())
+  end;
+  (* --settings opens the city panel's Settings tab so --shot can photograph
+     the two dropdown rows without cycling the mode button eight times. *)
+  if !settings_flag then begin
+    open_city ui start_city;
+    match ui.city with
+    | None -> ()
+    | Some cv -> cv.tab <- Settings
   end;
   Printf.printf
     "renderer: %s\n  GL: %s\n  map: %d world px at 3/8 scale, origin (%d, %d)\n"

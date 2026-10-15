@@ -4326,6 +4326,37 @@ open_questions:
     related: [campaign.rune_forge]
     status: open
 
+  - id: score.time_limit_term
+    question: Does FUN_0043DA90's turn_manager+0x34 term read the Time Limit setting or an elapsed-turns counter - and must score.ml's `turns` field be corrected?
+    why_it_matters: >
+      The post-battle score reads turn_manager+0x34 twice - (field + 20) * 25
+      on the solo path and (field + 10) * 250 on the co-op path - and the port
+      (score.ml's `inputs.turns`, BATTLE_SCORE.md:47) labels it "Elapsed
+      turns". But three independent readers say the same field is the Time
+      Limit setting: the turn clock's delay table indexes it into exactly five
+      presets ({0,16000,12000,8000,4000} ms = [TIMELIMIT0..4], with a negative
+      custom-seconds branch), the victory spoils multiply it by 5 for a
+      percentage (0..20%), and battle start writes the configured Time Limit
+      into it in the same function that copies Difficulty into
+      CBattleManager+0x48 (Sub_44a780.c:651). Nothing ever increments it - the
+      only writes are =0, = the setting, = a negative, = a local - so it is
+      not a counter. If it is the Time Limit, the score's term is near-constant
+      (500..600 solo for a 0..4 setting) rather than growing with battle
+      length, which flips the reading of what the score rewards and makes the
+      "long fight scores high" tests exercise an impossible input.
+    would_be_settled_by:
+      - >
+        Confirming no instruction advances turn_manager+0x34 between battle
+        start and the score call (a full write-scan of the field), which pins
+        it as the Time Limit setting and makes the score's term
+        (setting + 20) * 25 - a small time-limit-shaped base, not a turn count.
+      - >
+        Whether FUN_0043DA90 is ever reached with a field value outside 0..4
+        (the delay table would read out of bounds past 4, so a live turn count
+        there would already be corrupting the clock).
+    related: [combat.turn_order]
+    status: open
+
 # --------------------------------------------------------- port decisions ----
 
 # Choices we made, not facts about the game. Kept apart so that changing our
@@ -5713,5 +5744,43 @@ port_decisions:
       and the menu's timer="on" suggest a clock the port does not model.
       [MAXRUNEITEM0/1] now have a gate behind them; the forge button opens the
       game, a win mints through forge_item, a loss prints [FORGEITEMS_FAIL].
+    supersedes: null
+    date: 2026-10-14
+
+  - id: port.settings_surface
+    decision: >
+      The Difficulty and Turn Time Limit settings live in two Campaign refs
+      (difficulty 0..2 default 1, timelimit 0..4 default 0), are copied into
+      Battle.rules at battle start (playable_rules / rules_for_battle, the
+      +0x48 and +0x34 analogue), and are changed in-game from a Settings tab
+      in the city panel whose two rows cycle on click - the hero view's
+      drop_difficulty and drop_timelimit as click-to-cycle rows, using the
+      recovered [AILEVEL0..2] and [TIMELIMIT0..4] strings. The Time Limit
+      now also pays its spoils bonus: Score.time_limit_scale ((setting x 5)%
+      after the anti-farm gap, before Difficulty) retires the "no Time Limit
+      model" term that was stuck at 0.
+    rationale: >
+      SinglePlayerMenu.xml:23-29 is where the original puts both droplists -
+      str_timelimit/drop_timelimit at (124,514)/(120,532) and
+      str_difficulty/drop_difficulty at (124,592)/(120,610) - and the settings
+      object carries them machine-wide at +0x70 (Time Limit, default 0) beside
+      +0x74 (Difficulty, default 1), written back to the registry at 0x436a34.
+      The port has neither a main menu nor a single-player hero view to host
+      them, so the city panel's tab cycle carries them instead - a port choice:
+      the settings are not per-city (they live in the Campaign refs, not
+      city_view), the tab is only the affordance. The row interaction is
+      click-to-cycle rather than a droplist widget, which matches how every
+      other city row acts (the port has no droplist); the row strings and the
+      clamps are the recovered parts. The Time Limit bonus is wired because
+      FUN_0043E400 reads turn_manager+0x34 * 5 percent off the spoils, where
+      +0x34 is this setting copied in at battle start (Sub_44a780.c:651 writes
+      it in the same function that copies Difficulty into CBattleManager+0x48,
+      and the turn clock's delay table indexes the same field with exactly the
+      five [TIMELIMIT0..4] presets plus a negative custom-seconds branch) - so
+      0/5/10/15/20% for None/16/12/8/4 sec, applied after the gap and before
+      Difficulty, the engine's own order. The turn CLOCK - the countdown on the
+      battle plates and the timeout that would make a tight limit a tradeoff
+      rather than a free bonus - is still unported, so for now the bonus is a
+      pure upside; that is the clock's gap, not the bonus's.
     supersedes: null
     date: 2026-10-14

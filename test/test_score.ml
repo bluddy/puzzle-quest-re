@@ -247,6 +247,23 @@ let () =
     (level_gap_scale ~hero_level:17 ~enemy_level:5 1000) 100;
   check_eq "gap: far above floors at 1/10 (excess 40)"
     (level_gap_scale ~hero_level:46 ~enemy_level:5 1000) 100;
+  (* FUN_0043E400's middle scale: (Time Limit setting x 5)%, paid after the
+     gap and before Difficulty. Setting 0 - the untimed row and the settings
+     default - is the identity, which is why the port read correctly while it
+     modelled no Time Limit at all. *)
+  check_eq "clock: untimed is the identity"
+    (time_limit_scale ~time_limit:0 1000) 1000;
+  check_eq "clock: 16 sec adds 5%" (time_limit_scale ~time_limit:1 1000) 1050;
+  check_eq "clock: 12 sec adds 10%" (time_limit_scale ~time_limit:2 1000) 1100;
+  check_eq "clock: 8 sec adds 15%" (time_limit_scale ~time_limit:3 1000) 1150;
+  check_eq "clock: 4 sec adds 20%" (time_limit_scale ~time_limit:4 1000) 1200;
+  check_eq "clock: the percent truncates (33 at 5% is +1)"
+    (time_limit_scale ~time_limit:1 33) 34;
+  check "clock: it rises with a tighter limit"
+    (time_limit_scale ~time_limit:0 1000
+    < time_limit_scale ~time_limit:2 1000
+    && time_limit_scale ~time_limit:2 1000
+       < time_limit_scale ~time_limit:4 1000);
   ()
 
 let () =

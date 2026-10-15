@@ -1271,16 +1271,35 @@ let open_battle ?(hero_spells = []) ?(enemy_spells = [])
    AI's spell skip, the evaluator's jitter and the results screen's scaling -
    never the hero/task gap: [Spell.difficulty_for_levels], the level-band
    helper, has no caller anywhere in the shipped corpus (quest.difficulty_
-   consumers). The port has no options screen, so the choice is this ref with
-   the settings default; three values, 0..2, as the dropdown has three rows.
-   port.difficulty_source. *)
+   consumers). The choice lives in this ref (the settings default, three values
+   0..2 as the dropdown has three rows) and the port's Settings screen sets it;
+   port.difficulty_source / port.settings_surface. *)
 let difficulty : int ref = ref 1
 
 let set_difficulty (d : int) : unit = difficulty := max 0 (min 2 d)
 
+(* The Turn Time Limit, the other dropdown the single-player hero view offers
+   beside Difficulty (SinglePlayerMenu.xml: drop_timelimit rows [TIMELIMIT0..4]
+   = None/16/12/8/4 sec, drop_difficulty rows [AILEVEL0..2]). The original keeps
+   it in the settings object at +0x70 beside Difficulty at +0x74, defaulting to 0
+   (0x43729e writes [+0x74]=1, [+0x70]=0), machine-wide in the registry like
+   Difficulty. Battle start copies it into turn_manager+0x34 (Sub_44a780.c:651,
+   the same function that copies Difficulty into CBattleManager+0x48): the turn
+   clock's delay table reads it ({0,16000,12000,8000,4000} ms, exactly
+   [TIMELIMIT0..4], with a negative value meaning custom seconds) and the victory
+   spoils pay (setting x 5)% for it - 0/5/10/15/20%. The port has no turn clock,
+   so this drives only the spoils term; the countdown on the battle plates and
+   the timeout remain open (see forge.item_game_numbers' sibling below and
+   [Battle.rules.time_limit]). Five values, 0..4, as the dropdown has five rows.
+   port.settings_surface. *)
+let timelimit : int ref = ref 0
+
+let set_timelimit (t : int) : unit = timelimit := max 0 (min 4 t)
+
 let rules_for_battle ~(player: player) : Battle.rules =
   { Battle.default_rules with
     difficulty = !difficulty;
+    time_limit = !timelimit;
     hero_level = player.level }
 
 (* The same rules with a playable front's mouse-backed choices installed in
@@ -1375,21 +1394,22 @@ let train_mount ?(rng = Random.int) (player: player) (mid: string)
 
 (* The victory spoils from FUN_0043E400: the defeated monster's carried gold
    and xp, rolled from its Reward range (mingold..maxgold, minxp..maxxp as the
-   XML loader stores them), reduced by the anti-farm level gap and scaled by
-   the Difficulty option. The engine also folds in a Time Limit bonus -
-   (turn_manager+0x34 * 5) percent, where +0x34 is the Time Limit setting
-   written once at battle start - but the port has no Time Limit model (it
-   sits beside Difficulty in the registry and is unported), so that term is 0
-   here. Paid only on a decisive victory; see the retired question
-   xp.difficulty_scaling in docs/reverse/evidence.yml. *)
+   XML loader stores them), then three scales in the engine's own order - the
+   anti-farm level gap, the Time Limit bonus ((setting x 5)%, paid for a more
+   frantic clock), and the Difficulty option's +/-25%. Paid only on a decisive
+   victory; see the retired question xp.difficulty_scaling and
+   Score.time_limit_scale in docs/reverse/evidence.yml. *)
 let spoils_of_victory (rng: int -> int) ~(hero_level: int)
-    (m: Campaign_monsters.monster) ~(difficulty: int) : int * int =
+    (m: Campaign_monsters.monster) ~(difficulty: int) ~(time_limit: int)
+    : int * int =
   let roll lo hi = if hi <= lo then lo else rng (hi - lo + 1) + lo in
   let gold = roll m.Campaign_monsters.mingold m.Campaign_monsters.maxgold in
   let xp = roll m.Campaign_monsters.minxp m.Campaign_monsters.maxxp in
   let enemy_level = m.Campaign_monsters.level_base in
   let gold = Score.level_gap_scale ~hero_level ~enemy_level gold in
   let xp = Score.level_gap_scale ~hero_level ~enemy_level xp in
+  let gold = Score.time_limit_scale ~time_limit gold in
+  let xp = Score.time_limit_scale ~time_limit xp in
   (Score.compute_victory_spoils ~game_mode:0 ~difficulty gold,
    Score.compute_victory_spoils ~game_mode:0 ~difficulty xp)
 
@@ -1409,11 +1429,16 @@ let process_battle_result (player: player) (enc: encounter) (battle: battle) : p
       (try Some (Campaign_monsters.monster_by_sprite enc.sprite) with Not_found -> None)
     else None
   in
-  (* a decisive win also pays the spoils of the defeated monster *)
+  (* a decisive win also pays the spoils of the defeated monster, reading the
+     two settings off the battle the engine copied them into at start (the
+     +0x48 / +0x34 analogue) rather than the live refs *)
   let spoils =
     if player_won then
       match monster with
-      | Some m -> spoils_of_victory battle.rng ~hero_level:player.level m ~difficulty:!difficulty
+      | Some m ->
+        spoils_of_victory battle.rng ~hero_level:player.level m
+          ~difficulty:battle.Battle.rules.difficulty
+          ~time_limit:battle.Battle.rules.time_limit
       | None -> (0, 0)
     else (0, 0)
   in
@@ -1790,7 +1815,9 @@ let quest_battle_settle ?capture ?monster (player: player) (qid: string)
         | Some mid ->
           (try
              let m = Campaign_monsters.monster_by_id mid in
-             spoils_of_victory b.rng ~hero_level:player.level m ~difficulty:!difficulty
+             spoils_of_victory b.rng ~hero_level:player.level m
+               ~difficulty:b.Battle.rules.difficulty
+               ~time_limit:b.Battle.rules.time_limit
            with Not_found -> (0, 0))
         | None -> (0, 0)
       in

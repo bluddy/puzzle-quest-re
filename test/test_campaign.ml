@@ -697,6 +697,24 @@ let () =
     (Campaign.rules_for_battle ~player:hero_level30).Battle.hero_level
     30;
 
+  (* The Turn Time Limit is the hero view's other dropdown, right beside
+     Difficulty. The settings object defaults it to 0 (untimed), battle start
+     copies it into turn_manager+0x34, the turn clock's delay table indexes it
+     and the spoils pay (setting x 5)% for it. Five rows, [TIMELIMIT0..4]. *)
+  let clock () =
+    (Campaign.rules_for_battle ~player:hero_level30).Battle.time_limit
+  in
+  check_int "the Time Limit starts untimed" !Campaign.timelimit 0;
+  check_int "and an untimed fight carries 0" (clock ()) 0;
+  Campaign.set_timelimit 3;
+  check_int "a hectic clock runs the fights at 3" (clock ()) 3;
+  Campaign.set_timelimit 9;
+  check_int "the dropdown has five rows" !Campaign.timelimit 4;
+  Campaign.set_timelimit (-4);
+  check_int "and does not fall off the bottom" !Campaign.timelimit 0;
+  Campaign.set_timelimit 2;
+  check_int "a Hurried clock runs the fights at 2" (clock ()) 2;
+
   let road =
     { Campaign_encounters.id = "EXXX";
       description = "test";
@@ -714,6 +732,10 @@ let () =
     b.Battle.rules.Battle.difficulty 1;
   check_int "and carries the hero's level for the evaluator"
     b.Battle.rules.Battle.hero_level 30;
+  check_int "and the chosen Turn Time Limit (the +0x34 battle copy)"
+    b.Battle.rules.Battle.time_limit 2;
+  Campaign.set_timelimit 0;
+  check_int "reset to untimed for the tests that follow" !Campaign.timelimit 0;
   check "the road monster brings its registry spell roster"
     (List.exists (fun (s : Spell.spell) -> s.Spell.id = "SWMG")
        b.Battle.enemy_spells);

@@ -112,6 +112,26 @@ let level_gap_scale ~hero_level ~enemy_level n =
     let factor = if excess > 9 then 1 else 10 - excess in
     (n * factor) / 10
 
+(** The Time Limit bonus from [FUN_0043E400], the middle of its three spoils
+    scales (applied after the anti-farm gap, before the Difficulty scale).
+
+    The engine reads `turn_manager+0x34 * 5` percent - where +0x34 is the Turn
+    Time Limit setting written once at battle start (0 none, 1 16 sec, 2 12 sec,
+    3 8 sec, 4 4 sec, the [TIMELIMIT0..4] rows), corroborated three ways: the
+    turn clock's delay table indexes the same field with exactly those five
+    presets ({0,16000,12000,8000,4000} ms) and a negative custom-seconds
+    branch, battle start copies it in beside Difficulty (Sub_44a780.c:651), and
+    nothing ever increments it, so it is not a turn counter. So the bonus is
+    0/5/10/15/20% - a more frantic clock pays more, which is the risk/reward
+    the Time Limit option trades on.
+
+    At setting 0 (the default, the untimed row) the term is `n * 0 / 100 + n` =
+    unchanged, which is why the port was already correct while it modelled no
+    Time Limit. The port still runs no turn clock, so the downside half of the
+    trade (being timed out) is not modelled yet - see [Campaign.timelimit]. *)
+let time_limit_scale ~time_limit n =
+  n + ((n * time_limit * 5) / 100)
+
 (** [FUN_0043E400]'s difficulty scaling, applied to one of its two
     out-parameters (gold or xp).
 
