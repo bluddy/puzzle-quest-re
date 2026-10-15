@@ -85,22 +85,33 @@ let swap (ax, ay) (bx, by) : Board.swap =
     Board.to_pos = { Board.x = bx; y = by } }
 
 (* ------------------------------------------------------------------ *)
-(* The recovered numbers and the port choices                          *)
+(* The recovered numbers and the remaining port choices                *)
 (* ------------------------------------------------------------------ *)
 
 let () =
   check_int "heroic effort is the recovered cascade depth" Item_game.heroic_depth 5;
   check_int "a board carries four hammers (port choice)"
     Item_game.hammers_per_board 4;
-  check_int "band 0 asks 3 points (port choice)"
-    (Item_game.target_for_band 0) 3;
-  check_int "band 1 asks 5" (Item_game.target_for_band 1) 5;
-  check_int "the gifted triple's band asks 5"
-    (Item_game.target_for_band (Campaign.forge_band 100)) 5;
-  check_int "band 9 fills the 21-icon meter exactly"
-    (Item_game.target_for_band 9) 21;
-  check_int "and the band clamps past Godlike"
-    (Item_game.target_for_band 99) 21;
+  (* The target, recovered from FUN_0041e550: clamp((difficulty - 100) / 55,
+     1, 21) - the magic multiply resolves to division by 55 and the clamp is
+     the meter's 21 icons. *)
+  check_int "the gifted triple (difficulty 100) asks for 1 point"
+    (Item_game.target_for_difficulty 100) 1;
+  check_int "difficulty 155 is one 55-step up" (Item_game.target_for_difficulty 155) 1;
+  check_int "difficulty 156 still truncates to 1" (Item_game.target_for_difficulty 156) 1;
+  check_int "difficulty 210 is two steps" (Item_game.target_for_difficulty 210) 2;
+  check_int "a shipped maximum (600) asks for 9"
+    (Item_game.target_for_difficulty 600) 9;
+  check_int "difficulty 1255 fills the 21-icon meter"
+    (Item_game.target_for_difficulty 1255) 21;
+  check_int "and past it clamps at the meter's ceiling"
+    (Item_game.target_for_difficulty 1310) 21;
+  check_int "below the easiest triple clamps up to 1"
+    (Item_game.target_for_difficulty 50) 1;
+  check "the target rises with the difficulty"
+    (Item_game.target_for_difficulty 100 < Item_game.target_for_difficulty 300
+    && Item_game.target_for_difficulty 300
+       < Item_game.target_for_difficulty 600);
   ()
 
 (* ------------------------------------------------------------------ *)

@@ -4291,40 +4291,76 @@ open_questions:
       wrong sound or none. board.gem_ids carries the corrected table.
 
   - id: forge.item_game_numbers
-    question: What are the forge skill game's target-points formula, its [MAXRUNEITEM] count, and the clipped half of its DEFEAT rule?
+    question: What are the forge skill game's target-points formula and its [MAXRUNEITEM] count?
     why_it_matters: >
-      The skill game's whole rule set is on the shipped Rules_ItemGame.png and
-      the screen geometry is in ItemGameMenu.xml, so the mechanics are
-      recovered and the port implements them (port.item_game_rules). But three
-      numbers the game cannot run without are not on any asset: how many points
-      a band asks (the ten [FORGEITEMS_TARGET*] Easy..Godlike labels are the
-      targets, but the points behind each), how many rune items the
-      [MAXRUNEITEM] cap allows, and the second half of "You lose if there are
-      no moves left & ..." which the 128x512 art clips. The menu carries
-      timer="on" and the img_timer_0..5 hourglass is registered but undrawn, so
-      the clipped defeat is almost certainly a clock - meaning the game may
-      also need a time limit the port does not model. Getting these wrong makes
-      the hardest forges trivially easy or impossibly hard, and leaves the
-      [AILEVEL]-style difficulty ladder on the item side unfaithful.
+      The skill game's rule set is on the shipped Rules_ItemGame.png and its
+      screen geometry in ItemGameMenu.xml, but the two numbers the game runs
+      on - how many points a forge asks for, and how many rune items the
+      [MAXRUNEITEM] cap allows - are not on any asset. The port chose
+      placeholders (a band-derived target, a cap of 10), which would make the
+      hardest forges trivially easy and the cap unreachable in practice.
     would_be_settled_by:
       - >
-        The exe's target computation: the cItemGameMenu class (RTTI name at
-        VA 0x57A634) reads the forge difficulty and produces the point goal
-        the 21 icon_point cells light toward. The image's type descriptors
-        live in .data with a shared type_info vftable (0x55E404) and their
-        COL/CHD/BCD chain in .rdata is orphaned - no vtable references any
-        COL - and the item-game logic answers no identifying strings (no
-        "Hammer", "Anvil", "ITEMGAME" or ".xml" anywhere), so the path in is
-        the class's methods rather than a string xref.
+        The exe's target computation and its inventory-size test - the
+        [ITEMGAME] screen's own setup and the [MAXRUNEITEM0]/[MAXRUNEITEM1]
+        message's code are the surfaces; the numbers feeding them are the
+        answers. The wide strings are UTF-16 (an ASCII grep misses them), so
+        the path in is a UTF-16 xref rather than the orphaned cItemGameMenu
+        RTTI chain.
+    related: [campaign.rune_forge]
+    status: recovered
+    resolution: >
+      Both recovered from UTF-16 string xrefs (the earlier "no identifying
+      strings" finding was an ASCII-only grep - the game stores text wide).
+      The target is clamp((difficulty - 100) / 55, 1, 21): FUN_0041e550, the
+      [ITEMGAME] setup (whose title/help pushes are [ITEMGAME]/[ITEMGAME_HELP]
+      at 0x51DFEC/0x51E004), takes the argument, does the magic-multiply
+      (imul 0x94F2095; sar edx,1) which resolves to truncating division by 55,
+      clamps the result to [1, 21] - the meter's 21 icon_point cells - and
+      stores it at 0x5815F4. So the gifted triple (difficulty 100) asks for one
+      point and a shipped maximum near 600 asks for nine; the ten
+      [FORGEITEMS_TARGET*] band labels are a separate display (the port keeps
+      forge_band for the status line) and the POINTS come from this formula.
+      The cap is 250: the [MAXRUNEITEM0/1] code (refs at RVA 0x7877/0x786A)
+      loops the inventory counting the items whose lua_object starts with 'J'
+      (the JXXX rune scripts) and does `cmp [count], 0xfa; jl <proceed>` - so
+      the forge makes its 250th and refuses the 251st. Item_game's
+      target_for_difficulty and Campaign.rune_item_cap are corrected from the
+      port choices; the third item in the original question - the clipped
+      second half of the DEFEAT rule - stays open as forge.item_game_defeat_clock.
+
+  - id: forge.item_game_defeat_clock
+    question: What is the second half of the skill game's DEFEAT rule - does the clipped "You lose if there are no moves left & ..." end with a clock, or is no-moves the whole condition?
+    why_it_matters: >
+      The shipped English Rules_ItemGame.png clips the DEFEAT line at "&", and
+      ItemGameMenu.xml carries timer="on" with the img_timer_0..5 hourglasses
+      registered but undrawn (evidence says they belong to the timed
+      minigames - this is one). That points at a second, clock-based defeat
+      condition the port does not model. But ALL FOUR complete translations
+      cut the other way: French "s'il n'y a plus de déplacement possible",
+      German "wenn kein Zug mehr möglich ist", Italian "quando non ti restano
+      più mosse", Spanish "si no quedan movimientos" - each just "no possible
+      move is left", no second clause. So four complete readings say the rule
+      is no-moves-only and the English "&" (clipped, in the source language)
+      is the sole hint of anything more; it may be a translation artifact
+      rather than a dropped condition, and the port's no-moves-only defeat may
+      already be the whole rule - with timer="on" then belonging to the menu's
+      chrome rather than a rule. Getting this wrong either ships a missing
+      clock or invents one the game does not have.
+    would_be_settled_by:
       - >
-        The [MAXRUNEITEM] count, wherever the inventory-size test lives - the
-        message pair [MAXRUNEITEM0]/[MAXRUNEITEM1] is the surface, the number
-        feeding it is the answer.
+        The un-clipped English line (the source string behind the art, or a
+        wider rendering of Rules_ItemGame.png) - if it ends at "left" the
+        rule is settled as no-moves; if it continues, the continuation names
+        the second condition.
       - >
-        The uncut Rules_ItemGame text or the DEFEAT branch in the code, which
-        would confirm the timer reading and give the time limit.
+        The item game's frame function reading a deadline off the menu's
+        timer="on" state - the same turn-clock shape (FUN_00464C30's
+        remaining = deadline - now) pointed at the item game's board, which
+        would confirm a clock exists whether or not the text says so.
     related: [campaign.rune_forge]
     status: open
+
 
   - id: score.time_limit_term
     question: Does FUN_0043DA90's turn_manager+0x34 term read the Time Limit setting or an elapsed-turns counter - and must score.ml's `turns` field be corrected?
@@ -5732,11 +5768,12 @@ port_decisions:
       its own row or column, a run of 5 also destroys every gem of its type, a
       cascade of 5+ (the recovered heroic threshold) spawns a random hammer,
       any destruction resets the board, and a board with no legal move is
-      defeat. The ten [FORGEITEMS_TARGET*] bands become point targets via
-      target_for_band (3+2xband, so Godlike fills the 21-icon meter exactly),
-      a board carries four hammers, the [MAXRUNEITEM] cap is 10 minted items,
-      and forging is refused outright at the cap. Board.gem gains a Hammer
-      variant the battle never spawns.
+      defeat. The target points come from the recovered
+      target_for_difficulty (clamp((difficulty-100)/55, 1, 21) - see
+      forge.item_game_numbers), a board carries four hammers, the
+      [MAXRUNEITEM] cap is the recovered 250 minted items, and forging is
+      refused outright at the cap. Board.gem gains a Hammer variant the battle
+      never spawns.
     rationale: >
       English/Rules_ItemGame.png states the whole mechanic set - "4-OF-A-KIND:
       Destroys a row or column", "5-OF-A-KIND: Destroys all gems of matching
@@ -5750,17 +5787,14 @@ port_decisions:
       cascade. The Hammer is a distinct Board.gem so the shared match engine
       carries it; it matches only hammers (the one hammer rule), harvests
       nothing in a battle, and the AI's id table maps it to 16 past the
-      wildcard band. The mechanics are recovered; the NUMBERS are choices,
-      recorded in forge.item_game_numbers because the exe answers no item-game
-      strings, its RTTI chain is orphaned, and no Lua touches forging: the
-      3+2xband target fills the meter's 21 icons at Godlike and gives the
-      gifted triple a forgiving 5, four hammers a board is enough to threaten
-      without crowding the 4/5 extras, and 10 is a round rune-item cap well
-      above what one quest's runes can mint. The reset-after-any-destruction
-      reading follows [ITEMGAMEMENU_TEXT]'s literal "Each time one or more of
-      them are destroyed" rather than the looser "all of them" gloss, and the
-      clipped DEFEAT line is implemented as no-moves only - the trailing "&"
-      and the menu's timer="on" suggest a clock the port does not model.
+      wildcard band. The MECHANICS are recovered; of the numbers, the target
+      and the cap are now recovered from the exe too (the UTF-16 xref path -
+      target_for_difficulty and rune_item_cap, see forge.item_game_numbers),
+      while [hammers_per_board] (four) and the reset-after-any-destruction
+      reading - [ITEMGAMEMENU_TEXT]'s literal "Each time one or more of them
+      are destroyed" rather than the looser "all of them" gloss - remain port
+      choices, and the clipped DEFEAT line is implemented as no-moves only
+      (forge.item_game_defeat_clock keeps the trailing "&" open).
       [MAXRUNEITEM0/1] now have a gate behind them; the forge button opens the
       game, a win mints through forge_item, a loss prints [FORGEITEMS_FAIL].
     supersedes: null

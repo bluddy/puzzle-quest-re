@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-14  
 **Branch:** master (clean-room OCaml port)  
-**Sync:** working tree (the score-term correction round; on top of the committed turn-clock round `5b8d7a9`). `score.time_limit_term` - the open question the settings round left about what FUN_0043DA90's turn_manager+0x34 term really is - closed as recovered: the field is the Time Limit setting (0..4), not an elapsed-turns counter, and the score is corrected. The settle was the write-scan the question asked for: the only writes to +0x34 are =0 (battle setup), = the configured setting (Sub_44a780.c:651, beside the Difficulty copy), = a negative custom-seconds value and = a local - nothing ever advances it, so it is not a counter; and a live turn count would drive the delay table (exactly five entries) out of bounds after turn four, which nothing reports. So the score's (field + 20) * 25 / (field + 10) * 250 terms read the Time Limit - a small near-constant base (500..600 solo for a 0..4 setting) - and the score varies through the health terms and the co-op loop, not battle length. The correction is a pure rename: score.ml's `inputs.turns` becomes `inputs.time_limit` with the recovered meaning documented, the formula arithmetic is unchanged so every test expectation stands (the wider values 20/50/500 in test_score pin the formula and its 50000 clamp, noted as beyond a live fight's 0..4), and BATTLE_SCORE.md:47's "Elapsed turns" High-confidence row - which had contradicted the spoils' own Time Limit reading inside the same document - is replaced with the settled meaning plus the three corroborations. The corollary interpretation is corrected too: the solo path no longer reads as "a fight that runs long is worth far more" (it never did - the term is near-constant), so what the score rewards is spelled out. Known Gap 11 closes fully (settings + clock + score term, three rounds). 35 suites, 2849 checks, all green.
+**Sync:** working tree (the forge-numbers round; on top of the committed score-correction round `22a9ee8`). `forge.item_game_numbers` - the open question the forge round left about the skill game's two unported numbers - recovered, both of them, off UTF-16 string xrefs (the earlier "the exe answers no identifying strings" finding was an ASCII-only grep: the game stores its text wide, so "ItemGameMenu", "[MAXRUNEITEM0]", "[FORGEITEMS_FAIL]" and the rest are all findable as UTF-16LE). The TARGET FORMULA: FUN_0041e550 - the [ITEMGAME] screen's own setup, whose title/help pushes are [ITEMGAME]/[ITEMGAME_HELP] at 0x51DFEC/0x51E004 - takes the forge difficulty, runs the magic-multiply idiom (imul 0x94F2095; sar edx,1) which simulates to a truncating division by 55, clamps the result to [1, 21] (the meter's 21 icon_point cells) and stores it at 0x5815F4: so `target = clamp((difficulty - 100) / 55, 1, 21)`. The gifted triple (difficulty 100) asks for 1 point, a shipped maximum near 600 asks for 9, and the 21 ceiling only binds beyond the registry - the port's band-derived 3+2xband target (which asked 5 for the gifted triple and 21 for Godlike) was far too hard. The CAP: the [MAXRUNEITEM0/1] code (refs at RVA 0x7877/0x786A) loops the inventory counting the items whose lua_object starts with 'J' (the JXXX rune scripts) and does `cmp [count], 0xfa; jl <proceed>` - refuse at >= 250 - so the cap is 250, not the port's chosen 10 (reachable but arbitrary). The port corrects both: `Item_game.target_for_band` becomes `target_for_difficulty` with the recovered formula, `Campaign.rune_item_cap` 10 -> 250, and the Forge tab feeds the game from the spec's difficulty directly rather than through the band (forge_band stays, for the [FORGEITEMS_TARGET*] status line). The THIRD item in the original question - the clipped second half of the DEFEAT rule - is opened as `forge.item_game_defeat_clock`, and the four complete translations sharpen it: French, German, Italian and Spanish each read the DEFEAT line whole as "no possible moves remain" with no second clause, cutting against the English art's clipped "&" and the menu's timer="on" - so the clock is doubtful and the port's no-moves-only defeat may already be the whole rule. Evidence 103 claims / 15 questions (1 open) / 55 decisions; 35 suites, 2849->2854 checks, all green.
 
 ---
 
@@ -11,6 +11,8 @@
 The campaign/quest engine has no known unported mechanic left: 142 quests run their full chains, every extracted guard type is honoured, the item corpus is ported as far as it can honestly be (131 of the 133 hook declarations), all four follow-ons from it are closed (every path crediting mana, the turn loop spending `Missed`, the effective-skill query, the `ADD_TEMP_SKILL` ceiling/life moves), the mana ceiling is recovered rather than chosen, the map's visibility model is complete, and the difficulty that steers every fight is now the player's option rather than an invented level band. The two big UI rounds from this list - the quest-battle fight screens and the forge skill game - are both closed; what remains is a few sharpening threads (the settings surface for Difficulty/Time Limit, mount training/avoidance, languages, enemy variety), tracked in the milestones below.
 
 ### Closed rounds from this list
+
+- ~~Forge numbers~~ (landed 2026-10-14): `forge.item_game_numbers` retired - both numbers recovered off UTF-16 string xrefs (the "no identifying strings" finding was an ASCII-only grep; the game stores text wide). The target formula is `clamp((difficulty − 100) / 55, 1, 21)` (`FUN_0041e550`, the `[ITEMGAME]` setup; the magic multiply simulates to ÷55, the clamp is the meter's 21 icons), so the gifted triple asks for 1 point and a shipped max ~600 asks for 9 - the port's band-derived 3+2xband was far too hard. The `[MAXRUNEITEM]` cap is 250 (the message's own code counts the JXXX items and refuses at `0xfa`), not the port's chosen 10. `target_for_band` → `target_for_difficulty`, `rune_item_cap` → 250. The third item - the clipped DEFEAT clock - opens as `forge.item_game_defeat_clock`, sharpened by all four complete translations reading DEFEAT as "no moves remain" only. `port.item_game_rules` updated; 2854 checks green.
 
 - ~~Score term correction~~ (landed 2026-10-14): `score.time_limit_term` retired - the score's `turn_manager+0x34` term is the Time Limit setting (0..4), not elapsed turns. The write-scan the question asked for found only `=0`, `= the setting`, `= a negative` and `= a local` writes - nothing advances it - and a live turn count would drive the five-entry delay table out of bounds after turn four, unreported. The score's `(field+20)*25`/`(field+10)*250` terms are therefore a small near-constant base (500..600 solo), and what the score varies on is the health terms and the co-op loop, not battle length. The correction is a pure rename - `inputs.turns` → `inputs.time_limit`, formula unchanged so every test expectation stands, `BATTLE_SCORE.md:47`'s wrong "Elapsed turns / High" row replaced and the "long fight scores high" reading dropped. Known Gap 11 closes fully; 2849 checks green.
 
@@ -370,7 +372,7 @@ graphics) - 601
   message queue and the OnEnd box), and companion equip (roster vs party,
   the four refusals, the home gate, the hook following the party, the save
    keeping the roster separate). (These seven are a subset of the 35 suites'
-   ~2849 checks - the whole campaign-side surface, not the full run.)
+   ~2854 checks - the whole campaign-side surface, not the full run.)
 - **Demo:** `bin/campaign_demo.exe` runs new game → map → roads → encounters → battle →
   quest accept (prints reveals) → a real quest battle through `run_quest_battle`
   (turns, life, winner, spoils, stage) → turn-in when the stage advanced → shop →
@@ -382,7 +384,7 @@ graphics) - 601
 
 | File | Claims | Questions | Decisions |
 |------|--------|-----------|-----------|
-| `docs/reverse/evidence.yml` | 103 | 14 (1 open) | 55 |
+| `docs/reverse/evidence.yml` | 103 | 15 (1 open) | 55 |
 
 There are no open questions: the last one, `xp.difficulty_scaling`, was retired
 this round (see the Closed bullet). Questions carry `related`,
@@ -463,8 +465,8 @@ PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_map_gfx.exe
 PQ_GFX_ASSETS=assets/gfx opam exec -- dune exec bin/pq_conv_gfx.exe -- --conv Q0I2a --shot
 ```
 
-All 35 suites pass (exit 0, ~2849 checks, 2026-10-14). The check count is
-~2849 and moves by one between runs when a suite prints a variable count, so
+All 35 suites pass (exit 0, ~2854 checks, 2026-10-14). The check count is
+~2854 and moves by one between runs when a suite prints a variable count, so
 read `dune runtest`'s exit code (0 = green), not the number. Extractor
 `--check` modes validate against source assets.
 

@@ -511,8 +511,7 @@ let handle_city_click (ui : ui) (cv : city_view) (mx : int) (my : int) : unit =
                   flush stdout
               | Some spec ->
                   let target =
-                    Item_game.target_for_band
-                      (Campaign.forge_band spec.Campaign.difficulty)
+                    Item_game.target_for_difficulty spec.Campaign.difficulty
                   in
                   ui.forge_game <-
                     Some (b, m, w, Item_game.create ~rng:Random.int ~target ());
@@ -1613,9 +1612,8 @@ let () =
               ~power:"UFIR"
           with
           | Some spec ->
-              Item_game.target_for_band
-                (Campaign.forge_band spec.Campaign.difficulty)
-          | None -> 5
+              Item_game.target_for_difficulty spec.Campaign.difficulty
+          | None -> 1
         in
         ui.forge_game <-
           Some ("UDAG", "UCRA", "UFIR", Item_game.create ~rng:Random.int ~target ())

@@ -21,14 +21,15 @@
    shared engine (wildcard spawns off - no wildcard rule appears in the item
    game's rules), and the 4/5 extras clear lines off the run's own axis.
 
-   Three numbers are NOT recovered - the exe answers no strings, its RTTI is
-   orphaned, and no Lua touches forging - so they are port choices, recorded
-   in port.item_game_rules: [hammers_per_board], [target_for_band] (the ten
-   Easy..Godlike bands become targets; the meter's 21 icons fix the ceiling,
-   so band b asks 3+2b points and Godlike fills it exactly), and the
-   reset-after-every-destruction reading of SPECIAL, which is the literal
-   [ITEMGAMEMENU_TEXT] ("Each time one or more of them are destroyed, the
-   board will reset") rather than the looser "all of them" gloss. *)
+   The target formula and the [MAXRUNEITEM] count are recovered from the exe
+   (forge.item_game_numbers): [target_for_difficulty] is
+   clamp((difficulty - 100) / 55, 1, 21) - FUN_0041e550, the [ITEMGAME]
+   screen's own setup, which clamps the result to the meter's 21 icons - and
+   the cap is 250. What is NOT recovered is [hammers_per_board], the
+   reset-after-every-destruction reading of SPECIAL (the literal
+   [ITEMGAMEMENU_TEXT], "Each time one or more of them are destroyed, the
+   board will reset", rather than the looser "all of them" gloss), and the
+   clipped second half of the DEFEAT rule - recorded in forge.item_game_numbers. *)
 
 open Board
 
@@ -53,11 +54,20 @@ let heroic_depth = 5
     says, and a board full of them would make the 4/5 extras pointless. *)
 let hammers_per_board = 4
 
-(** The ten [FORGEITEMS_TARGET*] bands as point targets. Port choice: the
-    meter is 21 [icon_point] cells, so band b asks 3+2b and Godlike (band 9)
-    fills the meter exactly, while the gifted triple's band 1 asks a
-    forgiving 5. *)
-let target_for_band (band : int) : int = 3 + (2 * max 0 (min 9 band))
+(** The target points a forge asks for, recovered from [FUN_0041e550] - the
+    [ITEMGAME] screen's own setup function, which takes the forge difficulty,
+    computes `(difficulty - 100) / 55` (the magic-multiply idiom resolves to
+    division by 55) and clamps it to [1, 21], storing it where the 21-icon
+    [ITEMGAME_TARGET] meter reads it.
+
+    So the easiest triples (difficulty 100, the gifted runes) ask for one
+    point and a shipped maximum near 600 asks for nine; the 21 ceiling only
+    binds for difficulties beyond anything in the registry. The ten
+    [FORGEITEMS_TARGET*] band labels are a separate display - [Campaign]
+    still buckets difficulty into them for the status line - but the POINTS
+    come from this formula, not the band. *)
+let target_for_difficulty (difficulty : int) : int =
+  max 1 (min 21 ((difficulty - 100) / 55))
 
 let blank_board () : board =
   of_array_matrix

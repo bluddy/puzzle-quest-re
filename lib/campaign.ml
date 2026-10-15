@@ -1026,11 +1026,12 @@ let register_rune_item (id: string) (p: rune_item_params) : unit =
 (* The [MAXRUNEITEM] cap: how many minted rune items the inventory holds
    before the forge refuses ("You must sell some in the shop before creating
    any more", [MAXRUNEITEM0/1]). The count is minted ids - "R" + the triple,
-   which no fixed item's id can collide with. The NUMBER is a port choice:
-   the exe answers no strings for the item game and its RTTI is orphaned, so
-   the threshold is unrecovered (forge.item_game_numbers); 10 is a round
-   bound well above what one quest's runes can mint. *)
-let rune_item_cap = 10
+   which no fixed item's id can collide with. The NUMBER is recovered from the
+   exe: the message's own code loops the inventory counting the items whose
+   lua_object starts with 'J' (the JXXX rune scripts) and compares the tally
+   against 0xFA - `cmp [count], 0xfa; jl <proceed>`, so the 250th is the last
+   the forge will make and the 251st is refused (port.item_game_numbers). *)
+let rune_item_cap = 250
 
 let rune_item_count (p: player) : int =
   List.length
