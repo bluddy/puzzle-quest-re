@@ -41,7 +41,7 @@ REGISTRY = "Assets/Assets.xml"
 
 SHEET_RE = re.compile(r'<Bitmap\s+tag="([^"]+)"[^>]*>([^<]+)</Bitmap>')
 FRAME_RE = re.compile(r"<BitmapImage\s+([^/]*?)/>")
-SOUND_RE = re.compile(r"<Sound\s+([^>]*?)>")
+SOUND_RE = re.compile(r"<Sound\s+([^>]*?)>([^<]*)</Sound>")
 
 # Sound tags that do not follow the `snd_<stem>` -> `<Stem>.wav` rule. Each of these
 # was read off the archive rather than guessed: the four element sounds all carry
@@ -101,24 +101,39 @@ def normalise(path: str) -> str:
     return p
 
 
-def parse_sounds(z: zipfile.ZipFile, language: str) -> list[tuple[dict[str, str], str | None, str]]:
+def parse_sounds(z: zipfile.ZipFile, language: str,
+                 music_names: set[str] | None = None) -> list[tuple[dict[str, str], str | None, str]]:
     """Registry sound tags -> (attrs, resolved file or None, how it was resolved).
 
     The mapping is a convention with exceptions, so it is recorded rather than
     assumed. `snd_damage` -> `Damage.wav` is a straight stem match; the element
     and button sounds need a rename; the voices live under a per-language
-    directory with a `V` prefix; and **every music tag has no file behind it in
-    this archive at all**, which is worth knowing before anyone writes a music
-    player against the registry."""
+    directory with a `V` prefix. The music tags ship no ogg behind them in
+    Assets.zip at all - the files are loose in the game tree (game/Assets/Music/),
+    so their resolution comes from that directory's names instead, mapped to
+    `Music/<Stem>.ogg` where extract_gfx_assets parks them."""
     names = z.namelist()
     stems = {}
     for n in names:
         if n.startswith("Assets/Sounds/") and n.lower().endswith(".wav"):
             stems.setdefault(n.split("/")[-1][:-4].lower(), n)
+    music = music_names or set()
     out = []
     for m in SOUND_RE.finditer(z.read(REGISTRY).decode("utf-8")):
         a = attrs(m.group(1))
         tag = a.get("tag", "")
+        if tag.startswith("music_"):
+            # The registry's own text is the canonical path (the loose file's
+            # name is not the tag's stem: music_background0 -> Background1,
+            # music_theme -> Theme_Default). Resolve it against the loose
+            # Music/ directory extract_gfx_assets parks.
+            rel = m.group(2).strip().replace("\\", "/")
+            stem = rel.rsplit("/", 1)[-1]
+            if stem in music:
+                out.append((a, f"Music/{stem}", HOW_EXACT))
+            else:
+                out.append((a, None, HOW_ABSENT))
+            continue
         if tag in VOICE_RENAMES:
             path = f"{language}/Sounds/{VOICE_RENAMES[tag]}.wav"
             out.append((a, path if path in names else None,
@@ -312,7 +327,10 @@ def main() -> int:
     try:
         with zipfile.ZipFile(args.zip) as z:
             raw = z.read(REGISTRY).decode("utf-8")
-            sounds = parse_sounds(z, args.language)
+            music_dir = REPO / "game" / "Assets" / "Music"
+            music_names = ({p.name for p in music_dir.glob("*.ogg")}
+                           if music_dir.is_dir() else set())
+            sounds = parse_sounds(z, args.language, music_names)
     except (zipfile.BadZipFile, KeyError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

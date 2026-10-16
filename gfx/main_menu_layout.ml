@@ -36,7 +36,9 @@ let buttons : button list =
       label_tag = "[BATTLEHISCORES]" };
     { id = 6; x = 660; y = 590; w = 300; h = 50; label_tag = "[MPHISCORES]" };
     { id = 0; x = 660; y = 670; w = 300; h = 50; label_tag = "[QUIT]" };
-    { id = 10; x = 30; y = 690; w = 150; h = 50; label_tag = "[BUYNOW]" };
+    (* [BUYNOW] (id 10, bottom-left) is demo-era storefront cruft - the
+       Steam build ships it but it links nowhere a full game needs, so the
+       port drops the button (port.cutscene_shell, on review). *)
   ]
 
 (** str_title, str_version, str_copyright - the three Strings the menu

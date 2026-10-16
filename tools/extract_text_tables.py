@@ -114,6 +114,14 @@ def load(language: str) -> tuple[dict[str, str], list[str], int, int]:
         if d.is_dir():
             files.extend(sorted(d.glob("*_Text.xml")))
 
+    # The pc/ platform strings ([CLICKCONT], [MSG_AUTOSAVE], the startup
+    # errors) are the splash screen's vocabulary and ship per language; the
+    # splash reads [CLICKCONT], so they belong in the table with everything
+    # else the UI prints.
+    platform = lang_dir / "pc" / "PlatformText.xml"
+    if platform.is_file():
+        files.append(platform)
+
     table: dict[str, str] = {}
     entries = 0
     dupes: set[str] = set()

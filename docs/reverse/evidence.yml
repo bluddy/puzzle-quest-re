@@ -2563,7 +2563,7 @@ claims:
       without them every name in the game prints as a tag. tools/extract_text_tables.py
       turns game/Assets/<Lang>/*Text.xml plus the Conversations and Quests
       subdirectories into five data modules (text_data_en/fr/de/es/it) behind the
-      Text_data dispatcher: 10,425 tags each, quest step lines included (those tags
+      Text_data dispatcher: 10,448 tags each, quest step lines included (those tags
       are nowhere in the top-level tables), and Text_data.text returns the tag
       unchanged when a string is missing so a gap is visible rather than fatal. All
       454 name_text and 294 desc_text tags the campaign modules carry resolve;
@@ -2588,18 +2588,19 @@ claims:
       - lib/campaign_quests.ml
       - bin/campaign_demo.ml
     notes: >
-      7 of the 10,425 tags appear twice, six with identical values; later entries win,
+      7 of the 10,448 tags appear twice, six with identical values; later entries win,
       which is what a map built by parsing in order does. The one that differs is
       [DEMO_HERO_LIMIT], two spellings of the trial-limit message, and nothing reads
-      it. All five shipped languages carry the identical 10,425-tag set (verified by
+      it. All five shipped languages carry the identical 10,448-tag set (verified by
       the extractor's per-language counts and test_text_data's count assertions), so
       the switch is a pure table swap. Two extractor bugs the switch round fixed:
       conversations were read from English/<Language>/Conversations for every
       language (hardcoded path), and the Quests/ subdirectory was not merged at all -
       quest step lines rode only the English values baked into campaign_quests.ml.
-      pc/PlatformText.xml (the [PLATFORM]/[CLICKCONT] platform strings) ships for all
-      five languages too but no port code reads those tags, so it stays out of the
-      table.
+      pc/PlatformText.xml joined them when the splash stage started reading
+      [CLICKCONT]: the platform strings ship for all five languages and the
+      splash is their one port consumer, so the +23 tags per language ride
+      the same tables (10,448 now, not 10,425).
 
   - id: campaign.capture_eligible
     title: Capture needs a built dungeon and three wins over that same enemy
@@ -5932,7 +5933,7 @@ port_decisions:
       The port switches language live: Text_data keeps its call surface
       (text / lookup / entries, entries now a function) and dispatches it
       over five resident data modules - text_data_en/fr/de/es/it, one per
-      shipped language, 10,425 identical tags each including the Conversations
+      shipped language, 10,448 identical tags each including the Conversations
       and Quests subdirectories - selected by a session int ref holding the
       exe's recovered ids (0=English 1=French 2=German 3=Spanish 4=Italian).
       set_language clamps to those five (the exe's ids 5..9 have no table in
@@ -6041,18 +6042,30 @@ port_decisions:
   - id: port.cutscene_shell
     decision: >
       The game shell runs as the original''s startup does: a boot intro
-      slideshow, then the main menu, then the game - a stage machine in the
-      map front (shell = Intro | Menu | Cutscene of scene * shell | Play)
-      whose cutscene stage wraps whatever is next, so the same player runs
-      both the shell''s own scenes and the story cutscenes the quest engine
-      queues. Intro is Logo_ESRB_10, the ONLY CutScene the executable
-      references; the menu is MainMenu.xml transcribed to
-      Main_menu_layout (ten buttons at the XML''s numbers, the title,
-      version and copyright strings), where New Quest starts a fresh hero,
-      writes it out, and plays Chap1_Intro over the map, Continue Quest
-      loads pq_save.json (greyed when absent), and Quit quits - the other
-      buttons print what is not ported rather than pretending. The auto
-      -save load moved out of boot into Continue, because
+      slideshow, the splash screen, the main menu, then the game - a stage
+      machine in the map front (shell = Intro | Splash | Menu | Cutscene of
+      scene * shell | Play) whose cutscene stage wraps whatever is next, so
+      the same player runs both the shell''s own scenes and the story
+      cutscenes the quest engine queues. Intro is Logo_ESRB_10, the ONLY
+      CutScene the executable references; Splash is SplashMenu.xml whole
+      (img_splash full-screen, [CLICKCONT] in font_button, the full-screen
+      pad, waiting for a key - timer="off", so no auto-advance); the menu is
+      MainMenu.xml transcribed to Main_menu_layout (nine buttons - [BUYNOW]
+      dropped as demo cruft - at the XML''s numbers, title/version/copyright)
+      drawn over the shipped Skin_Backdrop_Standard at full brightness with
+      the art''s own 1024x768 source crop, the WC_Heading title, WC_Button
+      labels, the red gem plates from bmp_skin_buttmain (act idle, the
+      8-frame img_buttwide_hi electricity cycle while hovered, grey when
+      disabled), the Rays.png overlay pulsing over the staff stone, and the
+      CursorMain.png triangle as the window cursor. The front now owns an
+      Audio device: music_intro on the intro and splash, music_theme (or a
+      background loop when Theme_Default.ogg is absent) on the menu,
+      music_map on Play, switched by tag the way the original''s music
+      manager does, plus snd_buttdown on menu clicks. New Quest starts a
+      fresh hero, writes it out, and plays Chap1_Intro over the map;
+      Continue Quest loads pq_save.json (greyed when absent); Quit quits -
+      the other buttons print what is not ported rather than pretending.
+      The auto-save load moved out of boot into Continue, because
       GAME_KNOWLEDGE_BASE pins New Quest and Continue Quest as the two
       entries that "drop you straight into the game". Story cutscenes:
       QUEST_CUTSCENE rides the extracted callback rows as a Cutscene
@@ -6088,25 +6101,49 @@ port_decisions:
       XML writes "parameter", which left every fade at full opacity. The
       five QUEST_CUTSCENE sites unescape their Lua literals (the corpus
       writes \\ for one backslash) before the path rides the queue, and
-      scene_of normalises directories and extension at lookup. What is
-      unwired, all recorded rather than faked: img_mainmenufx is a
-      UserGraphic behind the callback_mainmenufx Lua callback the port has
-      no native for, so the menu draws the standard backdrop dimmed;
-      asset_buttwide''s art is not in the extraction, so buttons are the
-      city panel''s solid-rect treatment; the front has no audio device,
-      so snd_buttdown/buttup, snd_cutscene and the per-language voices
-      are silent; font_button is not loaded, so labels draw in the system
-      font; Version %s substitutes the port''s own 0.1.0 (the exe carries
-      no version resource); and skip-on-click-or-Esc is a port choice -
-      the original''s cutscene manager (0x4aa0d0) is opaque and the
-      descriptors carry no skip affordance. Verified by photography the
+      scene_of normalises directories and extension at lookup. A review
+      against the running original then closed the shell''s presentation
+      gaps, each off an XML the port had under-read: SplashMenu.xml is its
+      own stage (and [CLICKCONT] pulled pc/PlatformText.xml - the platform
+      strings, five languages, +23 tags each - into the text tables, which
+      is why they are 10,448 now); MainMenu.xml''s font attributes load the
+      WC_Button/WC_Heading atlases the registry always shipped; Assets.xml''s
+      img_buttwide_act/hi0-3/pres/gray frames and its <Animation> tag (the
+      8-frame, 100ms img_buttwide_hi electricity cycle, sequence hi0 hi1 hi2
+      hi3 hi1 hi0 hi3 hi2) drive the plates from bmp_skin_buttmain with the
+      hover animation, over img_backdrop''s own 1024x768 source crop of the
+      1024x1024 backdrop drawn undimmed; bmp_rays pulses over the staff
+      stone on a slow sine (the callback_mainmenufx Lua that rotates it has
+      no native here - that much stays a port.choice); CursorMain.png
+      builds the window cursor from an AND mask plus little-endian ARGB; and
+      the loose game/Assets/Music/*.ogg - beside the exe, in no archive -
+      reached skin_data through the registry''s own <Sound> element text
+      (Assets\Music\Intro.ogg and friends, mapped to Music/ where
+      extract_gfx_assets parks them), so Audio gained an Ogg decoder, a
+      single looping play_music swapped by stage tag, and the menu plays
+      snd_buttdown. What is still unwired, recorded rather than faked:
+      callback_mainmenufx beyond the ray pulse (its full animation is Lua
+      the port has no native for), snd_cutscene and the per-language
+      cutscene voices (extracted beside the music, but the cutscene player
+      does not speak yet), the registry''s music fade (fade="2" - tracks
+      swap hard), Theme_Default.ogg (the one track the loose directory does
+      not carry, so the menu falls back to a background loop), Version %s
+      substitutes the port''s own 0.1.0 (the exe carries no version
+      resource), and skip-on-click-or-Esc is a port choice - the original''s
+      cutscene manager (0x4aa0d0) is opaque and the descriptors carry no
+      skip affordance. Verified by photography the
       house way: --intro lands the ESRB slide fullscreen, --menu
-      photographs the full menu with Continue greyed over a missing save,
-      --scene Chap1_Intro at two seconds shows the pan and the English
-      cue, --lang 1 the same scene with the French cue wrapped and
-      accented - plus test_gfx_cutscene (the timeline, the lookup, the
-      cue layer in five languages, the key interpolation), the menu hit
-      tests in test_gfx_layout, and the five extraction pins and the
-      queue arm in test_callback_effects.
+      photographs the full menu - banner, trio, gem plates, WC fonts -
+      over the real backdrop, --splash the Skin_Splash card with its
+      resolved [CLICKCONT], --scene Chap1_Intro at two seconds shows the
+      pan and the English cue, --lang 1 the same scene with the French
+      cue wrapped and accented - plus live probes that print their track
+      ("music: music_map" on a --fresh boot, "music: music_intro" on the
+      splash path) and the suites: test_gfx_cutscene (the timeline, the
+      lookup, the cue layer in five languages, the key interpolation),
+      the menu hit tests in test_gfx_layout (nine, no Buy Now corner),
+      the music resolution in test_skin_data (twelve of thirteen tags
+      with files), and the five extraction pins and the queue arm in
+      test_callback_effects.
     supersedes: null
     date: 2026-10-14

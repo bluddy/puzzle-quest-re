@@ -2,7 +2,7 @@
 
    `lib/text_data.ml` is the language front over five generated tables - one
    per shipped language, each game/Assets/<Language>/*Text.xml plus the
-   Conversations and Quests subdirectories, 10,425 identical tags - turned
+   Conversations and Quests subdirectories, 10,448 identical tags - turned
    into lookups. It exists because the per-asset extracts do not hold these
    strings: a quest's own *_Text.xml has its step lines but not
    [QUEST_X_NAME], and the map data stores [CITY_CBAR_NAME] rather than
@@ -117,7 +117,7 @@ let () =
     (String.concat ";" (Array.to_list Text_data.names))
     "English;French;German;Spanish;Italian";
   check_eq_int "English boots as id 0" !Text_data.language 0;
-  check_eq_int "every language carries the same tag set" (tag_count ()) 10425;
+  check_eq_int "every language carries the same tag set" (tag_count ()) 10448;
 
   Text_data.set_language 1;
   check_eq_int "French is id 1" !Text_data.language 1;
@@ -125,7 +125,7 @@ let () =
   check_str "French quest step routes through quest_text"
     (Campaign_quests.quest_text q0e0 "[QUEST_Q0E0_ACTION]")
     "Détruire les catapultes";
-  check_eq_int "French carries the same tag set" (tag_count ()) 10425;
+  check_eq_int "French carries the same tag set" (tag_count ()) 10448;
 
   Text_data.set_language 2;
   check_str "German interface string routes" (settings_of ()) "Einstellungen";

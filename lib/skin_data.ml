@@ -635,19 +635,19 @@ let sounds : sound array =
     { tag = "snd_voice_queststage"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VQuestStage.wav"; how = "Renamed" };
     { tag = "snd_voice_victory"; kind = "interface"; priority = 7; fade = 0; file = Some "English/Sounds/VVictorious.wav"; how = "Renamed" };
     { tag = "snd_cutscene"; kind = "interface"; priority = 7; fade = 0; file = None; how = "Absent" };
-    { tag = "music_intro"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_map"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_boss"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_background0"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_background1"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_background2"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_background3"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_background4"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_victory"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_defeat"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_intro"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Intro.ogg"; how = "Exact" };
+    { tag = "music_map"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Map.ogg"; how = "Exact" };
+    { tag = "music_boss"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Boss.ogg"; how = "Exact" };
+    { tag = "music_background0"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Background1.ogg"; how = "Exact" };
+    { tag = "music_background1"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Background2.ogg"; how = "Exact" };
+    { tag = "music_background2"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Background3.ogg"; how = "Exact" };
+    { tag = "music_background3"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Background4.ogg"; how = "Exact" };
+    { tag = "music_background4"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Background5.ogg"; how = "Exact" };
+    { tag = "music_victory"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Victory.ogg"; how = "Exact" };
+    { tag = "music_defeat"; kind = "music"; priority = 7; fade = 2; file = Some "Music/Defeat.ogg"; how = "Exact" };
     { tag = "music_theme"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_about_to_win"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
-    { tag = "music_about_to_lose"; kind = "music"; priority = 7; fade = 2; file = None; how = "Absent" };
+    { tag = "music_about_to_win"; kind = "music"; priority = 7; fade = 2; file = Some "Music/About_to_win.ogg"; how = "Exact" };
+    { tag = "music_about_to_lose"; kind = "music"; priority = 7; fade = 2; file = Some "Music/About_to_lose.ogg"; how = "Exact" };
   |]
 
 let sound_of_tag (tag : string) : sound option =

@@ -35,6 +35,14 @@ WANTED = [
     "Assets/Skin/Skin_Gems_Grid.png",
     "Assets/Skin/Skin_Battle_Misc.png",
     "Assets/Skin/Skin_Backdrop_Standard.jpg",
+    # The shell: SplashMenu's full-screen img_splash, the main menu's
+    # button frames (bmp_skin_buttmain, the red gem plates with their
+    # 8-frame hover animation), the menu FX overlay (bmp_rays over the
+    # staff stone), and the custom cursor (bmp_maincursor).
+    "Assets/Skin/Skin_Splash.jpg",
+    "Assets/Skin/Skin_Buttons_Main.png",
+    "Assets/Graphics/Rays.png",
+    "Assets/Cursors/CursorMain.png",
 ]
 
 # The world map: Assets/Map.xml is four rows and columns of these 512px
@@ -102,6 +110,27 @@ def sound_dest(name: str) -> pathlib.Path | None:
     return None
 
 
+# The music .ogg files are loose beside the game, not in Assets.zip (the
+# archive's registry names every music tag but ships no ogg behind any of
+# them - the extractor noted this). They sit under game/Assets/Music/ and
+# game/English/CutScenes/ in the game tree; we pull them into assets/gfx/Music/
+# so Audio.play resolves them the same way it resolves the WAV banks.
+MUSIC_DIR = "Music"
+CUTSCENE_VOICE_DIR = "English/CutScenes"
+
+
+def loose_audio_files(repo: pathlib.Path) -> list[tuple[pathlib.Path, pathlib.Path]]:
+    """(source, dest) for every loose .ogg we ship: Music/*.ogg and the
+    cutscene voices, both landing under out-dir/Music/."""
+    out = []
+    for src_dir in (repo / "game" / "Assets" / MUSIC_DIR,
+                    repo / "game" / "English" / "CutScenes"):
+        if src_dir.is_dir():
+            for p in sorted(src_dir.glob("*.ogg")):
+                out.append((p, pathlib.Path(MUSIC_DIR) / p.name))
+    return out
+
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -152,6 +181,13 @@ def main() -> int:
                     continue
                 dest = args.out_dir / rel
                 dest.write_bytes(z.read(n))
+                written += 1
+            # Loose audio: the music .ogg files and cutscene voices, which
+            # live in the game tree beside the exe rather than in the zip.
+            (args.out_dir / MUSIC_DIR).mkdir(parents=True, exist_ok=True)
+            for src, rel in loose_audio_files(REPO):
+                dest = args.out_dir / rel
+                dest.write_bytes(src.read_bytes())
                 written += 1
     except zipfile.BadZipFile as e:
         print(f"error: {args.zip} is not a readable zip: {e}", file=sys.stderr)

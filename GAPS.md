@@ -272,4 +272,6 @@ training/encounter avoidance, banner effects, enemy variety) and in the
 numbered sections below - section 12's manual save UI among them, plus
 the sharpening threads each round's evidence keeps suggesting (a
 mid-journey save resume: `port.autosave` records why the hero lands at
-their last city instead).
+their last city instead; and boot time: `Conv_window.create` decodes and
+uploads all 273 conversation images before the first frame, which beat
+every probe timeout during the shell round - a lazy-load candidate).

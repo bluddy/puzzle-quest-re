@@ -231,23 +231,46 @@ let test_sound_resolution_is_recorded () =
     | Some p -> String.contains p '/'
     | None -> false)
 
-let test_music_is_absent () =
-  (* Every music tag is declared and none has audio behind it. Worth pinning: it
-     is the difference between "the bank was not extracted" and "there is no music
-     in this build at all", and the registry is the only place that knows. *)
+let test_music_resolves () =
+  (* Every music tag is declared, and - unlike when this file was written,
+     when the registry named music that Assets.zip did not carry - each has
+     audio behind it now: the tracks are loose in the game tree beside the
+     exe, which is where the extractor resolves them from
+     (port.cutscene_shell). The registry is still the only place that knows
+     which tag wants which file. *)
   let music =
     List.filter (fun (s : Skin_data.sound) -> s.Skin_data.kind = "music")
       (Array.to_list Skin_data.sounds)
   in
   check "the registry declares music" (music <> []);
-  check "and none of it has a file"
-    (List.for_all (fun (s : Skin_data.sound) -> s.Skin_data.file = None) music);
-  check "so playable sounds are interface sounds only"
-    (Array.for_all
-       (fun (s : Skin_data.sound) -> s.Skin_data.kind = "interface")
+  (* Every music tag but music_theme resolves: Theme_Default.ogg is the one
+     track the loose directory does not carry, so the menu's stage falls
+     back to a background loop (port.cutscene_shell). *)
+  let music_with_files =
+    List.filter (fun (s : Skin_data.sound) -> s.Skin_data.file <> None) music
+  in
+  check "every music tag but the unshipped theme has a file"
+    (List.length music = List.length music_with_files + 1
+    && List.exists
+         (fun (s : Skin_data.sound) ->
+           s.Skin_data.tag = "music_theme" && s.Skin_data.file = None)
+         music);
+  check "and they all point into the Music/ bank as .ogg"
+    (List.for_all
+       (fun (s : Skin_data.sound) ->
+         match s.Skin_data.file with
+         | Some p ->
+           String.length p > 9
+           && String.sub p 0 6 = "Music/"
+           && Filename.check_suffix p ".ogg"
+         | None -> false)
+       music_with_files);
+  check "playable sounds span interface and music"
+    (Array.exists
+       (fun (s : Skin_data.sound) -> s.Skin_data.kind = "music")
        Skin_data.playable_sounds);
-  check "and 68 of the 82 have audio"
-    (Array.length Skin_data.playable_sounds = 68)
+  check "and 80 of the 82 have audio"
+    (Array.length Skin_data.playable_sounds = 80)
 
 let () =
   test_shape ();
@@ -259,7 +282,7 @@ let () =
   test_frames_on ();
   test_sounds ();
   test_sound_resolution_is_recorded ();
-  test_music_is_absent ();
+  test_music_resolves ();
   if !failures = 0 then print_endline "all skin data tests passed"
   else begin
     Printf.printf "%d skin data test(s) failed\n" !failures;

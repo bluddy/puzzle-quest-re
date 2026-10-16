@@ -21,38 +21,47 @@ open Puzzle_quest_lib
 type t = {
   mutable chunks : (string, Tsdl_mixer.Mixer.chunk) Hashtbl.t;
   mutable live : (string, int) Hashtbl.t;  (** tag -> the channel it is on *)
+  mutable music : (string, Tsdl_mixer.Mixer.music) Hashtbl.t;
+      (** tag -> the loaded track, lazily, like the chunks *)
+  mutable music_tag : string option;
+      (** the tag currently looping, so a stage switch can halt it *)
   mutable available : bool;
   mutable reported : bool;
-  (** How many sounds have actually been started.
-
-      Not decoration. Whether this build has a working audio path is otherwise
-      invisible - there is no error, the battle plays, and the only symptom is
-      silence, which is indistinguishable from a correct quiet moment. A counter
-      the screenshot harness can print turns "is it wired up" into a question with
-      an answer. *)
+  mutable ogg : bool;  (** whether the Ogg decoder loaded, for music *)
   mutable played : int;
+      (** How many sounds have actually been started.
+
+          Not decoration. Whether this build has a working audio path is
+          otherwise invisible - there is no error, the battle plays, and the
+          only symptom is silence, which is indistinguishable from a correct
+          quiet moment. A counter the screenshot harness can print turns "is
+          it wired up" into a question with an answer. *)
 }
 
 let channels = 8
 
 let create () : t =
   let t =
-    { chunks = Hashtbl.create 32; live = Hashtbl.create 16; available = false;
-      reported = false; played = 0 }
+    { chunks = Hashtbl.create 32; live = Hashtbl.create 16;
+      music = Hashtbl.create 8; music_tag = None; available = false;
+      reported = false; ogg = false; played = 0 }
   in
-  (* [Init.empty] asks for no decoders: the bank is WAV only, and asking for Ogg or
-     MP3 support would be asking for libraries this build does not use. *)
-  (match Tsdl_mixer.Mixer.init Tsdl_mixer.Mixer.Init.empty with
+  (* The bank is WAV, but the shell's music is Ogg - ask for both decoders.
+     A build of SDL2_mixer without Ogg support simply reports [ogg = false]
+     and music stays silent, the same silent-by-design contract the chunks
+     keep. *)
+  let init_flags = Tsdl_mixer.Mixer.Init.(empty + ogg) in
+  (match Tsdl_mixer.Mixer.init init_flags with
   | Error _ -> ()
-  | Ok _ -> (
-      match
-        Tsdl_mixer.Mixer.open_audio Tsdl_mixer.Mixer.default_frequency
-          Tsdl_mixer.Mixer.default_format Tsdl_mixer.Mixer.default_channels 1024
-      with
-      | Error _ -> ()
-      | Ok () ->
-          ignore (Tsdl_mixer.Mixer.allocate_channels channels);
-          t.available <- true));
+  | Ok loaded -> t.ogg <- Tsdl_mixer.Mixer.Init.test loaded Tsdl_mixer.Mixer.Init.ogg);
+  (match
+     Tsdl_mixer.Mixer.open_audio Tsdl_mixer.Mixer.default_frequency
+       Tsdl_mixer.Mixer.default_format Tsdl_mixer.Mixer.default_channels 1024
+   with
+  | Error _ -> ()
+  | Ok () ->
+      ignore (Tsdl_mixer.Mixer.allocate_channels channels);
+      t.available <- true);
   if not t.available && not t.reported then begin
     Printf.printf "  no audio device - the battle runs silently\n";
     t.reported <- true
@@ -153,8 +162,64 @@ let play (t : t) (tag : string) : bool =
 let play_all (t : t) (tags : string list) : bool =
   List.fold_left (fun any tag -> play t tag || any) false tags
 
+(** Loop a music tag ([music_intro], [music_theme], [music_map], ...).
+
+    One track at a time: a stage switch calls this with the stage's tag and the
+    previous track halts first, which is how the original's music manager works
+    (it swaps the single global player by tag). Returns false when there is no
+    device, no Ogg decoder, or no file behind the tag - all silent, like [play].
+    Re-requesting the tag already looping is a no-op, so a frame that re-asserts
+    its stage's music does not restart the track. *)
+let play_music (t : t) (tag : string) : bool =
+  if (not t.available) || not t.ogg then false
+  else if t.music_tag = Some tag then true
+  else begin
+    (match t.music_tag with
+    | Some _ -> ignore (Tsdl_mixer.Mixer.halt_music ())
+    | None -> ());
+    t.music_tag <- None;
+    let path =
+      match Skin_data.sound_file tag with
+      | None -> None
+      | Some rel -> Some (Filename.concat (dir ()) rel)
+    in
+    match path with
+    | None -> false
+    | Some path ->
+      if not (Sys.file_exists path) then false
+      else
+        let mus =
+          match Hashtbl.find_opt t.music tag with
+          | Some m -> Some m
+          | None -> (
+            match Tsdl_mixer.Mixer.load_mus path with
+            | Error _ -> None
+            | Ok m ->
+              Hashtbl.replace t.music tag m;
+              Some m)
+        in
+        match mus with
+        | None -> false
+        | Some m -> (
+          (* -1 = loop forever; the registry's fade is not modelled, a port
+             choice noted with the rest of the audio surface. *)
+          match Tsdl_mixer.Mixer.play_music m (-1) with
+          | Error _ -> false
+          | Ok _ ->
+            t.music_tag <- Some tag;
+            t.played <- t.played + 1;
+            true)
+  end
+
+(** Halt whatever music is looping (a stage that owns no track). *)
+let halt_music (t : t) : unit =
+  t.music_tag <- None;
+  if t.available then ignore (Tsdl_mixer.Mixer.halt_music ())
+
 let destroy (t : t) =
   if t.available then begin
+    ignore (Tsdl_mixer.Mixer.halt_music ());
+    Hashtbl.iter (fun _ m -> Tsdl_mixer.Mixer.free_music m) t.music;
     Hashtbl.iter (fun _ c -> Tsdl_mixer.Mixer.free_chunk c) t.chunks;
     Tsdl_mixer.Mixer.close_audio ()
   end

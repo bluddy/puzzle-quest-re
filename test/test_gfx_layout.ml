@@ -219,11 +219,12 @@ let () =
     (cells 3 (8, 0) = [] && cells 1 (3, 8) = [] && cells 2 (-1, 4) = [])
 
 let () =
-  (* The main menu is a transcription: ten buttons at MainMenu.xml's own
+  (* The main menu is a transcription: the buttons at MainMenu.xml's own
      numbers, hit-tested exactly - and the rows the XML groups with its
-     gamepad chains (21/22, 1/2/4, 7, 5/6, 0) keep their gaps. *)
-  check "the menu carries the ten buttons"
-    (List.length Main_menu_layout.buttons = 10);
+     gamepad chains (21/22, 1/2/4, 7, 5/6, 0) keep their gaps. [BUYNOW]
+     (id 10) is dropped: demo-era storefront cruft (port.cutscene_shell). *)
+  check "the menu carries the nine buttons"
+    (List.length Main_menu_layout.buttons = 9);
   check "New Quest is at its XML rect"
     (match Main_menu_layout.button_at (660 + 150) (180 + 25) with
     | Some b -> b.Main_menu_layout.id = 21
@@ -236,10 +237,8 @@ let () =
     (match Main_menu_layout.button_at 800 695 with
     | Some b -> b.Main_menu_layout.id = 0
     | None -> false);
-  check "Buy Now sits in the bottom-left"
-    (match Main_menu_layout.button_at 100 700 with
-    | Some b -> b.Main_menu_layout.id = 10
-    | None -> false);
+  check "the demo-era Buy Now corner is empty"
+    (Main_menu_layout.button_at 100 700 = None);
   check "the gap between Continue and Single Player misses"
     (Main_menu_layout.button_at 800 290 = None);
   check "a point left of the button column misses"

@@ -1551,6 +1551,7 @@ let step (ui : ui) (dt : float) : unit =
    into the game). *)
 type shell =
   | Intro
+  | Splash  (** SplashMenu.xml: img_splash full-screen + [CLICKCONT] *)
   | Menu
   | Cutscene of Cutscene_data.scene * shell
   | Play
@@ -1561,12 +1562,27 @@ let shell : shell ref = ref Intro
    the same way the shell owns its stage. *)
 let active_scene : Cutscene_screen.t option ref = ref None
 
+(* The front's audio device - the shell's music and the menu's button clicks.
+   The battle screen owns its own inside [Battle_screen.create]; this one is
+   the map front's, created once the window exists and destroyed on exit. *)
+let audio : Audio.t option ref = ref None
+
+(* The shell's wall clock, advanced by [step_shell]: drives the menu's rays
+   pulse (and any stage beat that wants one). *)
+let shell_elapsed : float ref = ref 0.0
+
+(* The mouse position, updated on every motion: the menu reads it for the
+   button hover. *)
+let mouse_x : int ref = ref 0
+let mouse_y : int ref = ref 0
+
 let () =
   Random.self_init ();
   let shot = ref "" and open_city_flag = ref false
   and itemgame_flag = ref false and settings_flag = ref false
   and lang = ref (-1) and fresh_flag = ref false
   and menu_flag = ref false and intro_flag = ref false
+  and splash_flag = ref false
   and scene_arg = ref "" in
   Arg.parse
     [ ( "--shot",
@@ -1593,11 +1609,14 @@ let () =
       ( "--intro",
         Arg.Set intro_flag,
         "land on the boot intro (for --shot)" );
+      ( "--splash",
+        Arg.Set splash_flag,
+        "land on the splash screen (for --shot)" );
       ( "--scene",
         Arg.Set_string scene_arg,
         "play the named cutscene instead of the boot logo (for --shot)" ) ]
     (fun a -> raise (Arg.Bad a))
-    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N] [--fresh] [--menu] [--intro] [--scene NAME]";
+    "pq_map_gfx [--shot FILE] [--city] [--itemgame] [--settings] [--lang N] [--fresh] [--menu] [--intro] [--splash] [--scene NAME]";
   (* The language sets before anything draws or any module-level table is
      read through Text_data - the whole switch is live, but a shot wants the
      boot language to be the one it photographs. Unshipped ids fall back to
@@ -1607,6 +1626,52 @@ let () =
     Gl.create ~title:"Puzzle Quest - world map" ~width:window_w
       ~height:window_h
   in
+  (* The shipped mouse cursor (curs_main -> img_cursor, CursorMain.png - the
+     triangle). SDL wants a 1-bit AND mask (1 = transparent) beside a 32-bit
+     ARGB bitmap, so the RGBA decode is split: alpha below the threshold
+     becomes the mask's 1, and the colour channels pack little-endian ARGB.
+     A missing file or a refused cursor leaves the OS arrow - never fatal. *)
+  let set_custom_cursor () =
+    let path = Filename.concat (asset_dir ()) "CursorMain.png" in
+    if Sys.file_exists path then
+      try
+        let px, w, h = Png.load_rgba path in
+        let npix = w * h in
+        let and_row = (w + 7) / 8 in
+        let mask =
+          Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+            (and_row * h)
+        in
+        let bits =
+          Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+            (npix * 4)
+        in
+        for y = 0 to h - 1 do
+          for x = 0 to w - 1 do
+            let i = ((y * w) + x) * 4 in
+            let r = Char.code px.{i} in
+            let g = Char.code px.{i + 1} in
+            let b = Char.code px.{i + 2} in
+            let a = Char.code px.{i + 3} in
+            let transparent = a < 128 in
+            if transparent then
+              let mi = (y * and_row) + (x / 8) in
+              mask.{mi} <- mask.{mi} lor (0x80 lsr (x mod 8));
+            (* SDL's 32-bit cursor is little-endian ARGB. *)
+            bits.{i} <- b;
+            bits.{i + 1} <- g;
+            bits.{i + 2} <- r;
+            bits.{i + 3} <- if transparent then 0 else a
+          done
+        done;
+        (match Sdl.create_cursor mask bits ~w ~h ~hot_x:0 ~hot_y:0 with
+        | Ok c -> Sdl.set_cursor (Some c)
+        | Error _ ->
+          Printf.printf "  cursor refused - keeping the OS arrow\n")
+      with e ->
+        Printf.printf "  cursor %s failed: %s\n" path (Printexc.to_string e)
+  in
+  set_custom_cursor ();
   (* The playable battle screen, hosted on this window's context: road,
      quest-stage and callback fights all run through it, so the art loads
      once here rather than per fight. The module holds the one screen per
@@ -1627,7 +1692,7 @@ let () =
     Font.create
       ~styles:
         (List.filter_map Font_layout.metrics_of_tag
-           [ "font_system"; "font_small" ])
+           [ "font_system"; "font_small"; "font_button"; "font_heading" ])
   in
   (match fonts with
   | None ->
@@ -1646,10 +1711,14 @@ let () =
   let to_play =
     (!shot <> "" || !open_city_flag || !itemgame_flag || !settings_flag
     || !fresh_flag)
-    && not !menu_flag && not !intro_flag && !scene_arg = ""
+    && not !menu_flag && not !intro_flag && not !splash_flag
+    && !scene_arg = ""
   in
   let shell_start =
-    if to_play then Play else if !menu_flag then Menu else Intro
+    if to_play then Play
+    else if !menu_flag then Menu
+    else if !splash_flag then Splash
+    else Intro
   in
   shell := shell_start;
   let hero, start_city = fresh_hero () in
@@ -1678,7 +1747,7 @@ let () =
       (* The gems-grid sheet carries the hammer art the skill game's meter
          and board draw from; a checkout without it falls back to flat
          squares, the same contract every other sheet here keeps. *)
-      skin = Skin.create ~gl ~sheets:[ "bmp_skin_gemsgrid" ];
+      skin = Skin.create ~gl ~sheets:[ "bmp_skin_gemsgrid"; "bmp_skin_buttmain" ];
       rules_tex = load_rules_texture () }
   in
   if !open_city_flag then open_city ui start_city;
@@ -1714,12 +1783,53 @@ let () =
     | None -> ()
     | Some cv -> cv.tab <- Settings
   end;
-  (* The menu's ground: img_mainmenufx is a UserGraphic behind a Lua
-     callback (callback_mainmenufx) the port has no native for, so the
-     standard backdrop stands in (port.cutscene_shell) - darkened so the
-     gold labels read over any art. *)
+  (* The menu's ground: Skin_Backdrop_Standard is the shipped MainMenu
+     backdrop (banner, the trio, the girl with her staff) - img_mainmenufx is
+     a UserGraphic behind callback_mainmenufx, the Lua the port has no native
+     for, so the staff's stone gets no animated rays and the bitmap stands in
+     whole (port.cutscene_shell). Loaded here, undimmed: the original draws it
+     bright, and the gold labels read over it fine. *)
   let menu_bg =
     Conv_window.load_conv_image "Assets/Skin/Skin_Backdrop_Standard.jpg"
+  in
+  (* The menu FX overlay: bmp_rays, the radial glow the original's
+     callback_mainmenufx pulses over the girl's staff stone every few
+     seconds. Without the Lua the port cycles its alpha on a slow timer - the
+     same "animated every 5 seconds or so" beat, minus the rotation the
+     callback does (port.choice, recorded). *)
+  let rays =
+    Conv_window.load_conv_image "Assets/Graphics/Rays.png"
+  in
+  (* The shell's audio device: music across the stages + the menu's button
+     clicks. The battle screen owns its own; this one starts here and is
+     destroyed on exit. It is created after the window, like every other GL
+     -backed resource. *)
+  let shell_audio = Audio.create () in
+  audio := Some shell_audio;
+  (* A track that starts says so: music is invisible in a screenshot and the
+     Audio module's silence-by-design would otherwise make "wired up" and
+     "broken" look alike, the same reason [Audio.t] counts plays. *)
+  let music tag =
+    if Audio.play_music shell_audio tag then begin
+      Printf.printf "  music: %s\n" tag;
+      flush stdout
+    end
+  in
+  (* The shell's stages each have a track, the way the original's music
+     manager switches by tag: the boot logos and splash carry music_intro,
+     the menu music_theme (the loose Theme_Default.ogg did not ship, so a
+     background loop stands in when it is absent), the game music_map. *)
+  let music_for (s : shell) : unit =
+    match s with
+    | Intro | Cutscene _ | Splash -> music "music_intro"
+    | Menu ->
+      if not (Audio.play_music shell_audio "music_theme") then
+        music "music_background0"
+      else begin
+        Printf.printf "  music: music_theme\n";
+        flush stdout
+      end
+    | Play -> music "music_map"
   in
   (* Push [sc] over whatever stage is next; the player ends the stage. *)
   let play_scene (label : string) (sc : Cutscene_data.scene)
@@ -1734,7 +1844,8 @@ let () =
       (if n_cues > 0 then " with subtitles" else "");
     flush stdout;
     active_scene := Some (Cutscene_screen.create sc);
-    shell := Cutscene (sc, resume)
+    shell := Cutscene (sc, resume);
+    music_for !shell
   in
   (* Quit runs through this ref: the menu handler fires before the loop
      binds [running]. *)
@@ -1749,8 +1860,9 @@ let () =
       shell :=
         (match !shell with
         | Cutscene (_, resume) -> resume
-        | Intro -> Menu
-        | other -> other)
+        | Intro -> Splash
+        | other -> other);
+      music_for !shell
   in
   (* New Quest: a fresh hero, written out immediately (the file Continue
      needs exists before the opening cutscene's first frame), then the
@@ -1768,7 +1880,9 @@ let () =
     flush stdout;
     match Cutscene_data.scene_of "Chap1_Intro" with
     | Some sc -> play_scene "Chap1_Intro" sc Play
-    | None -> shell := Play
+    | None ->
+      shell := Play;
+      music_for !shell
   in
   (* Continue Quest: the load - GAME_KNOWLEDGE_BASE's "drops you straight
      into the game" entry. A missing or unreadable file leaves the menu up
@@ -1790,12 +1904,15 @@ let () =
         Printf.printf "  continued: %s (level %d, %d gold)\n" p.Campaign.name
           p.Campaign.level p.Campaign.gold;
         flush stdout;
-        shell := Play
+        shell := Play;
+        music_for !shell
   in
   let menu_click (mx : int) (my : int) : unit =
     match Main_menu_layout.button_at mx my with
     | None -> ()
     | Some b ->
+      (* the shipped button press sound, now that the front has a device *)
+      ignore (Audio.play shell_audio "snd_buttdown");
       (match b.Main_menu_layout.id with
       | 21 -> start_new_game ()
       | 22 -> continue_game ()
@@ -1821,6 +1938,7 @@ let () =
      would have blocked there, and the queue is the port's block. *)
   let step_shell (dt : float) : unit =
     let dt = min dt 0.1 in
+    shell_elapsed := !shell_elapsed +. dt;
     match !shell with
     | Intro | Cutscene _ ->
       (match !active_scene with
@@ -1831,15 +1949,21 @@ let () =
           shell :=
             (match !shell with
             | Cutscene (_, resume) -> resume
-            | Intro -> Menu
-            | other -> other)
+            | Intro -> Splash
+            | other -> other);
+          music_for !shell
         end
       | None ->
         shell :=
           (match !shell with
           | Cutscene (_, resume) -> resume
-          | Intro -> Menu
-          | other -> other))
+          | Intro -> Splash
+          | other -> other);
+        music_for !shell)
+    | Splash ->
+      (* "Press any key to continue": the pad is modal and the screen waits -
+         no timer runs here (SplashMenu.xml's timer="off"). *)
+      ()
     | Menu -> ()
     | Play ->
       step ui dt;
@@ -1866,50 +1990,118 @@ let () =
     let gl = ui.gl in
     Gl.begin_frame gl;
     let rs = ref [] in
+    (* The shipped backdrop, undimmed: banner, the trio, the girl with her
+       staff. The original draws img_backdrop with a 1024x768 SOURCE crop of
+       the 1024x1024 sheet (Assets.xml: x0 y0 w1024 h768), so the bottom
+       quarter - the sheet's own black - stays out rather than squeezing the
+       art into the window (port.cutscene_shell). *)
     (match menu_bg with
     | Some (tex, iw, ih) ->
+      let sw = min iw window_w and sh = min ih window_h in
       let first =
         Gl.push_quad ~tex_size:(iw, ih) gl
           { Layout.x = 0; y = 0; w = window_w; h = window_h }
-          (Some { Layout.x = 0; y = 0; w = iw; h = ih })
+          (Some { Layout.x = 0; y = 0; w = sw; h = sh })
           (Layout.rgb 255 255 255)
       in
       rs :=
         !rs
         @ [ { Gl.first; count = 6; tex = Some tex;
-              colour = Layout.rgba 0 0 0 140; clip = None; blend = None } ]
+              colour = Layout.rgb 255 255 255; clip = None; blend = None } ]
     | None ->
       solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
         (Layout.rgb 18 20 28));
+    (* The staff's rays: a slow alpha pulse over the girl's staff stone, the
+       beat callback_mainmenufx animates (over the staff head the backdrop
+       shows at ~(565,380); rotation not modelled - port.choice). *)
+    (match rays with
+    | Some (tex, iw, ih) ->
+      let phase = (sin (!shell_elapsed *. (Float.pi /. 2.5)) *. 0.5) +. 0.5 in
+      let a = int_of_float (phase *. 160.0) in
+      let dst = { Layout.x = 437; y = 252; w = 256; h = 256 } in
+      let first =
+        Gl.push_quad ~tex_size:(iw, ih) gl dst
+          (Some { Layout.x = 0; y = 0; w = iw; h = ih })
+          (Layout.rgba 255 255 255 a)
+      in
+      rs :=
+        !rs
+        @ [ { Gl.first; count = 6; tex = Some tex;
+              colour = Layout.rgba 255 255 255 a; clip = None;
+              blend = Some Gl.Alpha } ]
+    | None -> ());
     (match (ui.fonts, ui.system) with
-    | Some ff, Some m ->
-      let label ?(colour = Layout.rgb 240 210 90) (tag : string) ~(cx : int)
+    | Some ff, Some _ ->
+      (* The XML's own faces: font_heading for the title, font_button for the
+         buttons and the version/copyright lines. *)
+      let heading = Font_layout.metrics_of_tag "font_heading" in
+      let button = Font_layout.metrics_of_tag "font_button" in
+      let system_m = ui.system in
+      let draw_in ?(colour = Layout.rgb 240 210 90)
+          (m : Font_layout.metrics option) (s : string) ~(cx : int)
           ~(y : int) : unit =
-        let s = Text_data.text tag in
-        let w = Font_layout.measure m s in
-        rs := !rs @ Font.draw gl ff m ~colour s ~x:(cx - (w / 2)) ~y
+        match m with
+        | None -> ()
+        | Some mm ->
+          let w = Font_layout.measure mm s in
+          rs := !rs @ Font.draw gl ff mm ~colour s ~x:(cx - (w / 2)) ~y
       in
       let ttag, tx, ty, tw, _justify = Main_menu_layout.title in
-      (* the XML centres [MAINMENU] in its own box: cx = x + w/2 *)
-      label ttag ~cx:(tx + (tw / 2)) ~y:ty;
+      draw_in heading (Text_data.text ttag) ~cx:(tx + (tw / 2)) ~y:ty;
+      let hover = Main_menu_layout.button_at !mouse_x !mouse_y in
+      let now_sec = !shell_elapsed in
       List.iter
         (fun (b : Main_menu_layout.button) ->
           let grey =
             b.Main_menu_layout.id = 22
             && not (Sys.file_exists Campaign_autosave.filename)
           in
-          solid rs gl
+          let hovered =
+            match hover with
+            | Some hb -> hb.Main_menu_layout.id = b.Main_menu_layout.id
+            | None -> false
+          in
+          (* The red gem plate from bmp_skin_buttmain: act when idle, the
+             8-frame electricity animation while hovered (Assets.xml's
+             img_buttwide_hi sequence hi0 hi1 hi2 hi3 hi1 hi0 hi3 hi2, 100ms
+             each), grey when the button is disabled. *)
+          let frame_tag =
+            if grey then "img_buttwide_gray"
+            else if hovered then
+              let seq =
+                [| "img_buttwide_hi0"; "img_buttwide_hi1";
+                   "img_buttwide_hi2"; "img_buttwide_hi3";
+                   "img_buttwide_hi1"; "img_buttwide_hi0";
+                   "img_buttwide_hi3"; "img_buttwide_hi2" |]
+              in
+              seq.(int_of_float (now_sec *. 10.0) mod 8)
+            else "img_buttwide_act"
+          in
+          let placed =
             { Layout.x = b.Main_menu_layout.x; y = b.Main_menu_layout.y;
               w = b.Main_menu_layout.w; h = b.Main_menu_layout.h }
-            (if grey then Layout.rgb 34 36 44 else Layout.rgb 44 48 60);
-          let colour =
-            if grey then Layout.rgb 120 122 132 else Layout.rgb 240 210 90
           in
-          label ~colour b.Main_menu_layout.label_tag
-            ~cx:(b.Main_menu_layout.x + (b.Main_menu_layout.w / 2))
-            ~y:(b.Main_menu_layout.y + 17))
+          if not (Skin.draw ui.skin rs frame_tag ~place:placed) then
+            (* No sheet (a checkout that has not extracted it): the old flat
+               plate, so the menu still reads. *)
+            solid rs gl placed
+              (if grey then Layout.rgb 34 36 44 else Layout.rgb 44 48 60);
+          let colour =
+            if grey then Layout.rgb 150 150 160
+            else Layout.rgb 255 235 190
+          in
+          (match button with
+          | Some bm ->
+            let s = Text_data.text b.Main_menu_layout.label_tag in
+            let w = Font_layout.measure bm s in
+            rs :=
+              !rs
+              @ Font.draw gl ff bm ~colour s
+                  ~x:(b.Main_menu_layout.x + (b.Main_menu_layout.w / 2) - (w / 2))
+                  ~y:(b.Main_menu_layout.y + 15)
+          | None -> ()))
         Main_menu_layout.buttons;
-      let grey_txt = Layout.rgb 150 150 160 in
+      let grey_txt = Layout.rgb 200 200 210 in
       let vtag, vx, vy, vw, vjustify = Main_menu_layout.version in
       (* [VERSION] ships as "Version %s"; the exe carries no version
          resource to feed it, so the port substitutes its own (kept beside
@@ -1925,17 +2117,60 @@ let () =
       let vs = subst_version (Text_data.text vtag) in
       let vx =
         if vjustify = "left" then vx
-        else vx + (vw / 2) - (Font_layout.measure m vs / 2)
+        else
+          match system_m with
+          | Some sm -> vx + (vw / 2) - (Font_layout.measure sm vs / 2)
+          | None -> vx
       in
-      rs := !rs @ Font.draw gl ff m ~colour:grey_txt vs ~x:vx ~y:vy;
+      (match system_m with
+      | Some sm ->
+        rs := !rs @ Font.draw gl ff sm ~colour:grey_txt vs ~x:vx ~y:vy
+      | None -> ());
       let ctag, cx0, cy0, cw0, cjustify = Main_menu_layout.copyright in
       let cs = Text_data.text ctag in
-      let cx0 =
-        if cjustify = "center" then
-          cx0 + (cw0 / 2) - (Font_layout.measure m cs / 2)
-        else cx0
+      (match system_m with
+      | Some sm ->
+        let cx0 =
+          if cjustify = "center" then
+            cx0 + (cw0 / 2) - (Font_layout.measure sm cs / 2)
+          else cx0
+        in
+        rs := !rs @ Font.draw gl ff sm ~colour:grey_txt cs ~x:cx0 ~y:cy0
+      | None -> ())
+    | _ -> ());
+    Gl.submit gl !rs;
+    if present then Gl.present gl
+  in
+  (* SplashMenu.xml: img_splash full-screen, [CLICKCONT] in font_button
+     under it, a full-screen click pad (id 666). The art is the shipped
+     Skin_Splash.jpg - the Puzzle Quest banner over the warlord landscape. *)
+  let draw_splash ?(present = true) () : unit =
+    let gl = ui.gl in
+    Gl.begin_frame gl;
+    let rs = ref [] in
+    solid rs gl { Layout.x = 0; y = 0; w = window_w; h = window_h }
+      (Layout.rgb 0 0 0);
+    (match Conv_window.load_conv_image "Assets/Skin/Skin_Splash.jpg" with
+    | Some (tex, iw, ih) ->
+      let first =
+        Gl.push_quad ~tex_size:(iw, ih) gl
+          { Layout.x = 0; y = 0; w = window_w; h = window_h }
+          (Some { Layout.x = 0; y = 0; w = iw; h = ih })
+          (Layout.rgb 255 255 255)
       in
-      rs := !rs @ Font.draw gl ff m ~colour:grey_txt cs ~x:cx0 ~y:cy0
+      rs :=
+        !rs
+        @ [ { Gl.first; count = 6; tex = Some tex;
+              colour = Layout.rgb 255 255 255; clip = None; blend = None } ]
+    | None -> ());
+    (match (ui.fonts, Font_layout.metrics_of_tag "font_button") with
+    | Some ff, Some m ->
+      let s = Text_data.text "[CLICKCONT]" in
+      let w = Font_layout.measure m s in
+      rs :=
+        !rs
+        @ Font.draw gl ff m ~colour:(Layout.rgb 240 240 240) s
+            ~x:(512 - (w / 2)) ~y:682
     | _ -> ());
     Gl.submit gl !rs;
     if present then Gl.present gl
@@ -1944,6 +2179,7 @@ let () =
     match !shell with
     | Play -> draw ~present ui
     | Menu -> draw_menu ~present ()
+    | Splash -> draw_splash ~present ()
     | Intro | Cutscene _ ->
       (match !active_scene with
       | Some t -> draw_scene ~present t
@@ -1981,6 +2217,7 @@ let () =
     Printf.printf "  shot stage: %s\n"
       (match !shell with
       | Intro -> "intro"
+      | Splash -> "splash"
       | Menu -> "menu"
       | Cutscene _ -> "cutscene"
       | Play -> "play");
@@ -2013,15 +2250,28 @@ let () =
   let ev = Sdl.Event.create () in
   let last = ref (Sdl.get_ticks ()) in
   let running = ref true in
+  (* The first stage's track: the boot logos carry music_intro, a dev-flag
+     boot goes straight to its own stage's music. *)
+  music_for !shell;
   while !running do
     while Sdl.poll_event (Some ev) && !running do
       let t = E.get ev E.typ in
       if t = E.quit then running := false
+      else if t = E.mouse_motion then begin
+        mouse_x := E.get ev E.mouse_motion_x;
+        mouse_y := E.get ev E.mouse_motion_y
+      end
       else if t = E.mouse_button_down then begin
         let mx = E.get ev E.mouse_button_x in
         let my = E.get ev E.mouse_button_y in
+        mouse_x := mx;
+        mouse_y := my;
         match !shell with
         | Menu -> menu_click mx my
+        | Splash ->
+          (* the full-screen pad: any click continues to the menu *)
+          shell := Menu;
+          music_for !shell
         | Intro | Cutscene _ -> skip_stage ()
         | Play -> handle_click ui mx my
       end
@@ -2030,6 +2280,9 @@ let () =
            key 27), and does nothing in play - the window close quits. *)
         (match !shell with
         | Menu -> quit_requested := true
+        | Splash ->
+          shell := Menu;
+          music_for !shell
         | Intro | Cutscene _ -> skip_stage ()
         | Play -> ())
     done;
@@ -2046,5 +2299,7 @@ let () =
       Sdl.delay 16l
     end
   done;
+  Audio.destroy shell_audio;
+  audio := None;
   Gl.destroy gl;
   print_endline "map closed"
